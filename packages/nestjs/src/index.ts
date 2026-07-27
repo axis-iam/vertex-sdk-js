@@ -1,0 +1,7 @@
+export { IamModule } from './iam.module.js'
+export type { IamModuleConfig } from './iam.module.js'
+export { IamAuthGuard } from './iam-auth.guard.js'
+export { RequirePermGuard } from './require-perm.guard.js'
+export { RequirePerm, Public } from './require-perm.decorator.js'
+export { CurrentUser } from './current-user.decorator.js'
+export { IAM_CONFIG, REQUIRE_PERM_METADATA } from './constants.js'

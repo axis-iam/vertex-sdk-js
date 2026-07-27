@@ -1,0 +1,20 @@
+{
+  "name": "@axis-iam/example-shared-permission-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@axis-iam/vertex": "workspace:*",
+    "@axis-iam/vertex-nestjs": "workspace:*",
+    "@axis-iam/vertex-react": "workspace:*",
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}

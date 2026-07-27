@@ -1,0 +1,43 @@
+{
+  "name": "@axis-iam/vertex-testing",
+  "version": "0.1.0",
+  "description": "IAM SDK test utilities — mock resolver, MSW handlers",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@axis-iam/vertex": "workspace:0.1.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.0"
+  },
+  "keywords": ["iam", "testing", "mock"],
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/axis-iam/vertex-sdk-js",
+    "directory": "packages/test"
+  },
+  "homepage": "https://github.com/axis-iam/vertex-sdk-js#readme",
+  "bugs": { "url": "https://github.com/axis-iam/vertex-sdk-js/issues" }
+}

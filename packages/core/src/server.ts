@@ -1,0 +1,127 @@
+// Server-only exports for confidential Node.js, CLI, and backend runtimes.
+export type { IamSdkConfig } from './config.js'
+
+export { JwtVerifier, parseRolesClaim } from './jwt/verifier.js'
+export type { IamJwtPayload } from './jwt/verifier.js'
+
+export type { PermissionDefinition, PermissionKey } from './authz/permission.js'
+export { permKey, toAuthority, fromAuthority } from './authz/permission.js'
+export type { PermissionResolver } from './authz/resolver.js'
+export { HttpPermissionResolver } from './authz/http-resolver.js'
+export {
+  PERMISSIONS_SYNC_SCOPE,
+  PermissionManifestClient,
+  PermissionManifestError,
+  permissionDeclarationRevision,
+  preparePermissionManifest,
+  runPermissionManifestStartup,
+} from './authz/permission-manifest.js'
+export type {
+  PermissionManifest,
+  PermissionManifestClientConfig,
+  PermissionManifestCounts,
+  PermissionManifestContinueEvent,
+  PermissionManifestDeclaration,
+  PermissionManifestDrift,
+  PermissionManifestFailurePolicy,
+  PermissionManifestItem,
+  PermissionManifestMode,
+  PermissionManifestObservation,
+  PermissionManifestRequestOptions,
+  PermissionManifestResult,
+  PermissionManifestStartupMode,
+  PermissionManifestStartupOptions,
+  PermissionManifestStartupResult,
+  PreparedPermissionManifest,
+} from './authz/permission-manifest.js'
+export {
+  matchPermission,
+  hasPermission,
+  hasAllPermissions,
+  hasAnyPermission,
+} from './authz/wildcard.js'
+
+export { IamClient } from './client/iam-client.js'
+export {
+  PortalOpenApiClient,
+  PortalOpenApiError,
+  PortalOpenApiTokenError,
+  PORTAL_OPEN_API_READ_SCOPE,
+  PORTAL_OPEN_API_WRITE_SCOPE,
+  REGISTRATION_GRANTS_READ_SCOPE,
+  REGISTRATION_GRANTS_WRITE_SCOPE,
+  REGISTRATION_GRANTS_REDEMPTIONS_READ_SCOPE,
+  ORGANIZATIONS_READ_SCOPE,
+  ORGANIZATIONS_WRITE_SCOPE,
+  ORGANIZATION_INVITATIONS_READ_SCOPE,
+  ORGANIZATION_INVITATIONS_WRITE_SCOPE,
+  ORGANIZATION_MEMBERS_READ_SCOPE,
+  ORGANIZATION_MEMBERS_WRITE_SCOPE,
+  ROLES_READ_SCOPE,
+  ROLES_WRITE_SCOPE,
+  PERMISSIONS_READ_SCOPE,
+  PERMISSIONS_WRITE_SCOPE,
+  ROLE_PERMISSIONS_READ_SCOPE,
+  ROLE_PERMISSIONS_WRITE_SCOPE,
+  USER_ROLES_READ_SCOPE,
+  USER_ROLES_WRITE_SCOPE,
+} from './client/portal-open-api-client.js'
+export type {
+  RequestPasswordResetInput,
+  ResetPasswordInput,
+  ResolvePermissionsResponse,
+  PermissionsSnapshot,
+} from './client/types.js'
+export type {
+  PortalOpenApiClientConfig,
+  PortalOpenApiMachineToken,
+  PortalOpenApiMethod,
+  PortalOpenApiScope,
+  RegistrationGrant,
+  RegistrationGrantType,
+  CreateRegistrationGrantType,
+  RegistrationGrantStatus,
+  CreateRegistrationGrantInput,
+  CreatedRegistrationGrant,
+  RegistrationGrantListOptions,
+  RegistrationGrantPage,
+  RegistrationGrantRedemption,
+  RegistrationGrantRedemptionPage,
+  Organization,
+  CreateOrganizationInput,
+  UpdateOrganizationInput,
+  OrganizationListOptions,
+  OrganizationPage,
+  IdempotencyOptions,
+  IfMatchOptions,
+  OrganizationInvitation,
+  CreateOrganizationInvitationInput,
+  OrganizationInvitationListOptions,
+  OrganizationInvitationPage,
+  OrganizationInvitationStatus,
+  OrganizationInvitationDeliveryStatus,
+  OrganizationMember,
+  OrganizationMemberRole,
+  OrganizationMemberListOptions,
+  OrganizationMemberPage,
+  OrganizationSortDirection,
+  AuthorizationPageMetadata,
+  AuthorizationPageOptions,
+  AuthorizationIdempotencyOptions,
+  Role,
+  RolePage,
+  CreateRoleInput,
+  UpdateRoleInput,
+  Permission,
+  PermissionPage,
+  CreatePermissionInput,
+  UpdatePermissionInput,
+  RolePermissionBinding,
+  RolePermissionBindingPage,
+  RolePermissionSet,
+  UserRoleCondition,
+  UserRoleAssignment,
+  UserRoleAssignmentPage,
+  CreateUserRoleInput,
+  UpdateUserRoleInput,
+} from './client/portal-open-api-client.js'

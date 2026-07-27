@@ -1,0 +1,68 @@
+{
+  "name": "@axis-iam/vertex",
+  "version": "0.1.0",
+  "description": "IAM Authentication & Authorization SDK — core runtime (JWT verification, permission resolution, API client)",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./server": {
+      "import": {
+        "types": "./dist/server.d.ts",
+        "default": "./dist/server.js"
+      },
+      "require": {
+        "types": "./dist/server.d.cts",
+        "default": "./dist/server.cjs"
+      }
+    }
+  },
+  "files": ["dist", "README.md"],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "jose": "^5.9.6",
+    "lru-cache": "^11.0.2"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.0"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.0"
+  },
+  "peerDependenciesMeta": {
+    "typescript": { "optional": true }
+  },
+  "keywords": ["iam", "auth", "jwt", "rbac", "permissions"],
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/axis-iam/vertex-sdk-js",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/axis-iam/vertex-sdk-js#readme",
+  "bugs": { "url": "https://github.com/axis-iam/vertex-sdk-js/issues" }
+}

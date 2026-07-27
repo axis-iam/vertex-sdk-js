@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+*.log
+.env.local
+.mcp.json
+
+# Local agent and coordination material (kept on disk, excluded from public source)
+/.private-history/
+/.claude/
+/.codex/
+/AGENTS.md
+/CLAUDE.md
+/docs/PROJECT_TASKS.md
+/docs/tasks/
+/docs/plans/
+/docs/guides/

@@ -1,0 +1,56 @@
+name: publish beta
+
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_commit:
+        description: Exact reviewed main commit SHA containing the 0.1.0 candidates
+        required: true
+        type: string
+      publish:
+        description: Publish the six reviewed 0.1.0 packages with the beta dist-tag
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  build-and-check:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify reviewed main commit and package versions
+        env:
+          REVIEWED_COMMIT: ${{ inputs.reviewed_commit }}
+        run: |
+          test "$GITHUB_REF" = "refs/heads/main"
+          test -n "$REVIEWED_COMMIT"
+          test "$REVIEWED_COMMIT" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT"
+          node -e "const fs=require('node:fs'); for (const name of ['core','react','express','nestjs','codegen','test']) { const pkg=JSON.parse(fs.readFileSync('packages/'+name+'/package.json')); if (pkg.version !== '0.1.0') throw new Error(pkg.name+' must be exactly 0.1.0') }"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Publish through the configured npm trusted publisher
+        if: ${{ inputs.publish && github.ref == 'refs/heads/main' && inputs.reviewed_commit == github.sha }}
+        run: |
+          for package in \
+            @axis-iam/vertex \
+            @axis-iam/vertex-react \
+            @axis-iam/vertex-express \
+            @axis-iam/vertex-nestjs \
+            @axis-iam/vertex-codegen \
+            @axis-iam/vertex-testing
+          do
+            pnpm --filter "$package" publish --access public --tag beta --provenance --no-git-checks
+          done

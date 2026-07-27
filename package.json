@@ -1,0 +1,25 @@
+{
+  "name": "@axis-iam/vertex-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm --filter @axis-iam/vertex build && pnpm --filter @axis-iam/vertex-react build && pnpm --filter @axis-iam/vertex-nestjs build && pnpm -r typecheck",
+    "bundle:check": "node scripts/check-react-bundle.mjs",
+    "bundle:check:self-test": "node scripts/check-react-bundle-self-test.mjs",
+    "smoke:account-center": "node packages/react/visual-smoke/run-smoke.mjs",
+    "clean": "pnpm -r exec node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\""
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.4",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/axis-iam/vertex-sdk-js"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "@axis-iam/example-nestjs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/app.ts"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-express": "^11.0.0",
+    "@axis-iam/vertex": "workspace:*",
+    "@axis-iam/vertex-nestjs": "workspace:*",
+    "reflect-metadata": "^0.2.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0"
+  }
+}

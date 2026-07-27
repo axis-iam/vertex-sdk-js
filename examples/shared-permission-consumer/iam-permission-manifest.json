@@ -1,0 +1,1 @@
+{"manifestId":"shared-consumer","revision":"1","permissions":[{"resource":"orders","action":"read","name":"Read orders","description":null}]}

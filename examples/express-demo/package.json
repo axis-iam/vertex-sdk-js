@@ -1,0 +1,19 @@
+{
+  "name": "@axis-iam/example-express",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/app.ts"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "@axis-iam/vertex": "workspace:*",
+    "@axis-iam/vertex-express": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0"
+  }
+}
