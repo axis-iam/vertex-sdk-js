@@ -4,7 +4,7 @@ import { matchPermission, hasPermission, hasAllPermissions, hasAnyPermission } f
 
 describe('matchPermission', () => {
   it('consumes shared wildcard vectors', () => {
-    const fixture = JSON.parse(readFileSync(new URL('../../../../../docs/fixtures/permission-manifest-vectors.json', import.meta.url), 'utf8')) as {
+    const fixture = JSON.parse(readFileSync(new URL('../../../../testdata/permission-manifest-vectors.json', import.meta.url), 'utf8')) as {
       codeGeneration: { wildcardMatch: Array<{ target: string; granted: string; matches: boolean }> }
     }
     for (const vector of fixture.codeGeneration.wildcardMatch) {

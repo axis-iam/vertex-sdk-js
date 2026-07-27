@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - name: Unit tests
+        run: |
+          pnpm --filter @axis-iam/vertex test
+          pnpm --filter @axis-iam/vertex-react test
+          pnpm --filter @axis-iam/vertex-express test
+          pnpm --filter @axis-iam/vertex-nestjs test
+          pnpm --filter @axis-iam/vertex-codegen test
+          pnpm --filter @axis-iam/vertex-testing test
+      - run: pnpm build
+      - run: pnpm bundle:check:self-test

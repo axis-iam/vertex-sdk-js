@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { IamClient } from '../server.js'
 
-const compatibilityFixture = JSON.parse(readFileSync(new URL('../../../../../docs/fixtures/permission-compatibility-vectors.json', import.meta.url), 'utf8')) as {
+const compatibilityFixture = JSON.parse(readFileSync(new URL('../../../../testdata/permission-compatibility-vectors.json', import.meta.url), 'utf8')) as {
   snapshot: { valid: unknown, rawReject: Array<{ name: string, body: string }>, reject: Array<{ name: string, body: unknown }> }
   resolve: { valid: unknown, reject: Array<{ name: string, body: unknown }> }
 }

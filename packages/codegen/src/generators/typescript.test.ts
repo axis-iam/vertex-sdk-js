@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { constantName, generatePermissionsTs, generatePermissionsTsFromManifest, type PermissionEntry } from './typescript.js'
 
 describe('generatePermissionsTs', () => {
-  const sharedFixture = JSON.parse(readFileSync(new URL('../../../../../docs/fixtures/permission-manifest-vectors.json', import.meta.url), 'utf8')) as {
+  const sharedFixture = JSON.parse(readFileSync(new URL('../../../../testdata/permission-manifest-vectors.json', import.meta.url), 'utf8')) as {
     codeGeneration: {
       permissions: PermissionEntry[]
       expectedNames: { typescript: string[] }

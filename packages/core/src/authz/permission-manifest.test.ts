@@ -14,7 +14,7 @@ const nullManifest = {
   permissions: [{ resource: 'posts', action: 'read', name: 'Read posts', description: null }],
 }
 
-const sharedFixture = JSON.parse(readFileSync(new URL('../../../../../docs/fixtures/permission-manifest-vectors.json', import.meta.url), 'utf8')) as {
+const sharedFixture = JSON.parse(readFileSync(new URL('../../../../testdata/permission-manifest-vectors.json', import.meta.url), 'utf8')) as {
   vectors: Array<{ name: string, permissions: typeof nullManifest.permissions, fingerprint: string }>
   localReject: string[]
   responseReject: string[]

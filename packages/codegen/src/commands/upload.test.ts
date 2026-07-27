@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { loadManifest } from './upload.js'
 
 describe('loadManifest', () => {
-  const fixture = JSON.parse(readFileSync(new URL('../../../../../docs/fixtures/permission-manifest-vectors.json', import.meta.url), 'utf8')) as {
+  const fixture = JSON.parse(readFileSync(new URL('../../../../testdata/permission-manifest-vectors.json', import.meta.url), 'utf8')) as {
     manifestFiles: { accept: Array<{ name: string, json: string }>, reject: Array<{ name: string, json: string }> }
   }
   for (const vector of fixture.manifestFiles.accept) it(`accepts shared file vector ${vector.name}`, () => {
