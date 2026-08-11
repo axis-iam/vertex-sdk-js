@@ -30,6 +30,8 @@ describe('IamProvider token storage policy', () => {
 
   it('does not restore sessionStorage tokens by default', async () => {
     storeTestTokens(makeTestJwt(), ['orders:read'])
+    const existingSession = sessionStorage.getItem('axis_iam_session')
+    expect(existingSession).not.toBeNull()
 
     const { result } = renderHook(() => useAuth(), {
       wrapper: ({ children }) => createElement(IamProvider, defaultMemoryProps(), children),
@@ -39,7 +41,7 @@ describe('IamProvider token storage policy', () => {
 
     expect(result.current.isAuthenticated).toBe(false)
     expect(result.current.getAccessToken()).toBeNull()
-    expect(sessionStorage.getItem('axis_iam_session')).toBeNull()
+    expect(sessionStorage.getItem('axis_iam_session')).toBe(existingSession)
     expect(sessionStorage.getItem('iam_tokens')).toBeNull()
     expect(sessionStorage.getItem('iam_permissions')).toBeNull()
   })
