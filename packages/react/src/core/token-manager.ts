@@ -1,3 +1,4 @@
+import { IamConfigurationError } from './types'
 import type { TokenSet } from './types'
 import { decodeJwt, isTokenExpired, extractUser } from './jwt'
 import type { IamUser, JWTPayload } from './types'
@@ -44,11 +45,9 @@ export class TokenManager {
 
   constructor(options: TokenManagerOptions = {}) {
     this.storage = options.storage ?? 'memory'
-    this.removeLegacyStorage()
     if (this.storage === 'sessionStorage') {
+      this.removeLegacyStorage()
       this.loadFromStorage()
-    } else {
-      this.removeSessionFromStorage()
     }
   }
 
@@ -76,7 +75,7 @@ export class TokenManager {
     refreshProvenance: RefreshProvenance | null,
   ): void {
     validateSessionContext(tokens, authenticationProvenance, refreshProvenance)
-    this.session = {
+    const session: TokenSession = {
       version: SESSION_VERSION,
       tokens: { ...tokens },
       roles: tokenRoles(tokens.access_token),
@@ -84,22 +83,25 @@ export class TokenManager {
       authenticationProvenance,
       refreshProvenance,
     }
-    this.saveSessionToStorage()
+    this.saveSessionToStorage(session)
+    this.session = session
     this.scheduleRefresh()
     this.notifyChange()
   }
 
   setPermissions(permissions: string[]): void {
     if (!this.session) return
-    this.session = { ...this.session, permissions: [...permissions] }
-    this.saveSessionToStorage()
+    const session = { ...this.session, permissions: [...permissions] }
+    this.saveSessionToStorage(session)
+    this.session = session
     this.notifyChange()
   }
 
   setAuthorization(roles: string[], permissions: string[]): void {
     if (!this.session) return
-    this.session = { ...this.session, roles: [...roles], permissions: [...permissions] }
-    this.saveSessionToStorage()
+    const session = { ...this.session, roles: [...roles], permissions: [...permissions] }
+    this.saveSessionToStorage(session)
+    this.session = session
     this.notifyChange()
   }
 
@@ -164,9 +166,10 @@ export class TokenManager {
     this.session = null
     this.lastPermissionError = null
     this.cancelRefresh()
-    this.removeSessionFromStorage()
-    this.removeLegacyStorage()
     this.notifyChange()
+    if (this.storage === 'sessionStorage') {
+      this.removeStorageKeys([SESSION_KEY, ...LEGACY_STORAGE_KEYS])
+    }
   }
 
   private scheduleRefresh(): void {
@@ -230,44 +233,62 @@ export class TokenManager {
     this.onPermissionErrorChanged?.(this.lastPermissionError)
   }
 
-  private saveSessionToStorage(): void {
-    if (this.storage !== 'sessionStorage' || !this.session) return
+  private saveSessionToStorage(session: TokenSession): void {
+    if (this.storage !== 'sessionStorage') return
     try {
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify(this.session))
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(session))
     } catch {
-      // Storage may be unavailable during SSR.
+      throw new IamConfigurationError('Token session storage write failed')
     }
   }
 
   private loadFromStorage(): void {
+    let raw: string | null
     try {
-      const raw = sessionStorage.getItem(SESSION_KEY)
-      if (!raw) return
-      const session = parseSession(JSON.parse(raw) as unknown)
-      if (!session) {
-        this.removeSessionFromStorage()
-        return
-      }
-      this.session = session
+      raw = sessionStorage.getItem(SESSION_KEY)
     } catch {
-      this.session = null
-      this.removeSessionFromStorage()
+      throw new IamConfigurationError('Token session storage read failed')
     }
+    if (!raw) return
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw) as unknown
+    } catch {
+      this.discardCorruptSession()
+      throw new IamConfigurationError('Stored token session is invalid')
+    }
+    const session = parseSession(parsed)
+    if (!session) {
+      this.discardCorruptSession()
+      throw new IamConfigurationError('Stored token session is invalid')
+    }
+    this.session = session
   }
 
-  private removeSessionFromStorage(): void {
+  private discardCorruptSession(): void {
     try {
       sessionStorage.removeItem(SESSION_KEY)
     } catch {
-      // Storage may be unavailable during SSR.
+      // Cleanup is best-effort so a removal failure cannot mask the corrupt-session error.
     }
   }
 
   private removeLegacyStorage(): void {
-    try {
-      for (const key of LEGACY_STORAGE_KEYS) sessionStorage.removeItem(key)
-    } catch {
-      // Storage may be unavailable during SSR.
+    this.removeStorageKeys(LEGACY_STORAGE_KEYS)
+  }
+
+  private removeStorageKeys(keys: readonly string[]): void {
+    let failed = false
+    for (const key of keys) {
+      try {
+        sessionStorage.removeItem(key)
+      } catch {
+        failed = true
+      }
+    }
+    if (failed) {
+      throw new IamConfigurationError('Token session storage removal failed')
     }
   }
 }

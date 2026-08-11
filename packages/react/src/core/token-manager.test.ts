@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { TokenManager } from './token-manager'
+import { IamConfigurationError } from './types'
 import type { TokenSet, IamUser } from './types'
 
 // Helper: create a minimal JWT with given payload
@@ -36,6 +37,7 @@ describe('TokenManager', () => {
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     vi.useRealTimers()
   })
 
@@ -400,17 +402,69 @@ describe('TokenManager', () => {
   })
 
   describe('sessionStorage opt-in persistence', () => {
-    it('does not load and removes stale tokens or permissions from sessionStorage by default', () => {
+    it('does not access sessionStorage in memory mode even when browser storage is unavailable', () => {
       const tokens = makeTokenSet()
       sessionStorage.setItem('iam_tokens', JSON.stringify(tokens))
       sessionStorage.setItem('iam_permissions', JSON.stringify(['orders:read']))
+      const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+        throw new DOMException('blocked read containing secret-token', 'SecurityError')
+      })
+      const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        throw new DOMException('blocked write containing secret-token', 'SecurityError')
+      })
+      const removeItem = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
+        throw new DOMException('blocked removal containing secret-token', 'SecurityError')
+      })
 
       const tm2 = new TokenManager()
+      storeTokens(tm2, tokens)
+      tm2.clear()
 
       expect(tm2.getAccessToken()).toBeNull()
       expect(tm2.getPermissions()).toEqual([])
-      expect(sessionStorage.getItem('iam_tokens')).toBeNull()
-      expect(sessionStorage.getItem('iam_permissions')).toBeNull()
+      expect(getItem).not.toHaveBeenCalled()
+      expect(setItem).not.toHaveBeenCalled()
+      expect(removeItem).not.toHaveBeenCalled()
+    })
+
+    it('reports an unavailable sessionStorage read with a sanitized configuration error', () => {
+      vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+        throw new DOMException('blocked read containing secret-token', 'SecurityError')
+      })
+
+      expect(() => new TokenManager({ storage: 'sessionStorage' })).toThrow(IamConfigurationError)
+      expect(() => new TokenManager({ storage: 'sessionStorage' })).toThrow('Token session storage read failed')
+      try {
+        new TokenManager({ storage: 'sessionStorage' })
+      } catch (error) {
+        expect(String(error)).not.toContain('secret-token')
+        expect(String(error)).not.toContain('SecurityError')
+      }
+    })
+
+    it('does not publish tokens or authorization when sessionStorage writes fail', () => {
+      const tm2 = new TokenManager({ storage: 'sessionStorage' })
+      const originalTokens = makeTokenSet({ refresh_token: 'original-refresh' })
+      storeTokens(tm2, originalTokens)
+      tm2.setAuthorization(['member'], ['orders:read'])
+      const handler = vi.fn()
+      tm2.setTokensChangedHandler(handler)
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        throw new DOMException('blocked write containing rotated-refresh', 'SecurityError')
+      })
+
+      expect(() => storeTokens(tm2, makeTokenSet({ refresh_token: 'rotated-refresh' })))
+        .toThrow(IamConfigurationError)
+      expect(tm2.getRefreshToken()).toBe('original-refresh')
+      expect(tm2.getRoles()).toEqual(['member'])
+      expect(tm2.getPermissions()).toEqual(['orders:read'])
+      expect(handler).not.toHaveBeenCalled()
+
+      expect(() => tm2.setAuthorization(['admin'], ['orders:write']))
+        .toThrow('Token session storage write failed')
+      expect(tm2.getRoles()).toEqual(['member'])
+      expect(tm2.getPermissions()).toEqual(['orders:read'])
+      expect(handler).not.toHaveBeenCalled()
     })
 
     it('persists tokens and permissions to sessionStorage when explicitly enabled', () => {
@@ -457,11 +511,38 @@ describe('TokenManager', () => {
       JSON.stringify({ version: 2, tokens: makeTokenSet(), roles: [], permissions: [], refreshProvenance: null }),
       JSON.stringify({ version: 3, tokens: makeTokenSet(), roles: [], permissions: [], authenticationProvenance: 'UNKNOWN', refreshProvenance: 'OAUTH_TOKEN_ENDPOINT' }),
       JSON.stringify({ version: 3, tokens: makeTokenSet(), roles: [], permissions: [], authenticationProvenance: 'OAUTH_AUTHORIZATION_CODE', refreshProvenance: 'UNKNOWN' }),
-    ])('clears malformed, unknown-version, or invalid-provenance sessions', raw => {
+    ])('rejects and clears malformed, unknown-version, or invalid-provenance sessions', raw => {
       sessionStorage.setItem('axis_iam_session', raw)
-      const tm2 = new TokenManager({ storage: 'sessionStorage' })
-      expect(tm2.getAccessToken()).toBeNull()
+      let thrown: unknown
+      try {
+        new TokenManager({ storage: 'sessionStorage' })
+      } catch (error) {
+        thrown = error
+      }
+      expect(thrown).toBeInstanceOf(IamConfigurationError)
+      expect(String(thrown)).toContain('Stored token session is invalid')
       expect(sessionStorage.getItem('axis_iam_session')).toBeNull()
+    })
+
+    it('preserves the primary corrupt-session error when best-effort cleanup fails', () => {
+      sessionStorage.setItem('axis_iam_session', '{"access_token":"secret-token"')
+      const originalRemoveItem = Storage.prototype.removeItem
+      vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(function (this: Storage, key: string) {
+        if (key === 'axis_iam_session') {
+          throw new DOMException('blocked removal containing secret-token', 'SecurityError')
+        }
+        return originalRemoveItem.call(this, key)
+      })
+
+      try {
+        new TokenManager({ storage: 'sessionStorage' })
+        expect.unreachable('corrupt session must be rejected')
+      } catch (error) {
+        expect(error).toBeInstanceOf(IamConfigurationError)
+        expect(String(error)).toContain('Stored token session is invalid')
+        expect(String(error)).not.toContain('secret-token')
+        expect(String(error)).not.toContain('SecurityError')
+      }
     })
 
     it('deletes legacy keys without reading or migrating them', () => {
@@ -485,6 +566,35 @@ describe('TokenManager', () => {
       expect(sessionStorage.getItem('axis_iam_session')).toBeNull()
       expect(sessionStorage.getItem('iam_tokens')).toBeNull()
       expect(sessionStorage.getItem('iam_permissions')).toBeNull()
+    })
+
+    it('clears memory authority before reporting a persistent removal failure', () => {
+      const tm2 = new TokenManager({ storage: 'sessionStorage' })
+      storeTokens(tm2, makeTokenSet())
+      tm2.setAuthorization(['admin'], ['orders:read'])
+      const handler = vi.fn()
+      tm2.setTokensChangedHandler(handler)
+      const originalRemoveItem = Storage.prototype.removeItem
+      vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(function (this: Storage, key: string) {
+        if (key === 'axis_iam_session') {
+          throw new DOMException('blocked removal containing secret-token', 'SecurityError')
+        }
+        return originalRemoveItem.call(this, key)
+      })
+
+      let thrown: unknown
+      try {
+        tm2.clear()
+      } catch (error) {
+        thrown = error
+      }
+      expect(thrown).toBeInstanceOf(IamConfigurationError)
+      expect(String(thrown)).toContain('Token session storage removal failed')
+      expect(tm2.getAccessToken()).toBeNull()
+      expect(tm2.getRoles()).toEqual([])
+      expect(tm2.getPermissions()).toEqual([])
+      expect(tm2.getAuthenticationProvenance()).toBeNull()
+      expect(handler).toHaveBeenCalledWith(null)
     })
   })
 })

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { OAuthClient } from './oauth-client'
 import type { TokenManager } from './token-manager'
-import { IamApiError } from './types'
+import { IamApiError, IamConfigurationError } from './types'
 import type { AccountLoginMethod, AuthMethodIdpProviderResponse, IamConfig, IdentityProviderOption, LinkableIdentityProvider, OIDCConfiguration, PublicAuthMethodsResponse, TokenSet } from './types'
 
 const ISSUER = 'https://auth.example.com'
@@ -265,6 +265,32 @@ describe('OAuthClient', () => {
       })
       expect(sessionStorage.getItem('iam_tokens')).toBeNull()
       expect(sessionStorage.getItem('iam_permissions')).toBeNull()
+    })
+
+    it('propagates typed sessionStorage read, write, and removal failures', () => {
+      const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+        throw new DOMException('private browser read detail', 'SecurityError')
+      })
+      expect(() => new OAuthClient({ ...defaultConfig, tokenStorage: 'sessionStorage' }))
+        .toThrow(IamConfigurationError)
+      getItem.mockRestore()
+
+      const persistentClient = new OAuthClient({ ...defaultConfig, tokenStorage: 'sessionStorage' })
+      const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        throw new DOMException('private browser write detail', 'SecurityError')
+      })
+      expect(() => storeOAuthTokens(persistentClient.tokenManager, makeTokenSet()))
+        .toThrow(IamConfigurationError)
+      expect(persistentClient.isAuthenticated()).toBe(false)
+      setItem.mockRestore()
+
+      storeOAuthTokens(persistentClient.tokenManager, makeTokenSet())
+      const removeItem = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
+        throw new DOMException('private browser removal detail', 'SecurityError')
+      })
+      expect(() => persistentClient.tokenManager.clear()).toThrow(IamConfigurationError)
+      expect(persistentClient.isAuthenticated()).toBe(false)
+      removeItem.mockRestore()
     })
   })
 
@@ -1543,7 +1569,7 @@ describe('OAuthClient', () => {
       expect(client.isAuthenticated()).toBe(false)
     })
 
-    it('fails closed without a request when persisted provenance is invalid', async () => {
+    it('fails closed during construction when persisted provenance is invalid', () => {
       sessionStorage.setItem('axis_iam_session', JSON.stringify({
         version: 3,
         tokens: makeTokenSet(),
@@ -1552,14 +1578,10 @@ describe('OAuthClient', () => {
         authenticationProvenance: 'UNKNOWN',
         refreshProvenance: 'UNKNOWN',
       }))
-      const restoredClient = new OAuthClient({
+      expect(() => new OAuthClient({
         ...defaultConfig,
         tokenStorage: 'sessionStorage',
-      })
-
-      await expect(restoredClient.logout({ redirect: true })).rejects.toThrow(
-        'Logout requires an authenticated session with explicit authentication provenance',
-      )
+      })).toThrow(IamConfigurationError)
 
       expect(fetchMock).not.toHaveBeenCalled()
       expect(sessionStorage.getItem('axis_iam_session')).toBeNull()
