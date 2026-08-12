@@ -28,7 +28,10 @@
       }
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "sideEffects": false,
   "scripts": {
     "build": "tsup",
@@ -41,6 +44,7 @@
     "lru-cache": "^11.0.2"
   },
   "devDependencies": {
+    "@types/node": "^25.6.0",
     "tsup": "^8.0.0",
     "typescript": "^5.7.0",
     "vitest": "^4.0.0"
@@ -49,9 +53,17 @@
     "typescript": ">=5.0"
   },
   "peerDependenciesMeta": {
-    "typescript": { "optional": true }
+    "typescript": {
+      "optional": true
+    }
   },
-  "keywords": ["iam", "auth", "jwt", "rbac", "permissions"],
+  "keywords": [
+    "iam",
+    "auth",
+    "jwt",
+    "rbac",
+    "permissions"
+  ],
   "license": "Apache-2.0",
   "publishConfig": {
     "access": "public",
@@ -64,5 +76,7 @@
     "directory": "packages/core"
   },
   "homepage": "https://github.com/axis-iam/vertex-sdk-js#readme",
-  "bugs": { "url": "https://github.com/axis-iam/vertex-sdk-js/issues" }
+  "bugs": {
+    "url": "https://github.com/axis-iam/vertex-sdk-js/issues"
+  }
 }
