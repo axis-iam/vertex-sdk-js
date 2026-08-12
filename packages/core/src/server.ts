@@ -1,6 +1,24 @@
 // Server-only exports for confidential Node.js, CLI, and backend runtimes.
 export type { IamSdkConfig } from './config.js'
 
+export { WebAuthClient, WebAuthError } from './web-auth/web-auth-client.js'
+export type {
+  WebAuthErrorCode,
+  WebAuthClientConfig,
+  WebAuthTransaction,
+  WebAuthTokenSet,
+  WebAuthSession,
+  WebAuthTransactionStore,
+  WebAuthSessionStore,
+  WebAuthBeginLoginResult,
+  WebAuthCallbackInput,
+  WebAuthCallbackResult,
+  WebAuthRefreshInput,
+  WebAuthRefreshResult,
+  WebAuthLogoutInput,
+  WebAuthLogoutResult,
+} from './web-auth/web-auth-client.js'
+
 export { JwtVerifier, parseRolesClaim } from './jwt/verifier.js'
 export type { IamJwtPayload } from './jwt/verifier.js'
 

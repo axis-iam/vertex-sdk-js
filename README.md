@@ -52,7 +52,7 @@ Create one business Application for your product, then create the ApplicationCli
 
 `@axis-iam/vertex/server`, Express, NestJS, and codegen are server-side surfaces. They verify tokens, resolve permissions through confidential clients, call management APIs, or sync permission definitions. They are not browser login flows and do not replace the Axis Vertex login page.
 
-The `@axis-iam/vertex-react/server` middleware still contains a limited `/login?client_id=...&redirect_uri=...` redirect for unauthenticated protected routes. It is not a complete WEB Authorization Code login helper under current Axis Vertex behavior because it does not generate/store `state`, does not generate/store a PKCE verifier, does not send `code_challenge_method=S256`, and does not handle confidential token exchange with `clientSecret` plus `code_verifier`. Do not use it as the recommended WEB login implementation; use the React SPA PKCE flow, or implement a dedicated server-side WEB/BFF login flow with secret + PKCE.
+The `@axis-iam/vertex-react/server` middleware still contains a limited `/login?client_id=...&redirect_uri=...` redirect for unauthenticated protected routes. It is not a complete WEB Authorization Code login helper under current Axis Vertex behavior because it does not generate/store `state`, does not generate/store a PKCE verifier, does not send `code_challenge_method=S256`, and does not handle confidential token exchange with `clientSecret` plus `code_verifier`. Do not use it as the recommended WEB login implementation. Use the React SPA PKCE flow for public browser clients, or the supported `WebAuthClient` / Express `createWebAuth` flow below for confidential WEB/BFF clients.
 
 ## Quick Start
 
@@ -149,6 +149,45 @@ app.post('/posts', requirePerm(MyPermissions.POSTS_CREATE), (req, res) => {
 ```
 
 See full example: [`examples/express-demo/`](./examples/express-demo/)
+
+### Express WEB/BFF Hosted Login
+
+`createWebAuth` implements confidential Authorization Code + S256 PKCE while keeping the client secret, verifier,
+and complete token set on the server. The browser receives only opaque HttpOnly cookies. Applications must provide
+durable transaction and session stores with the atomic operations declared by `@axis-iam/vertex/server`; the SDK
+does not select an in-memory or persistence fallback.
+
+```ts
+import express from 'express'
+import { createWebAuth } from '@axis-iam/vertex-express'
+
+const webAuth = createWebAuth({
+  issuer: 'https://auth.example.com',
+  clientId: process.env.IAM_WEB_CLIENT_ID!,
+  clientSecret: process.env.IAM_WEB_CLIENT_SECRET!,
+  applicationOrigin: 'https://app.example.com',
+  redirectUri: 'https://app.example.com/auth/callback',
+  successRedirect: '/dashboard',
+  postLogoutRedirect: '/signed-out',
+  transactionStore, // durable save + atomic consume
+  sessionStore,     // create/read + revision-checked replace + delete
+})
+
+const app = express()
+app.get('/auth/login', webAuth.login)
+app.get('/auth/callback', webAuth.callback)
+app.post('/auth/refresh', webAuth.refresh)
+app.post('/auth/logout', webAuth.logout)
+app.get('/api/me', webAuth.requireSession, async (req, res) => {
+  // accessToken is an explicit server-only request property. Never serialize it.
+  const profile = await loadProfile(req.webAuthSession!.accessToken)
+  res.json(profile)
+})
+```
+
+Cookies default to `Secure`, `HttpOnly`, and `SameSite=Lax`. Local HTTP development requires an explicit
+`secureCookies: false` override and non-`__Host-` / non-`__Secure-` cookie names. Success and post-logout redirects
+are fixed at construction and must remain on `applicationOrigin`.
 
 ### React SPA Phase 1 quickstart
 
