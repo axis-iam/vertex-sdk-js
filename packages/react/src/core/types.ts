@@ -271,6 +271,23 @@ export class IamConfigurationError extends Error {
   }
 }
 
+export type TokenRefreshFailureReason = 'SESSION_UNAVAILABLE' | 'SESSION_REJECTED' | 'INVALID_RESPONSE' | 'TEMPORARY_FAILURE' | 'CONFIGURATION_ERROR'
+
+/** Safe refresh failure metadata. Never retains a raw response or transport cause. */
+export class IamTokenRefreshError extends Error {
+  readonly code = 'TOKEN_REFRESH_FAILED'
+
+  constructor(
+    readonly reason: TokenRefreshFailureReason,
+    readonly retryable: boolean,
+    readonly status?: number,
+    readonly retryAfterSeconds?: number,
+  ) {
+    super(`Token refresh failed: ${reason}`)
+    this.name = 'IamTokenRefreshError'
+  }
+}
+
 export function isIamApiError(error: unknown): error is IamApiError {
   return error instanceof IamApiError
 }

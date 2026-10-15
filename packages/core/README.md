@@ -5,6 +5,14 @@ Core Axis Vertex runtime for TypeScript applications. It provides the browser-sa
 
 Install the first beta with `npm install @axis-iam/vertex@beta`.
 
+## Framework-neutral session coordination
+
+The browser-safe root exports `SessionLifecycle<T>` and `SessionInvalidatedError`. `run` shares the same promise while
+an operation is pending. `invalidate()` advances the generation, releases that flight and cancels its timer; callers
+must check the supplied generation with `assertCurrent` after every await and before applying side effects.
+`scheduleAt` takes an absolute millisecond deadline and bounds individual timers to the platform limit. The class
+owns no tokens, storage or transport; adapters enforce those contracts. React's TokenManager composes this engine.
+
 ## Confidential WEB/BFF authentication
 
 Import `WebAuthClient` and its store contracts from `@axis-iam/vertex/server`. The client implements OIDC discovery,

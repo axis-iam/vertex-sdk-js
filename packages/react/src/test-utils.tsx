@@ -89,7 +89,8 @@ export function setupMockFetch(permissions?: string[]): void {
 export function storeTestTokens(jwt?: string, permissions?: string[], roles: string[] = ['admin']): void {
   const token = jwt ?? makeTestJwt()
   sessionStorage.setItem('axis_iam_session', JSON.stringify({
-    version: 3,
+    version: 4,
+    expiresAt: Date.now() + 3600_000,
     tokens: {
       access_token: token,
       refresh_token: 'rt-test',

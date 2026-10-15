@@ -98,6 +98,19 @@ describe('useAuth', () => {
     expect(typeof token).toBe('string')
   })
 
+  it('exposes safe temporary refresh errors without signing out a valid session', async () => {
+    storeTestTokens()
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ error: 'unavailable', message: 'provider-secret' }), { status: 503 }))
+    await act(async () => {
+      await expect(result.current.refreshToken()).rejects.toMatchObject({ reason: 'TEMPORARY_FAILURE', retryable: true })
+    })
+    expect(result.current.isAuthenticated).toBe(true)
+    expect(result.current.tokenRefreshError).toMatchObject({ reason: 'TEMPORARY_FAILURE', retryable: true, status: 503 })
+    expect(JSON.stringify(result.current.tokenRefreshError)).not.toContain('provider-secret')
+  })
+
   it('exposes callback, continuation, and logout helpers', async () => {
     const { result } = renderHook(() => useAuth(), { wrapper })
     await act(async () => { vi.advanceTimersByTime(10) })

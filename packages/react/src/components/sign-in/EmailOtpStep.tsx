@@ -5,7 +5,7 @@ import { requestJson, requestNoContent } from '../../core/http-client'
 import type { IamUser } from '../../core/types'
 import { buttonStyle, errorStyle, inputStyle, labelStyle } from '../styles'
 import type { Appearance } from '../styles'
-import { completeWithStoredUser, storeTokensFromResponse, toError, useCountdown } from './sign-in-flow'
+import { completeWithStoredUser, storeTokensFromResponse, toError, useCountdown, useSessionOperation } from './sign-in-flow'
 import { useIamUi } from '../../provider/IamUiProvider'
 import { localizeError } from '../../localization'
 
@@ -42,6 +42,7 @@ export function EmailOtpStep({ client, appearance: a, email, onSuccess, onError 
   onError?: (error: Error) => void
 }) {
   const { localization: l } = useIamUi()
+  const { begin, isMounted } = useSessionOperation(client, email)
   const [state, dispatch] = useReducer(reducer, { phase: 'idle', error: null })
   const [code, setCode] = useState('')
   const [countdown, setCountdown] = useState(0)
@@ -68,6 +69,7 @@ export function EmailOtpStep({ client, appearance: a, email, onSuccess, onError 
 
   const verifyCode = useCallback(async (e: FormEvent) => {
     e.preventDefault()
+    const isCurrent = begin()
     dispatch({ type: 'verify' })
     try {
       const config = await client.discover()
@@ -75,14 +77,16 @@ export function EmailOtpStep({ client, appearance: a, email, onSuccess, onError 
         method: 'POST',
         json: { email, code, client_id: client.config.clientId },
       })
+      if (!isCurrent()) return
       storeTokensFromResponse(client, data)
       completeWithStoredUser(client, onSuccess)
     } catch (err) {
+      if (!isCurrent()) return
       const next = toError(err, l.errors.signInFailed)
       dispatch({ type: 'error', message: localizeError(next, l, 'signInFailed') })
       onError?.(next)
     }
-  }, [client, code, email, l, onSuccess, onError])
+  }, [begin, isMounted, client, code, email, l, onSuccess, onError])
 
   const sent = state.phase === 'sent' || state.phase === 'verifying'
   const loading = state.phase === 'sending' || state.phase === 'verifying'

@@ -5,7 +5,7 @@ import { requestJson } from '../../core/http-client'
 import type { IamUser } from '../../core/types'
 import { buttonStyle, errorStyle, inputStyle, labelStyle } from '../styles'
 import type { Appearance } from '../styles'
-import { completeWithStoredUser, isLikelyEmail, storeTokensFromResponse, toError, useCountdown } from './sign-in-flow'
+import { completeWithStoredUser, isLikelyEmail, storeTokensFromResponse, toError, useCountdown, useSessionOperation } from './sign-in-flow'
 import { useIamUi } from '../../provider/IamUiProvider'
 import { localizeError } from '../../localization'
 
@@ -18,6 +18,7 @@ export function PasswordStep({ client, appearance: a, identifier, onSuccess, onE
   resendCooldownSeconds: number
 }) {
   const { localization: l } = useIamUi()
+  const { begin, isMounted } = useSessionOperation(client, identifier)
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [verificationEmail, setVerificationEmail] = useState<string | null>(null)
@@ -29,6 +30,7 @@ export function PasswordStep({ client, appearance: a, identifier, onSuccess, onE
 
   const handleSubmit = useCallback(async (e: FormEvent) => {
     e.preventDefault()
+    const isCurrent = begin()
     setError(null)
     setVerificationEmail(null)
     setResendStatus('idle')
@@ -40,9 +42,11 @@ export function PasswordStep({ client, appearance: a, identifier, onSuccess, onE
         method: 'POST',
         json: { identifier, password, client_id: client.config.clientId },
       })
+      if (!isCurrent()) return
       storeTokensFromResponse(client, data)
       completeWithStoredUser(client, onSuccess)
     } catch (err) {
+      if (!isCurrent()) return
       const next = toError(err, l.errors.signInFailed)
       if ('code' in next && next.code === 'EMAIL_VERIFICATION_REQUIRED') {
         const email = identifier.trim()
@@ -51,9 +55,9 @@ export function PasswordStep({ client, appearance: a, identifier, onSuccess, onE
       setError(localizeError(next, l, 'signInFailed'))
       onError?.(next)
     } finally {
-      setLoading(false)
+      if (isMounted()) setLoading(false)
     }
-  }, [client, identifier, password, onSuccess, onError, l])
+  }, [begin, isMounted, client, identifier, password, onSuccess, onError, l])
 
   const resendVerification = useCallback(async () => {
     if (!verificationEmail) return

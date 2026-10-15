@@ -257,7 +257,7 @@ describe('OAuthClient', () => {
       persistentClient.tokenManager.setPermissions(['orders:read'])
 
       expect(JSON.parse(sessionStorage.getItem('axis_iam_session') ?? '{}')).toMatchObject({
-        version: 3,
+        version: 4, expiresAt: Date.now() + 3600_000,
         roles: [],
         permissions: ['orders:read'],
         authenticationProvenance: 'OAUTH_AUTHORIZATION_CODE',
@@ -781,7 +781,7 @@ describe('OAuthClient', () => {
       const persistentClient = new OAuthClient({ ...defaultConfig, tokenStorage: 'sessionStorage' })
       const exp = Math.floor(Date.now() / 1000) + 120
       persistentClient.tokenManager.store(makeTokenSet({
-        access_token: makeJwt({ sub: 'user-1', roles: ['old-role'], exp }),
+        access_token: makeJwt({ sub: 'user-1', roles: ['old-role'], exp }), expires_in: 120,
       }), 'OAUTH_AUTHORIZATION_CODE', 'OAUTH_TOKEN_ENDPOINT')
       persistentClient.tokenManager.setAuthorization(['old-role'], ['orders:read'])
       fetchMock
@@ -845,7 +845,7 @@ describe('OAuthClient', () => {
 
       await expect(client.refreshToken()).resolves.toEqual(newTokens)
 
-      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith('/api/v1/auth/token/refresh'))).toHaveLength(1)
       expect(fetchMock).toHaveBeenCalledWith(`${ISSUER}/api/v1/auth/token/refresh`, expect.objectContaining({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -865,7 +865,7 @@ describe('OAuthClient', () => {
         refresh_token: 'rt-rotated',
       })
       persistentClient.tokenManager.store(
-        makeTokenSet({ access_token: makeJwt({ sub: 'user-1', exp }) }),
+        makeTokenSet({ access_token: makeJwt({ sub: 'user-1', exp }), expires_in: 60 }),
         'DIRECT_AUTH',
         'DIRECT_AUTH',
       )
@@ -896,7 +896,7 @@ describe('OAuthClient', () => {
 
     it('throws when no refresh token available', async () => {
       // No tokens stored at all
-      await expect(client.refreshToken()).rejects.toThrow('No refresh token available')
+      await expect(client.refreshToken()).rejects.toMatchObject({ reason: 'SESSION_UNAVAILABLE', retryable: false })
     })
 
     it('throws on refresh failure', async () => {
@@ -912,7 +912,7 @@ describe('OAuthClient', () => {
         status: 401,
       })
 
-      await expect(client.refreshToken()).rejects.toThrow('IAM API request failed (401)')
+      await expect(client.refreshToken()).rejects.toMatchObject({ reason: 'SESSION_REJECTED', status: 401, retryable: false })
       expect(fetchMock.mock.calls.some(call => String(call[0]).includes('/api/v1/auth/token/refresh'))).toBe(false)
     })
 
@@ -920,11 +920,62 @@ describe('OAuthClient', () => {
       client.tokenManager.store(makeTokenSet(), 'DIRECT_AUTH', 'DIRECT_AUTH')
       fetchMock.mockResolvedValueOnce({ ok: false, status: 401 })
 
-      await expect(client.refreshToken()).rejects.toThrow('IAM API request failed (401)')
+      await expect(client.refreshToken()).rejects.toMatchObject({ reason: 'SESSION_REJECTED', status: 401, retryable: false })
 
       expect(fetchMock).toHaveBeenCalledTimes(1)
       expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/v1/auth/token/refresh')
       expect(fetchMock.mock.calls.some(call => String(call[0]).endsWith('/token'))).toBe(false)
+    })
+  })
+
+  describe('session response ordering', () => {
+    it.each([200, 401])('does not apply an old permission response (%s) to a new login', async status => {
+      let complete!: (response: Response) => void
+      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+        if (String(input).includes('openid-configuration')) return new Response(JSON.stringify(mockOidcConfig))
+        return await new Promise<Response>(resolve => { complete = resolve })
+      })
+      storeOAuthTokens(client.tokenManager, makeTokenSet())
+      const pending = client.fetchPermissions()
+      const rejected = expect(pending).rejects.toMatchObject({ code: 'SESSION_INVALIDATED' })
+      await vi.advanceTimersByTimeAsync(0)
+      storeDirectTokens(client.tokenManager, makeTokenSet({ refresh_token: 'new-session' }))
+      client.tokenManager.setAuthorization(['new-role'], ['new:permission'])
+      complete(new Response(JSON.stringify({ applicationId: 'app-1', organizationId: null, roles: ['old-role'], permissions: ['old:permission'] }), { status }))
+      await rejected
+      expect(client.tokenManager.getRefreshToken()).toBe('new-session')
+      expect(client.tokenManager.getPermissions()).toEqual(['new:permission'])
+    })
+
+    it('keeps a new login when an older Direct logout completes', async () => {
+      let complete!: (response: Response) => void
+      fetchMock.mockImplementation(() => new Promise<Response>(resolve => { complete = resolve }))
+      storeDirectTokens(client.tokenManager, makeTokenSet())
+      const pending = client.logout({ redirect: false })
+      const rejected = expect(pending).rejects.toMatchObject({ code: 'SESSION_INVALIDATED' })
+      expect(client.getAccessToken()).toBeNull()
+      storeOAuthTokens(client.tokenManager, makeTokenSet({ refresh_token: 'new-session' }))
+      complete(new Response(null, { status: 204 }))
+      await rejected
+      expect(client.tokenManager.getRefreshToken()).toBe('new-session')
+    })
+
+    it('uses one Direct request for concurrent manual refresh callers', async () => {
+      let complete!: (response: Response) => void
+      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+        if (String(input).includes('openid-configuration')) return new Response(JSON.stringify(mockOidcConfig))
+        if (String(input).endsWith('/permissions')) return new Response(JSON.stringify({ applicationId: 'app-1', organizationId: null, roles: ['member'], permissions: [] }))
+        return await new Promise<Response>(resolve => { complete = resolve })
+      })
+      storeDirectTokens(client.tokenManager, makeTokenSet())
+      const first = client.refreshToken()
+      expect(client.refreshToken()).toBe(first)
+      await Promise.resolve()
+      complete(new Response(JSON.stringify(makeTokenSet({ refresh_token: 'rotated' }))))
+      await first
+      expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith('/token/refresh'))).toHaveLength(1)
+      expect(client.tokenManager.getRefreshToken()).toBe('rotated')
+      expect(client.tokenManager.getRoles()).toEqual(['member'])
     })
   })
 
@@ -1571,7 +1622,7 @@ describe('OAuthClient', () => {
 
     it('fails closed during construction when persisted provenance is invalid', () => {
       sessionStorage.setItem('axis_iam_session', JSON.stringify({
-        version: 3,
+        version: 4, expiresAt: Date.now() + 3600_000,
         tokens: makeTokenSet(),
         roles: [],
         permissions: [],
@@ -1666,7 +1717,7 @@ describe('OAuthClient', () => {
       storeOAuthTokens(client.tokenManager, makeTokenSet())
       fetchMock.mockRejectedValueOnce(new Error('discovery unavailable'))
 
-      await expect(client.logout({ redirect: true })).resolves.toBeUndefined()
+      await expect(client.logout({ redirect: true })).rejects.toBeInstanceOf(Error)
 
       expect(client.isAuthenticated()).toBe(false)
     })

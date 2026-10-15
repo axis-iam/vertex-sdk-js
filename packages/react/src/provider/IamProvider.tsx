@@ -9,6 +9,8 @@ import type {
   LogoutUrlOptions,
   RedirectCallbackOptions,
   RedirectCallbackResult,
+  IamTokenRefreshError,
+  TokenSet,
 } from '../core/types'
 import { IamUiProvider } from './IamUiProvider'
 import type { IamUiConfig } from './IamUiProvider'
@@ -24,6 +26,10 @@ export interface IamContextValue {
   initializationError: Error | null
   /** Most recent permissions fetch error. Permissions remain fail-closed on error. */
   permissionFetchError: Error | null
+  /** Safe failure metadata for automatic or manual refresh. */
+  tokenRefreshError: IamTokenRefreshError | null
+  /** Refresh and atomically apply tokens and authoritative authorization. */
+  refreshToken: () => Promise<TokenSet>
   /** Redirect to login page (Authorization Code + PKCE flow) */
   login: () => Promise<void>
   /** Handle OAuth callback (exchange code for tokens) */
@@ -54,47 +60,52 @@ export function IamProvider({ children, locale, localization, colorScheme, appea
   const [isLoaded, setIsLoaded] = useState(false)
   const [initializationError, setInitializationError] = useState<Error | null>(null)
   const [permissionFetchError, setPermissionFetchError] = useState<Error | null>(null)
+  const [tokenRefreshError, setTokenRefreshError] = useState<IamTokenRefreshError | null>(null)
 
   // Initialize OAuthClient once
   if (!clientRef.current) {
-    clientRef.current = new OAuthClient(config)
+    clientRef.current = new OAuthClient(config, { startPaused: true })
   }
   const client = clientRef.current
 
   // Listen for token changes
   useEffect(() => {
+    let active = true
+    client.tokenManager.resume()
     client.tokenManager.setTokensChangedHandler((newUser) => {
       setUser(newUser)
     })
     client.tokenManager.setPermissionErrorChangedHandler((nextPermissionError) => {
       setPermissionFetchError(nextPermissionError)
     })
+    client.tokenManager.setRefreshErrorChangedHandler(setTokenRefreshError)
 
     // Check existing tokens on mount
     const existingUser = client.tokenManager.getUser()
-    if (existingUser) {
-      setUser(existingUser)
-    }
+    setUser(existingUser)
+    setPermissionFetchError(client.tokenManager.getLastPermissionError())
+    setTokenRefreshError(client.tokenManager.getLastRefreshError())
 
     // Pre-fetch OIDC discovery, then fetch permissions if authenticated
     client.discover()
       .then(async () => {
+        if (!active) return
         setInitializationError(null)
         if (client.isAuthenticated()) {
           await client.fetchPermissions()
-          setPermissionFetchError(client.tokenManager.getLastPermissionError())
+          if (active) setPermissionFetchError(client.tokenManager.getLastPermissionError())
         }
       })
       .catch((err: unknown) => {
-        setInitializationError(err instanceof Error ? err : new Error('IAM initialization failed'))
+        if (active) setInitializationError(err instanceof Error ? err : new Error('IAM initialization failed'))
       })
       .finally(() => {
-        setIsLoaded(true)
+        if (active) setIsLoaded(true)
       })
 
     return () => {
-      client.tokenManager.setTokensChangedHandler(() => {})
-      client.tokenManager.setPermissionErrorChangedHandler(() => {})
+      active = false
+      client.dispose()
     }
   }, [client])
 
@@ -130,12 +141,16 @@ export function IamProvider({ children, locale, localization, colorScheme, appea
     return client.getAccessToken()
   }, [client])
 
+  const refreshToken = useCallback(() => client.refreshToken(), [client])
+
   const value = useMemo<IamContextValue>(() => ({
     user,
     isLoaded,
     isAuthenticated: !!user,
     initializationError,
     permissionFetchError,
+    tokenRefreshError,
+    refreshToken,
     login,
     handleCallback,
     handleRedirectCallback,
@@ -144,7 +159,7 @@ export function IamProvider({ children, locale, localization, colorScheme, appea
     logout,
     getAccessToken,
     client,
-  }), [user, isLoaded, initializationError, permissionFetchError, login, handleCallback, handleRedirectCallback, getAppContinuation, getLogoutUrl, logout, getAccessToken, client])
+  }), [user, isLoaded, initializationError, permissionFetchError, tokenRefreshError, refreshToken, login, handleCallback, handleRedirectCallback, getAppContinuation, getLogoutUrl, logout, getAccessToken, client])
 
   return (
     <IamUiProvider locale={locale} localization={localization} colorScheme={colorScheme} appearance={appearance} darkAppearance={darkAppearance}>

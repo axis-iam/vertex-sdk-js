@@ -77,19 +77,13 @@ export class OAuthClient {
   private readonly registrationGrants: RegistrationGrantClient
   readonly tokenManager: TokenManager
 
-  constructor(config: IamConfig) {
+  constructor(config: IamConfig, options: { startPaused?: boolean } = {}) {
     this.config = config
     this.clientId = config.clientId
     this.publicMetadata = new OAuthPublicMetadataClient(config)
-    this.tokenManager = new TokenManager({ storage: config.tokenStorage })
-    this.tokenManager.setRefreshHandler(() => this.refreshToken())
-    this.tokenManager.setPermissionsRefreshHandler(async () => {
-      await this.fetchPermissions()
-      return {
-        roles: this.tokenManager.getRoles(),
-        permissions: this.tokenManager.getPermissions(),
-      }
-    })
+    this.tokenManager = new TokenManager({ storage: config.tokenStorage, startPaused: options.startPaused })
+    this.tokenManager.setRefreshHandler(() => this.requestTokenRefresh())
+    this.tokenManager.setPermissionsRefreshHandler(() => this.fetchAuthorizationState())
     this.accountLinking = new OAuthAccountLinkingClient({
       discover: () => this.discover(),
       getAccessToken: () => this.tokenManager.isAuthenticated()
@@ -273,6 +267,7 @@ export class OAuthClient {
   }
 
   async handleCallback(code: string, state: string): Promise<TokenSet> {
+    const generation = this.tokenManager.generation
     const codeVerifier = consumeAuthorizationCodeVerifier(state)
 
     const config = await this.discover()
@@ -284,6 +279,7 @@ export class OAuthClient {
       redirectUri: this.resolveRedirectUri(),
       codeVerifier,
     })
+    this.tokenManager.assertCurrent(generation)
     this.tokenManager.store(
       tokens,
       'OAUTH_AUTHORIZATION_CODE',
@@ -345,15 +341,18 @@ export class OAuthClient {
    * Endpoint: GET /api/v1/auth/me/permissions (current-user permissions)
    */
   async fetchPermissions(): Promise<string[]> {
+    const generation = this.tokenManager.generation
     const token = this.tokenManager.getAccessToken()
     if (!token) return []
 
     try {
       const authorization = await this.fetchAuthorizationState()
+      this.tokenManager.assertCurrent(generation, token)
       this.tokenManager.setAuthorization(authorization.roles, authorization.permissions)
       this.tokenManager.setLastPermissionError(null)
       return [...authorization.permissions]
     } catch (err) {
+      this.tokenManager.assertCurrent(generation, token)
       const normalized = normalizeOAuthError(err)
       if (normalized instanceof IamApiError && normalized.status === 401) {
         this.tokenManager.clear()
@@ -403,7 +402,11 @@ export class OAuthClient {
 
   // --- Token Refresh ---
 
-  async refreshToken(): Promise<TokenSet> {
+  refreshToken(): Promise<TokenSet> {
+    return this.tokenManager.refresh()
+  }
+
+  private async requestTokenRefresh(): Promise<TokenSet> {
     const refreshToken = this.tokenManager.getRefreshToken()
     if (!refreshToken) {
       throw new Error('No refresh token available')
@@ -459,16 +462,17 @@ export class OAuthClient {
       throw new Error('Logout requires an authenticated session with explicit authentication provenance')
     }
 
+    // Invalidate pending work before awaiting revocation/discovery. A new login owns new state.
+    this.tokenManager.clear()
+    const generation = this.tokenManager.generation
+
     if (authenticationProvenance === 'DIRECT_AUTH') {
-      try {
-        await logoutDirectAuth({
-          issuer: this.config.issuerUri,
-          accessToken,
-          refreshToken,
-        })
-      } finally {
-        this.tokenManager.clear()
-      }
+      await logoutDirectAuth({
+        issuer: this.config.issuerUri,
+        accessToken,
+        refreshToken,
+      })
+      this.tokenManager.assertCurrent(generation)
       completeLogoutRedirect({
         options,
         logoutUrl: null,
@@ -480,19 +484,15 @@ export class OAuthClient {
     let logoutUrl: string | null = null
 
     if (redirect && idToken) {
-      try {
-        const config = await this.discover()
-        logoutUrl = buildLogoutUrl({
-          endSessionEndpoint: config.end_session_endpoint,
-          idToken,
-          postLogoutRedirectUri,
-        })
-      } catch {
-        logoutUrl = null
-      }
+      const config = await this.discover()
+      this.tokenManager.assertCurrent(generation)
+      logoutUrl = buildLogoutUrl({
+        endSessionEndpoint: config.end_session_endpoint,
+        idToken,
+        postLogoutRedirectUri,
+      })
     }
 
-    this.tokenManager.clear()
     completeLogoutRedirect({
       options,
       logoutUrl,
@@ -508,6 +508,10 @@ export class OAuthClient {
 
   getAccessToken(): string | null {
     return this.tokenManager.getAccessToken()
+  }
+
+  dispose(): void {
+    this.tokenManager.dispose()
   }
 
   // --- Internal ---

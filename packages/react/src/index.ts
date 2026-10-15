@@ -94,6 +94,7 @@ export { useDevices } from './security/useDevices'
 export type { Device } from './security/useDevices'
 
 // --- Core Types ---
+export { OAuthClient } from './core/oauth-client'
 export type {
   IamConfig,
   IamApiErrorDetails,
@@ -153,7 +154,9 @@ export type {
   VerifyEmailInput,
   SocialProviderConfig,
 } from './core/types'
-export { IamApiError, IamNetworkError, IamConfigurationError, isIamApiError, isStepUpRequiredError } from './core/types'
+export { IamApiError, IamNetworkError, IamConfigurationError, IamTokenRefreshError, isIamApiError, isStepUpRequiredError } from './core/types'
+export type { TokenRefreshFailureReason } from './core/types'
+export { SessionInvalidatedError } from '@axis-iam/vertex'
 export {
   ACCOUNT_LINK_STATE_KEY,
   clearPendingAccountLink,

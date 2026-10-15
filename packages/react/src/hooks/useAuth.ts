@@ -21,6 +21,8 @@ export function useAuth() {
     isAuthenticated,
     initializationError,
     permissionFetchError,
+    tokenRefreshError,
+    refreshToken,
     login,
     handleCallback,
     handleRedirectCallback,
@@ -41,6 +43,10 @@ export function useAuth() {
     initializationError,
     /** Most recent permission refresh error; permissions remain fail-closed */
     permissionFetchError,
+    /** Last automatic/manual refresh failure, with safe retry metadata. */
+    tokenRefreshError,
+    /** Shared refresh transaction; applies rotated tokens before resolving. */
+    refreshToken,
     /** Redirect to OAuth login */
     login,
     /** Handle OAuth callback — call this from your /callback route */

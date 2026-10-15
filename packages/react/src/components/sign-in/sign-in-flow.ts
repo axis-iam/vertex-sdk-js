@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import type { AuthMethodIdpProviderResponse, IamUser, PublicAuthMethodsResponse, SocialProviderConfig, TokenSet } from '../../core/types'
 import type { OAuthClient } from '../../core/oauth-client'
 import { parseTokenResponse } from '../../core/token-response'
@@ -229,4 +229,21 @@ function legacyProviderMatches(provider: AuthMethodIdpProviderResponse, legacy: 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+/** Bind a final authentication response to this mounted form and current session. */
+export function useSessionOperation(client: OAuthClient, identity: string) {
+  const mounted = useRef(true)
+  const sequence = useRef(0)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false; sequence.current += 1 }
+  }, [client, identity])
+  const begin = useCallback(() => {
+    const operation = ++sequence.current
+    const generation = client.tokenManager.generation
+    return () => mounted.current && sequence.current === operation && client.tokenManager.generation === generation
+  }, [client])
+  const isMounted = useCallback(() => mounted.current, [])
+  return { begin, isMounted }
 }

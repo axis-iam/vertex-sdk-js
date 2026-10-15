@@ -1,6 +1,9 @@
 // --- Config ---
 export type { IamBrowserConfig } from './config.js'
 
+// --- Session coordination ---
+export { SessionLifecycle, SessionInvalidatedError } from './session-lifecycle.js'
+
 // --- Authorization ---
 export type { PermissionKey, PermissionDefinition } from './authz/permission.js'
 export { permKey, toAuthority, fromAuthority } from './authz/permission.js'

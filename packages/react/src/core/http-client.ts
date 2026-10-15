@@ -14,12 +14,10 @@ export interface BrowserRequestOptions {
 const DEFAULT_TIMEOUT_MS = 10_000
 
 export async function requestJson<T>(url: string, options: BrowserRequestOptions = {}): Promise<T> {
-  const res = await request(url, { ...options, expectJson: true })
-  if (res.status === 204) {
-    return undefined as T
-  }
-  const data = await readJsonBody(res)
-  return data as T
+  return executeRequest(url, { ...options, expectJson: true }, async res => {
+    if (res.status === 204) return undefined as T
+    return await readJsonBody(res) as T
+  })
 }
 
 export async function requestNoContent(url: string, options: BrowserRequestOptions = {}): Promise<void> {
@@ -27,6 +25,10 @@ export async function requestNoContent(url: string, options: BrowserRequestOptio
 }
 
 export async function request(url: string, options: BrowserRequestOptions = {}): Promise<Response> {
+  return executeRequest(url, options, async res => res)
+}
+
+async function executeRequest<T>(url: string, options: BrowserRequestOptions, consume: (res: Response) => Promise<T>): Promise<T> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   try {
@@ -53,9 +55,9 @@ export async function request(url: string, options: BrowserRequestOptions = {}):
       throw await readIamApiError(res)
     }
 
-    return res
+    return await consume(res)
   } catch (err) {
-    if (err instanceof IamApiError) {
+    if (err instanceof IamApiError || err instanceof IamConfigurationError) {
       throw err
     }
     if (err instanceof DOMException && err.name === 'AbortError') {

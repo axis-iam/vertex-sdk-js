@@ -635,11 +635,15 @@ describe('SignIn', () => {
       })
       expect(verifyRequest?.[1]?.headers).not.toHaveProperty('X-Application-Id')
       expect(JSON.parse(sessionStorage.getItem('axis_iam_session') ?? '{}')).toMatchObject({
-        version: 3,
+        version: 4,
+        expiresAt: expect.any(Number),
         tokens: { access_token: jwt, refresh_token: 'sms-rt', token_type: 'Bearer', expires_in: 3600 },
         authenticationProvenance: 'DIRECT_AUTH',
         refreshProvenance: 'DIRECT_AUTH',
       })
+      const expiresAt = JSON.parse(sessionStorage.getItem('axis_iam_session')!).expiresAt as number
+      expect(expiresAt).toBeGreaterThan(Date.now() + 3599_000)
+      expect(expiresAt).toBeLessThanOrEqual(Date.now() + 3600_000)
       expect(onSuccess).toHaveBeenCalledTimes(1)
     })
 
@@ -921,11 +925,15 @@ describe('SignIn', () => {
       })
       expect(verifyRequest?.[1]?.headers).not.toHaveProperty('X-Application-Id')
       expect(JSON.parse(sessionStorage.getItem('axis_iam_session') ?? '{}')).toMatchObject({
-        version: 3,
+        version: 4,
+        expiresAt: expect.any(Number),
         tokens: { access_token: jwt, refresh_token: 'email-otp-rt', id_token: 'id-token', token_type: 'Bearer', expires_in: 3600 },
         authenticationProvenance: 'DIRECT_AUTH',
         refreshProvenance: 'DIRECT_AUTH',
       })
+      const expiresAt = JSON.parse(sessionStorage.getItem('axis_iam_session')!).expiresAt as number
+      expect(expiresAt).toBeGreaterThan(Date.now() + 3599_000)
+      expect(expiresAt).toBeLessThanOrEqual(Date.now() + 3600_000)
       expect(onSuccess).toHaveBeenCalledTimes(1)
       expect(screen.queryByText('Send magic link')).toBeNull()
     })
