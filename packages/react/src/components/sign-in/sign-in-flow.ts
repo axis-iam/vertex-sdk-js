@@ -98,7 +98,7 @@ export function normalizeDirectAuthTokenResponse(data: unknown): { tokens: Token
 
   const resp = data as DirectAuthTokenResponse
   if (resp.mfa_required === true || typeof resp.mfa_token === 'string') {
-    throw new Error('MFA verification is required, but embedded MFA verification is not yet supported')
+    throw new Error('A token response cannot contain an MFA challenge')
   }
 
   if (typeof resp.access_token !== 'string' || resp.access_token.length === 0 || typeof resp.expires_in !== 'number') {
@@ -199,13 +199,14 @@ export function getAvailableCredentialMethods(authMethods: PublicAuthMethodsResp
 export function getAvailableProviderOptions(
   authMethods: PublicAuthMethodsResponse,
   socialProviders: SocialProviderConfig[] = [],
+  intent: 'sign-in' | 'sign-up' = 'sign-in',
 ): AuthMethodIdpProviderResponse[] {
   if (!authMethods.socialLoginEnabled) return []
   return authMethods.idpProviders
     .filter((provider) => provider.enabled
       && provider.configured
       && provider.clickable
-      && provider.availableForLogin
+      && (intent === 'sign-up' ? provider.availableForSignup : provider.availableForLogin)
       && typeof provider.authorizationUrl === 'string'
       && provider.authorizationUrl.length > 0)
     .map((provider) => {

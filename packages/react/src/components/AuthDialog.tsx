@@ -7,6 +7,8 @@ import type { SignUpProps } from './SignUp'
 import type { Appearance } from './styles'
 import { useIamAppearance, useIamUi } from '../provider/IamUiProvider'
 import type { RegistrationGrantInput } from '../core/types'
+import { useAuthFlow } from '../hooks/useAuthFlow'
+import { BrandedAuthContent, useAuthBranding } from './sign-in/BrandedAuthContent'
 
 export type AuthDialogView = 'sign-in' | 'sign-up'
 
@@ -31,16 +33,24 @@ export interface AuthEntryButtonProps extends Omit<ButtonHTMLAttributes<HTMLButt
 export function SignInButton({ children, appearance, style, ...props }: AuthEntryButtonProps) {
   const { localization } = useIamUi()
   const [a] = useIamAppearance(appearance)
-  return <button {...props} type="button" data-axis-auth-view="sign-in" style={{ ...triggerStyle(a), ...style }}>{children ?? localization.auth.signIn}</button>
+  return (
+    <button {...props} type="button" data-axis-auth-view="sign-in" style={{ ...triggerStyle(a), ...style }}>
+      {children ?? localization.auth.signIn}
+    </button>
+  )
 }
 
 export function SignUpButton({ children, appearance, style, ...props }: AuthEntryButtonProps) {
   const { localization } = useIamUi()
   const [a] = useIamAppearance(appearance)
-  return <button {...props} type="button" data-axis-auth-view="sign-up" style={{ ...triggerStyle(a), ...style }}>{children ?? localization.signUp.signUp}</button>
+  return (
+    <button {...props} type="button" data-axis-auth-view="sign-up" style={{ ...triggerStyle(a), ...style }}>
+      {children ?? localization.signUp.signUp}
+    </button>
+  )
 }
 
-/** A controlled, responsive container that composes the existing SignIn and SignUp engines. */
+/** Controlled framing around the shared Embedded flow, or the existing Hosted launcher. */
 export function AuthDialog({
   open,
   onOpenChange,
@@ -54,137 +64,212 @@ export function AuthDialog({
   signUpProps,
   children,
 }: AuthDialogProps) {
-  const { localization } = useIamUi()
-  const [a, colorScheme] = useIamAppearance(appearance)
-  const canSignUp = authDialogCanShowSignUp(mode, allowSignUp, signUpProps?.registrationGrant)
-  const normalizedInitialView = normalizeView(initialView, canSignUp)
-  const [view, setView] = useState<AuthDialogView>(normalizedInitialView)
-  const [mountedViews, setMountedViews] = useState(() => mountedFor(normalizedInitialView, canSignUp))
+  const { localization: l } = useIamUi()
+  const intent = useRef<AuthDialogView>(initialView)
+  const flow = useAuthFlow({
+    initialIntent: initialView,
+    registrationGrant: signUpProps?.registrationGrant,
+    onSignInSuccess: signInProps?.onSuccess,
+    onSignUpSuccess: signUpProps?.onSuccess,
+    onError: (error) => (intent.current === 'sign-up' ? signUpProps?.onError : signInProps?.onError)?.(error),
+  })
+  intent.current = flow.state.intent
+  const candidateSignup = authDialogCanShowSignUp(mode, allowSignUp, signUpProps?.registrationGrant)
+  const canSignUp =
+    candidateSignup &&
+    Boolean(
+      flow.state.capabilities?.signupEnabled &&
+        flow.state.capabilities.selfRegistrationEnabled &&
+        flow.state.policy &&
+        flow.state.policy.signupMode !== 'DISABLED',
+    )
+  const [hostedView, setHostedView] = useState<AuthDialogView>('sign-in')
+  const requested = useRef<AuthDialogView | null>(null)
   const wasOpen = useRef(open)
-  const closedInitialView = useRef(normalizedInitialView)
+  const initialMount = useRef(true)
   const dialog = useRef<HTMLDivElement>(null)
   const close = useRef<HTMLButtonElement>(null)
-  const trigger = useRef<HTMLElement | null>(null)
-  const focusWasOpen = useRef(open)
+  const opener = useRef<HTMLElement | null>(null)
   const titleId = useId()
-
-  const opening = open && !wasOpen.current
-  const openingView = opening && normalizedInitialView !== closedInitialView.current
-    ? normalizedInitialView
-    : normalizeView(view, canSignUp)
-
+  const selectView = (next: AuthDialogView) => {
+    const selected =
+      next === 'sign-up' && !(canSignUp || (candidateSignup && flow.state.step === 'loading'))
+        ? 'sign-in'
+        : next
+    flow.actions.setIntent(selected)
+    setHostedView(selected)
+  }
   useEffect(() => {
-    if (!open) {
-      closedInitialView.current = normalizedInitialView
-      setView(normalizedInitialView)
-      setMountedViews(mountedFor(normalizedInitialView, canSignUp))
-    } else if (opening) {
-      setView(openingView)
-      setMountedViews(mountedFor(openingView, canSignUp))
+    if (open && (!wasOpen.current || initialMount.current)) {
+      const active = document.activeElement
+      opener.current =
+        !initialMount.current &&
+        active instanceof HTMLElement &&
+        active !== document.body &&
+        !dialog.current?.contains(active)
+          ? active
+          : null
+      selectView(requested.current ?? initialView)
+      requested.current = null
+      close.current?.focus()
+    }
+    if (!open && wasOpen.current) {
+      flow.actions.cancel()
+      const active = opener.current
+      opener.current = null
+      if (active?.isConnected && !active.matches(':disabled')) active.focus()
     }
     wasOpen.current = open
-  }, [canSignUp, normalizedInitialView, open, opening, openingView])
-
+    initialMount.current = false
+  }, [open])
   useEffect(() => {
-    if (open) {
-      if (!focusWasOpen.current) {
-        const activeElement = document.activeElement
-        trigger.current = activeElement instanceof HTMLElement
-          && activeElement !== document.body
-          && !dialog.current?.contains(activeElement)
-          ? activeElement
-          : null
-        focusWasOpen.current = true
-      }
-      close.current?.focus()
+    if (flow.state.step !== 'loading' && !canSignUp && flow.state.intent === 'sign-up') selectView('sign-in')
+  }, [canSignUp, flow.state.step])
+  const closeDialog = () => {
+    flow.actions.cancel()
+    onOpenChange(false)
+  }
+  const activeView = mode === 'embedded' ? flow.state.intent : hostedView
+  const brand = useAuthBranding(activeView, appearance)
+  const [frameAppearance, frameScheme] = useIamAppearance(appearance)
+  const a = mode === 'embedded' ? brand.appearance : frameAppearance
+  const colorScheme = mode === 'embedded' ? brand.scheme : frameScheme
+  const trigger =
+    children &&
+    isValidElement<{ onClick?: (event: React.MouseEvent) => void; 'data-axis-auth-view'?: AuthDialogView }>(
+      children,
+    )
+      ? cloneElement(children as ReactElement<{ onClick?: (event: React.MouseEvent) => void }>, {
+          onClick: (event) => {
+            children.props.onClick?.(event)
+            if (event.defaultPrevented) return
+            requested.current = triggerViewFor(children) ?? initialView
+            onOpenChange(true)
+          },
+        })
+      : children
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      closeDialog()
       return
     }
-    if (!focusWasOpen.current) return
-    const opener = trigger.current
-    trigger.current = null
-    focusWasOpen.current = false
-    if (opener?.isConnected && !opener.matches(':disabled')) opener.focus()
-  }, [open])
-
-  useEffect(() => {
-    if (!canSignUp) {
-      setView('sign-in')
-      setMountedViews({ 'sign-in': true, 'sign-up': false })
-    }
-  }, [canSignUp])
-
-  const selectView = (nextView: AuthDialogView) => {
-    const normalizedView = normalizeView(nextView, canSignUp)
-    setView(normalizedView)
-    setMountedViews((current) => current[normalizedView] ? current : { ...current, [normalizedView]: true })
-  }
-  const openFromTrigger = (nextView?: AuthDialogView) => {
-    selectView(nextView ?? initialView)
-    onOpenChange(true)
-  }
-  const triggerElement = children && isValidElement<{ onClick?: (event: React.MouseEvent) => void; 'data-axis-auth-view'?: AuthDialogView }>(children)
-    ? cloneElement(children as ReactElement<{ onClick?: (event: React.MouseEvent) => void; 'data-axis-auth-view'?: AuthDialogView }>, {
-      onClick: (event) => { children.props.onClick?.(event); if (!event.defaultPrevented) openFromTrigger(triggerViewFor(children)) },
-    })
-    : children
-
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'Escape') { event.preventDefault(); onOpenChange(false); return }
-    if (canSignUp && event.target instanceof HTMLElement && event.target.getAttribute('role') === 'tab') {
-      const nextView = event.key === 'ArrowRight' || event.key === 'End' ? 'sign-up'
-        : event.key === 'ArrowLeft' || event.key === 'Home' ? 'sign-in'
-          : null
-      if (nextView) {
-        event.preventDefault()
-        selectView(nextView)
-        const tabs = dialog.current?.querySelectorAll<HTMLElement>('[role="tab"]')
-        tabs?.[nextView === 'sign-in' ? 0 : 1]?.focus()
-        return
-      }
-    }
     if (event.key !== 'Tab') return
-    const focusable = Array.from(dialog.current?.querySelectorAll<HTMLElement>('button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])') ?? [])
-      .filter((item) => !item.hasAttribute('disabled') && item.getAttribute('aria-hidden') !== 'true' && !item.closest('[hidden]'))
-    const first = focusable[0]
-    const last = focusable[focusable.length - 1]
-    if (!first || !last) return
-    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
-    if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+    const controls = Array.from(
+      dialog.current?.querySelectorAll<HTMLElement>(
+        'button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])',
+      ) ?? [],
+    ).filter((node) => !node.matches(':disabled') && !node.closest('[hidden]'))
+    const first = controls[0],
+      last = controls[controls.length - 1]
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last?.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first?.focus()
+    }
   }
-
-  const activeView = opening ? openingView : normalizeView(view, canSignUp)
-  return <>
-    {triggerElement}
-    {open && <div className="axis-iam-auth-dialog-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) { event.preventDefault(); onOpenChange(false) } }}>
-      <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby={titleId} data-color-scheme={colorScheme} className={['axis-iam-auth-dialog', className].filter(Boolean).join(' ')} style={{ ...dialogVariables(a), colorScheme, ...style }} onKeyDown={onKeyDown}>
-        <style>{css}</style>
-        <header className="axis-iam-auth-dialog-header">
-          <h2 id={titleId}>{localization.authDialog.title(activeView)}</h2>
-          <button ref={close} type="button" className="axis-iam-auth-dialog-close" aria-label={localization.authDialog.close} onClick={() => onOpenChange(false)}>x</button>
-        </header>
-        {canSignUp && <div className="axis-iam-auth-dialog-tabs" role="tablist" aria-label={localization.authDialog.title(activeView)}>
-          <button type="button" role="tab" aria-selected={activeView === 'sign-in'} tabIndex={activeView === 'sign-in' ? 0 : -1} onClick={() => selectView('sign-in')}>{localization.authDialog.signInTab}</button>
-          <button type="button" role="tab" aria-selected={activeView === 'sign-up'} tabIndex={activeView === 'sign-up' ? 0 : -1} onClick={() => selectView('sign-up')}>{localization.authDialog.signUpTab}</button>
-        </div>}
-        <section className="axis-iam-auth-dialog-content" aria-live="polite" data-auth-dialog-panels>
-          {(mountedViews['sign-in'] || activeView === 'sign-in') && <div data-auth-view="sign-in" hidden={activeView !== 'sign-in'}><SignIn {...signInProps} mode={mode} presentation="dialog" /></div>}
-          {canSignUp && (mountedViews['sign-up'] || activeView === 'sign-up') && <div data-auth-view="sign-up" hidden={activeView !== 'sign-up'}><SignUp {...signUpProps} mode={mode} presentation="dialog" /></div>}
-        </section>
-      </div>
-    </div>}
-  </>
+  return (
+    <>
+      {trigger}
+      {open && (
+        <div
+          className="axis-iam-auth-dialog-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              event.preventDefault()
+              closeDialog()
+            }
+          }}
+        >
+          <div
+            ref={dialog}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={mode === 'embedded' && brand.branding?.welcomeTitle === '' ? undefined : titleId}
+            aria-label={mode === 'embedded' && brand.branding?.welcomeTitle === '' ? l.authDialog.title(activeView) : undefined}
+            data-color-scheme={colorScheme}
+            className={['axis-iam-auth-dialog', className].filter(Boolean).join(' ')}
+            style={{ ...dialogVariables(a), colorScheme, fontFamily: a.fontFamily, ...style }}
+            onKeyDown={onKeyDown}
+          >
+            <style>{css}</style>
+            <header className="axis-iam-auth-dialog-header">
+              <h2 id={titleId}>{mode === 'embedded' ? brand.branding?.welcomeTitle ?? l.authDialog.title(activeView) : l.authDialog.title(activeView)}</h2>
+              <button
+                ref={close}
+                type="button"
+                className="axis-iam-auth-dialog-close"
+                aria-label={l.authDialog.close}
+                onClick={closeDialog}
+              >
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  aria-hidden="true"
+                >
+                  <path d="m6 6 12 12M6 18 18 6" />
+                </svg>
+              </button>
+            </header>
+            <section className="axis-iam-auth-dialog-content" data-auth-dialog-panels>
+              <div data-auth-view={activeView}>
+                {mode === 'embedded' ? (
+                  <BrandedAuthContent
+                    key={activeView}
+                    flow={flow}
+                    brand={brand}
+                    registrationGrant={signUpProps?.registrationGrant}
+                    presentation="dialog"
+                    renderProviderButton={signInProps?.renderProviderButton}
+                    onForgotPassword={signInProps?.onForgotPassword}
+                    forgotPasswordUrl={signInProps?.forgotPasswordUrl}
+                    showIntentSwitch={false}
+                  />
+                ) : activeView === 'sign-in' ? (
+                  <SignIn {...signInProps} mode="redirect" presentation="dialog" />
+                ) : (
+                  <SignUp {...signUpProps} mode="redirect" presentation="dialog" />
+                )}
+              </div>
+              {canSignUp && (
+                <p style={{ margin: '24px 0 0', textAlign: 'center' }}>
+                  <button
+                    type="button"
+                    style={{
+                      border: 0,
+                      padding: 8,
+                      background: 'transparent',
+                      color: a.textColor,
+                      font: 'inherit',
+                      textDecoration: 'underline',
+                      textUnderlineOffset: 3,
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => selectView(activeView === 'sign-in' ? 'sign-up' : 'sign-in')}
+                  >
+                    {activeView === 'sign-in' ? l.authDialog.signUpTab : l.authDialog.signInTab}
+                  </button>
+                </p>
+              )}
+            </section>
+          </div>
+        </div>
+      )}
+    </>
+  )
 }
 
-function normalizeView(view: AuthDialogView, canSignUp: boolean): AuthDialogView {
-  return canSignUp ? view : 'sign-in'
-}
-
-function mountedFor(view: AuthDialogView, canSignUp: boolean): Record<AuthDialogView, boolean> {
-  const normalizedView = normalizeView(view, canSignUp)
-  return { 'sign-in': normalizedView === 'sign-in', 'sign-up': normalizedView === 'sign-up' }
-}
-
-function authDialogCanShowSignUp(mode: 'redirect' | 'embedded', allowSignUp: boolean, registrationGrant?: RegistrationGrantInput): boolean {
+function authDialogCanShowSignUp(
+  mode: 'redirect' | 'embedded',
+  allowSignUp: boolean,
+  registrationGrant?: RegistrationGrantInput,
+): boolean {
   if (!allowSignUp) return false
   if (mode === 'embedded') return true
   if (!registrationGrant) return false
@@ -199,7 +284,9 @@ function authDialogCanShowSignUp(mode: 'redirect' | 'embedded', allowSignUp: boo
   }
 }
 
-function triggerViewFor(element: ReactElement<{ 'data-axis-auth-view'?: AuthDialogView }>): AuthDialogView | undefined {
+function triggerViewFor(
+  element: ReactElement<{ 'data-axis-auth-view'?: AuthDialogView }>,
+): AuthDialogView | undefined {
   if (element.props['data-axis-auth-view']) return element.props['data-axis-auth-view']
   if (element.type === SignInButton) return 'sign-in'
   if (element.type === SignUpButton) return 'sign-up'
@@ -207,11 +294,29 @@ function triggerViewFor(element: ReactElement<{ 'data-axis-auth-view'?: AuthDial
 }
 
 function triggerStyle(a: ReturnType<typeof useIamAppearance>[0]): CSSProperties {
-  return { minHeight: 40, padding: '9px 14px', border: `1px solid ${a.primaryColor}`, borderRadius: a.borderRadius, background: a.primaryColor, color: '#fff', font: `700 13px/18px ${a.fontFamily}`, cursor: 'pointer' }
+  return {
+    minHeight: 40,
+    padding: '9px 14px',
+    border: `1px solid ${a.primaryColor}`,
+    borderRadius: a.borderRadius,
+    background: a.primaryColor,
+    color: '#fff',
+    font: `700 13px/18px ${a.fontFamily}`,
+    textTransform: 'none',
+    letterSpacing: 'normal',
+    cursor: 'pointer',
+  }
 }
 
 function dialogVariables(a: ReturnType<typeof useIamAppearance>[0]): CSSProperties {
-  return { '--axis-auth-surface': a.surfaceColor, '--axis-auth-subtle': a.subtleColor, '--axis-auth-border': a.borderColor, '--axis-auth-text': a.textColor, '--axis-auth-focus': a.focusColor, '--axis-auth-radius': a.borderRadius } as CSSProperties
+  return {
+    '--axis-auth-surface': a.surfaceColor,
+    '--axis-auth-subtle': a.subtleColor,
+    '--axis-auth-border': a.borderColor,
+    '--axis-auth-text': a.textColor,
+    '--axis-auth-focus': a.focusColor,
+    '--axis-auth-radius': a.borderRadius,
+  } as CSSProperties
 }
 
-const css = `.axis-iam-auth-dialog-overlay,.axis-iam-auth-dialog-overlay *{box-sizing:border-box;letter-spacing:0}.axis-iam-auth-dialog-overlay{position:fixed;z-index:2147483647;inset:0;display:grid;place-items:center;padding:24px;overflow:auto;background:#111820b8}.axis-iam-auth-dialog{width:min(100%,480px);max-height:calc(100dvh - 48px);overflow:auto;border:1px solid var(--axis-auth-border);border-radius:var(--axis-auth-radius);background:var(--axis-auth-surface);color:var(--axis-auth-text)}.axis-iam-auth-dialog-header{display:grid;grid-template-columns:minmax(0,1fr) 36px;align-items:center;gap:12px;min-height:60px;padding:12px 18px;border-bottom:1px solid var(--axis-auth-border)}.axis-iam-auth-dialog-header h2{min-width:0;margin:0;overflow-wrap:anywhere;font-size:18px;line-height:24px}.axis-iam-auth-dialog-close{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;border:1px solid var(--axis-auth-border);border-radius:var(--axis-auth-radius);background:var(--axis-auth-surface);color:inherit;font:700 18px/1 sans-serif;cursor:pointer}.axis-iam-auth-dialog-tabs{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:12px 18px 0}.axis-iam-auth-dialog-tabs button{min-height:38px;padding:8px;overflow-wrap:anywhere;border:1px solid var(--axis-auth-border);border-radius:var(--axis-auth-radius);background:var(--axis-auth-surface);color:inherit;font:700 13px/18px inherit;cursor:pointer}.axis-iam-auth-dialog-tabs button[aria-selected=true]{border-color:var(--axis-auth-focus);background:var(--axis-auth-subtle)}.axis-iam-auth-dialog-content{min-width:0;padding:18px}.axis-iam-auth-dialog-content>div{max-width:none!important;margin:0!important;padding:0!important}.axis-iam-auth-dialog :focus-visible{outline:2px solid var(--axis-auth-focus);outline-offset:2px}@media(max-width:640px){.axis-iam-auth-dialog-overlay{display:block;padding:0;overflow:hidden}.axis-iam-auth-dialog{width:100%;height:100dvh;max-height:none;border:0;border-radius:0}.axis-iam-auth-dialog-header{min-height:calc(60px + env(safe-area-inset-top));padding:calc(12px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) 12px calc(14px + env(safe-area-inset-left))}.axis-iam-auth-dialog-tabs{padding:12px calc(14px + env(safe-area-inset-right)) 0 calc(14px + env(safe-area-inset-left))}.axis-iam-auth-dialog-content{padding:18px calc(14px + env(safe-area-inset-right)) calc(18px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left))}}`
+const css = `.axis-iam-auth-dialog-overlay,.axis-iam-auth-dialog-overlay *{box-sizing:border-box;letter-spacing:0}.axis-iam-auth-dialog-overlay button,.axis-iam-auth-dialog-overlay input{font-family:inherit;text-transform:none}.axis-iam-auth-dialog-overlay{position:fixed;z-index:2147483647;inset:0;display:grid;place-items:center;padding:24px;overflow:auto;background:#111820b8}.axis-iam-auth-dialog{width:min(100%,480px);max-height:calc(100dvh - 48px);overflow:auto;border:1px solid var(--axis-auth-border);border-radius:var(--axis-auth-radius);background:var(--axis-auth-surface);color:var(--axis-auth-text)}.axis-iam-auth-dialog-header{display:grid;grid-template-columns:minmax(0,1fr) 36px;align-items:center;gap:12px;min-height:60px;padding:12px 18px;border-bottom:1px solid var(--axis-auth-border)}.axis-iam-auth-dialog-header h2{min-width:0;margin:0;overflow-wrap:anywhere;font-size:18px;line-height:24px}.axis-iam-auth-dialog-close{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;border:1px solid var(--axis-auth-border);border-radius:var(--axis-auth-radius);background:var(--axis-auth-surface);color:inherit;font:700 18px/1 sans-serif;cursor:pointer}.axis-iam-auth-dialog-content{min-width:0;padding:18px}.axis-iam-auth-dialog-content>div{max-width:none!important;margin:0!important;padding:0!important}.axis-iam-auth-dialog :focus-visible{outline:2px solid var(--axis-auth-focus);outline-offset:2px}@media(max-width:640px){.axis-iam-auth-dialog-overlay{display:block;padding:0;overflow:hidden}.axis-iam-auth-dialog{width:100%;height:100dvh;max-height:none;border:0;border-radius:0}.axis-iam-auth-dialog-header{min-height:calc(60px + env(safe-area-inset-top));padding:calc(12px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) 12px calc(14px + env(safe-area-inset-left))}.axis-iam-auth-dialog-content{padding:18px calc(14px + env(safe-area-inset-right)) calc(18px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left))}}`

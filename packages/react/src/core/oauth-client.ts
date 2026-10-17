@@ -115,7 +115,7 @@ export class OAuthClient {
 
   // --- Authorization Code + PKCE ---
 
-  async startAuthorizationFlow(): Promise<string> {
+  async startAuthorizationFlow(options: { locale?: string } = {}): Promise<string> {
     const config = await this.discover()
     const { codeChallenge, state } = await prepareAuthorizationCodeContext()
     const scopes = this.config.scopes ?? ['openid', 'profile', 'email', 'offline_access']
@@ -133,6 +133,7 @@ export class OAuthClient {
     if (this.config.audience) {
       params.set('audience', this.config.audience)
     }
+    if (options.locale) params.set('ui_locales', options.locale)
 
     return `${config.authorization_endpoint}?${params.toString()}`
   }
@@ -161,15 +162,19 @@ export class OAuthClient {
     providerIdOrOption: string | IdentityProviderOption | AuthMethodIdpProviderResponse,
     options: ProviderAuthorizationOptions = {},
   ): Promise<string> {
+    const generation = this.tokenManager.generation
+    const assertCurrent = () => this.tokenManager.assertCurrent(generation)
     const provider = typeof providerIdOrOption === 'string'
       ? await this.findIdentityProvider(providerIdOrOption)
       : providerIdOrOption
+    assertCurrent()
 
     return await startProviderAuthorization({
       provider,
       config: this.config,
       options,
       resolveRedirectUri: (redirectUri) => this.resolveRedirectUri(redirectUri),
+      assertCurrent,
     })
   }
 

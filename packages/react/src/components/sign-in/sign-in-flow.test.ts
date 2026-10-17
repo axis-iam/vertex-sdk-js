@@ -181,6 +181,6 @@ describe('normalizeDirectAuthTokenResponse', () => {
       mfa_required: true,
       mfa_token: 'mfa-token',
       methods: ['totp'],
-    })).toThrow('MFA verification is required, but embedded MFA verification is not yet supported')
+    })).toThrow('A token response cannot contain an MFA challenge')
   })
 })

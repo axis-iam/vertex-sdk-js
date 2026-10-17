@@ -13,14 +13,14 @@ export interface SignInProviderButtonRenderProps {
 export interface SignInProps {
   /** 'redirect' (default) jumps to iam-server login page; 'embedded' renders inline form */
   mode?: 'redirect' | 'embedded'
+  /** Show the SDK-owned signup footer when server registration policy permits it. Defaults to true. */
+  allowSignUp?: boolean
   /** Called after successful embedded login */
   onSuccess?: (user: IamUser) => void
   /** Called on error */
   onError?: (error: Error) => void
   /** Override appearance (merged with branding) */
   appearance?: Appearance
-  /** Redirect URL after redirect-mode login */
-  redirectUrl?: string
   /** URL for the application's forgot-password page. */
   forgotPasswordUrl?: string
   /** Callback for opening forgot-password UI without requiring a router. */

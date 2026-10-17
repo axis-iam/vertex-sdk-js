@@ -9,12 +9,30 @@ import { BrandingLogo } from './BrandingLogo'
 
 export type { SignInProps, SignInProviderButtonRenderProps } from './sign-in/types'
 
-export function SignIn({ mode = 'redirect', onSuccess, onError, appearance, redirectUrl, forgotPasswordUrl, onForgotPassword, renderProviderButton, presentation = 'standalone' }: SignInProps) {
+export function SignIn({
+  mode = 'redirect',
+  allowSignUp = true,
+  onSuccess,
+  onError,
+  appearance,
+  forgotPasswordUrl,
+  onForgotPassword,
+  renderProviderButton,
+  presentation = 'standalone',
+}: SignInProps) {
   if (mode === 'redirect') {
-    return <RedirectSignIn appearance={appearance} redirectUrl={redirectUrl} forgotPasswordUrl={forgotPasswordUrl} onForgotPassword={onForgotPassword} presentation={presentation} />
+    return (
+      <RedirectSignIn
+        appearance={appearance}
+        forgotPasswordUrl={forgotPasswordUrl}
+        onForgotPassword={onForgotPassword}
+        presentation={presentation}
+      />
+    )
   }
   return (
     <EmbeddedSignIn
+      allowSignUp={allowSignUp}
       appearance={appearance}
       onSuccess={onSuccess}
       onError={onError}
@@ -26,10 +44,15 @@ export function SignIn({ mode = 'redirect', onSuccess, onError, appearance, redi
   )
 }
 
-function RedirectSignIn({ appearance, redirectUrl: _redirectUrl, forgotPasswordUrl, onForgotPassword, presentation }: Pick<SignInProps, 'appearance' | 'redirectUrl' | 'forgotPasswordUrl' | 'onForgotPassword' | 'presentation'>) {
+function RedirectSignIn({
+  appearance,
+  forgotPasswordUrl,
+  onForgotPassword,
+  presentation,
+}: Pick<SignInProps, 'appearance' | 'forgotPasswordUrl' | 'onForgotPassword' | 'presentation'>) {
   const { login, isAuthenticated, user } = useIamContext()
   const { branding } = useBranding()
-  const { localization: l } = useIamUi()
+  const { localization: l, locale } = useIamUi()
   const [a] = useIamAppearance(appearance, brandingToAppearance(branding))
   const shellStyle = presentation === 'dialog' ? compactContainerStyle(a) : containerStyle(a)
 
@@ -43,23 +66,36 @@ function RedirectSignIn({ appearance, redirectUrl: _redirectUrl, forgotPasswordU
 
   return (
     <div style={shellStyle}>
-      {branding?.logoUrl && <BrandingLogo logoUrl={branding.logoUrl} alt={l.auth.logoAlt} />}
-      {presentation !== 'dialog' && <h2 style={{ fontSize: 20, fontWeight: 600, textAlign: 'center', margin: '0 0 24px' }}>
-        {branding?.welcomeTitle ?? l.auth.signIn}
-      </h2>}
+      {branding?.showLogo && branding.logoUrl && <BrandingLogo logoUrl={branding.logoUrl} alt={l.auth.logoAlt} />}
+      {presentation !== 'dialog' && (
+        <h2 style={{ fontSize: 20, fontWeight: 600, textAlign: 'center', margin: '0 0 24px' }}>
+          {branding?.welcomeTitle ?? l.auth.signIn}
+        </h2>
+      )}
       {branding?.welcomeSubtitle && (
         <p style={{ fontSize: 14, textAlign: 'center', color: a.mutedTextColor, margin: '-16px 0 24px' }}>
           {branding.welcomeSubtitle}
         </p>
       )}
-      <button onClick={() => login()} style={buttonStyle(a, 'primary')}>
+      <button onClick={() => login({ locale })} style={buttonStyle(a, 'primary')}>
         {l.auth.signIn}
       </button>
-      <ForgotPasswordAction appearance={a} forgotPasswordUrl={forgotPasswordUrl} onForgotPassword={onForgotPassword} />
+      <ForgotPasswordAction
+        appearance={a}
+        forgotPasswordUrl={forgotPasswordUrl}
+        onForgotPassword={onForgotPassword}
+      />
     </div>
   )
 }
 
 function compactContainerStyle(a: ReturnType<typeof useIamAppearance>[0]) {
-  return { ...containerStyle(a), maxWidth: 'none', margin: 0, padding: 0, borderRadius: 0, backgroundColor: 'transparent' }
+  return {
+    ...containerStyle(a),
+    maxWidth: 'none',
+    margin: 0,
+    padding: 0,
+    borderRadius: 0,
+    backgroundColor: 'transparent',
+  }
 }

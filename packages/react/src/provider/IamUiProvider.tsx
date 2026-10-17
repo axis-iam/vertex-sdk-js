@@ -53,8 +53,10 @@ export function useIamUi(): IamUiContextValue {
   return context
 }
 
-export function useIamAppearance(componentAppearance?: Appearance, baseAppearance?: Appearance) {
+export function useIamAppearance(componentAppearance?: Appearance, baseAppearance?: Appearance, baseDarkAppearance?: Appearance) {
   const ui = useIamUi()
   const appearance = mergeAppearances(baseAppearance, ui.appearance, componentAppearance)
-  return useResolvedAppearance(ui.colorScheme, appearance, ui.darkAppearance)
+  return useResolvedAppearance(ui.colorScheme, appearance, mergeAppearances(baseDarkAppearance,
+    ui.appearance?.primaryColor ? { primaryColor: ui.appearance.primaryColor } : undefined,
+    ui.darkAppearance, componentAppearance))
 }

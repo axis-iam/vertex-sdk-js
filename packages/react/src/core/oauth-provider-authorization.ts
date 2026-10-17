@@ -1,4 +1,4 @@
-import { IamApiError } from './types'
+import { IamApiError, IamConfigurationError } from './types'
 import type {
   AuthMethodIdpProviderResponse,
   IamConfig,
@@ -15,6 +15,8 @@ export interface StartProviderAuthorizationInput {
   config: Pick<IamConfig, 'audience' | 'redirectUri' | 'scopes'>
   options?: ProviderAuthorizationOptions
   resolveRedirectUri: (redirectUri?: string) => string
+  intent?: 'sign-in' | 'sign-up'
+  assertCurrent?: () => void
 }
 
 type ProviderRegistrationGrantBody = {
@@ -25,12 +27,12 @@ type ProviderRegistrationGrantBody = {
 export async function startProviderAuthorization(input: StartProviderAuthorizationInput): Promise<string> {
   const { provider, config, options = {}, resolveRedirectUri } = input
 
-  if (!isEmbeddedSignInProvider(provider)) {
+  if (!isEmbeddedSignInProvider(provider, input.intent)) {
     throw new Error('Identity provider is not available for embedded sign-in')
   }
 
   const registrationGrantBody = providerRegistrationGrantBody(options.registrationGrant)
-  const { codeChallenge, state } = await prepareAuthorizationCodeContext()
+  const { codeChallenge, state } = await prepareAuthorizationCodeContext(input.assertCurrent)
   const scopes = options.scopes ?? config.scopes ?? ['openid', 'profile', 'email', 'offline_access']
   const audience = options.audience ?? config.audience
   const body: {
@@ -61,11 +63,20 @@ export async function startProviderAuthorization(input: StartProviderAuthorizati
     method: 'POST',
     json: body,
   })
-  if (!data.authorizationUrl) {
-    throw new Error('Provider authorization failed: missing authorization URL')
+  input.assertCurrent?.()
+  if (!data || typeof data.authorizationUrl !== 'string' || !data.authorizationUrl.trim()) {
+    throw new IamConfigurationError('Provider authorization failed: missing authorization URL')
   }
 
-  return data.authorizationUrl
+  let authorizationUrl: URL
+  try {
+    authorizationUrl = new URL(data.authorizationUrl)
+  } catch (error) {
+    throw new IamConfigurationError('Provider authorization returned an invalid URL', error)
+  }
+  if (!['http:', 'https:'].includes(authorizationUrl.protocol))
+    throw new IamConfigurationError('Provider authorization returned an unsafe URL')
+  return authorizationUrl.toString()
 }
 
 function providerRegistrationGrantBody(input: unknown): ProviderRegistrationGrantBody {
@@ -105,14 +116,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function isEmbeddedSignInProvider(
   provider: IdentityProviderOption | AuthMethodIdpProviderResponse,
+  intent: 'sign-in' | 'sign-up' = 'sign-in',
 ): provider is typeof provider & { authorizationUrl: string } {
   if (isAuthMethodIdpProvider(provider)) {
-    return provider.enabled
-      && provider.configured
-      && provider.clickable
-      && provider.availableForLogin
-      && typeof provider.authorizationUrl === 'string'
-      && provider.authorizationUrl.length > 0
+    return (
+      provider.enabled &&
+      provider.configured &&
+      provider.clickable &&
+      (intent === 'sign-up' ? provider.availableForSignup : provider.availableForLogin) &&
+      typeof provider.authorizationUrl === 'string' &&
+      provider.authorizationUrl.length > 0
+    )
   }
   return isClickableIdentityProvider(provider)
 }

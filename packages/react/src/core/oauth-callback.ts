@@ -4,8 +4,9 @@ import { generatePKCEPair } from './pkce'
 const VERIFIER_KEY = 'iam_pkce_verifier'
 const STATE_KEY = 'iam_oauth_state'
 
-export async function prepareAuthorizationCodeContext(): Promise<{ codeChallenge: string; state: string }> {
+export async function prepareAuthorizationCodeContext(assertCurrent?: () => void): Promise<{ codeChallenge: string; state: string }> {
   const { codeVerifier, codeChallenge } = await generatePKCEPair()
+  assertCurrent?.()
   const state = crypto.randomUUID()
 
   try {

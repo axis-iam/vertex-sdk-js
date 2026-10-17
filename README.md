@@ -311,7 +311,7 @@ Account-center and B2B Organization surfaces are browser-safe connected-app help
 
 ### Auth entry dialog
 
-`AuthDialog` is the controlled entry point for applications that want an SDK-provided sign-in/sign-up surface. It composes the same `SignIn` and `SignUp` engines as the standalone components; it does not add a second request, PKCE, provider, password-reset, or registration-grant flow. The default is embedded mode for an in-place dialog. `mode="redirect"` remains available when the application wants the existing hosted redirect behavior.
+`AuthDialog` is the controlled entry point for applications that want an SDK-provided sign-in/sign-up surface. It frames the same public `useAuthFlow` engine and active form used by standalone Embedded components. The default is embedded mode for an in-place dialog. `mode="redirect"` remains available when the application wants the existing hosted redirect behavior.
 
 ```tsx
 import { useState } from 'react'
@@ -335,13 +335,15 @@ function AuthEntry() {
 }
 ```
 
-`SignInButton` and `SignUpButton` have localized defaults and accept ordinary button props, children, `className`, and `appearance`. `AuthDialog` is controlled: close controls, Escape, the backdrop, and its trigger call `onOpenChange`; the host owns the resulting state. It renders a centered dialog on desktop and a full-screen surface at mobile widths, traps keyboard focus while open, and restores trigger focus when it closes. Provider locale/localization, `light`/`dark`/`system`, branding, and Appearance precedence are inherited from `IamProvider`; changing them does not recreate the OAuth client or discard an open embedded form. `registrationGrant` is passed only to `SignUp` and is never persisted by the dialog.
+`SignInButton` and `SignUpButton` have localized defaults and accept ordinary button props, children, `className`, and `appearance`. `AuthDialog` is controlled: close controls, Escape, the backdrop, and its trigger call `onOpenChange`; the host owns the resulting state. It renders a centered dialog on desktop and a full-screen surface at mobile widths, traps keyboard focus while open, and restores trigger focus when it closes. Provider locale/localization, `light`/`dark`/`system`, branding, and Appearance precedence are inherited from `IamProvider`; changing them does not recreate the OAuth client or discard an open embedded form. `signUpProps.registrationGrant` is used only for registration/provider signup and is never persisted by the dialog.
 
 Use the surfaces according to their request ownership:
 
-- Hosted redirect: `<SignIn />` or `<SignUp />` with `mode="redirect"` sends the browser to the IAM-hosted authentication page. In `AuthDialog mode="redirect"`, login and signup share that one hosted entry unless `signUpProps.registrationGrant` contains a non-blank hosted-supported `EMAIL_LINK` or `ACCESS_CODE` proof; only then is a separate Sign Up tab shown. `ORG_INVITATION` remains embedded-only because hosted signup rejects it.
-- Embedded: `<SignIn mode="embedded" />` and `<SignUp mode="embedded" />` render SDK forms in place. `AuthDialog mode="embedded"` keeps its Sign In / Sign Up tabs because the panes use distinct embedded engines.
-- AuthDialog: the dialog is a controlled composition and does not create another authentication flow. Choose embedded mode for meaningful tabs, or redirect mode for one hosted entry (with an explicit registration grant only when a distinct hosted signup path is required).
+- Hosted redirect: `<SignIn />` or `<SignUp />` with `mode="redirect"` sends the browser to the IAM-hosted authentication page. In `AuthDialog mode="redirect"`, login and signup share that one hosted entry unless `signUpProps.registrationGrant` contains a non-blank hosted-supported `EMAIL_LINK` or `ACCESS_CODE` proof; the application policy must also permit registration before a Sign Up switch appears. `ORG_INVITATION` remains embedded-only because hosted signup rejects it.
+- Embedded: `<SignIn mode="embedded" />` and `<SignUp mode="embedded" />` render SDK forms in place. `AuthDialog mode="embedded"` displays a small Sign In / Sign Up switch when registration is available. It mounts one active form and clears the previous attempt on switching.
+- AuthDialog: the dialog is a controlled composition and does not create another authentication flow. Choose embedded mode for in-place forms, or redirect mode for a hosted entry (with an explicit registration grant only when a distinct hosted signup path is required).
+
+Custom presentation uses the public `useAuthFlow()` hook. Embedded, Dialog and Custom share the same Direct Auth actions, capabilities, registration policy, MFA continuation and cancellation behavior. Hosted keeps its own Authorization Code + S256 PKCE protocol. See the [React auth-entry guide](packages/react/README.md#authentication-entries) and the [public Custom example](packages/react/examples/CustomAuth.tsx).
 
 `AccountCenter` includes responsive modal styling, so Tailwind or host CSS is not required. On desktop it
 uses a left menu and one content pane; on small screens it becomes a full-screen dialog with a Menu return

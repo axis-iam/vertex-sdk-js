@@ -4,7 +4,12 @@ import { createElement } from 'react'
 import { IamProvider } from '../provider/IamProvider'
 import { SignIn } from './SignIn'
 import { storeTestTokens, makeTestJwt, testProviderProps } from '../test-utils'
-import type { AuthMethodIdpProviderResponse, IdentityProviderOption, PublicAuthMethodsResponse } from '../core/types'
+import type {
+  AuthMethodIdpProviderResponse,
+  IdentityProviderOption,
+  PublicAuthMethodsResponse,
+  PublicAuthPolicyResponse,
+} from '../core/types'
 
 const ISSUER = 'https://auth.test.com'
 const mockOidcConfig = {
@@ -120,20 +125,40 @@ type MockResponse = {
 }
 
 /** URL-aware fetch mock for embedded login tests */
-function setupFetchMock(overrides: {
-  loginResponse?: MockResponse
-  authMethods?: PublicAuthMethodsResponse | MockResponse
-  identityProviders?: IdentityProviderOption[] | MockResponse
-  providerAuthorizeResponse?: MockResponse
-  branding?: { logoUrl?: string; primaryColor?: string; backgroundColor?: string }
-} = {}) {
+function setupFetchMock(
+  overrides: {
+    authPolicy?: Partial<PublicAuthPolicyResponse>
+    loginResponse?: MockResponse
+    authMethods?: PublicAuthMethodsResponse | MockResponse
+    identityProviders?: IdentityProviderOption[] | MockResponse
+    providerAuthorizeResponse?: MockResponse
+    branding?: { logoUrl?: string; primaryColor?: string; backgroundColor?: string }
+  } = {},
+) {
   const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+    if (url.includes('/auth-policy'))
+      return {
+        ok: true,
+        json: async () => ({
+          signupMode: 'OPEN',
+          allowedRegistrationGrantTypes: [],
+          emailVerificationMode: 'OFF',
+          idpAutoProvisioningEnabled: false,
+          minPasswordLength: 8,
+          requireUppercase: false,
+          requireLowercase: false,
+          requireDigit: false,
+          requireSpecialChar: false,
+          breachedPasswordCheck: false,
+          ...overrides.authPolicy,
+        }),
+      }
     if (url.includes('openid-configuration')) {
       return { ok: true, json: async () => mockOidcConfig }
     }
     if (url.includes('/branding')) {
-      if (overrides.branding) return { ok: true, json: async () => overrides.branding }
+      if (overrides.branding) return { ok: true, json: async () => ({ showLogo: true, ...overrides.branding }) }
       return { ok: false, status: 404 }
     }
     if (url.includes('/api/v1/apps/test-app/auth-methods')) {
@@ -142,22 +167,38 @@ function setupFetchMock(overrides: {
     }
     if (url.includes('/api/v1/apps/test-app/identity-providers')) {
       if (init?.method === 'POST') {
-        return overrides.providerAuthorizeResponse ?? {
-          ok: true,
-          json: async () => ({ authorizationUrl: 'https://provider.example.test/authorize' }),
-        }
+        return (
+          overrides.providerAuthorizeResponse ?? {
+            ok: true,
+            json: async () => ({ authorizationUrl: 'https://provider.example.test/authorize' }),
+          }
+        )
       }
       const providers = overrides.identityProviders ?? []
       return Array.isArray(providers) ? { ok: true, json: async () => providers } : providers
     }
     if (url.includes('/api/v1/auth/login')) {
-      return overrides.loginResponse ?? { ok: false, status: 500, json: async () => ({ message: 'No login mock' }) }
+      return (
+        overrides.loginResponse ?? {
+          ok: false,
+          status: 500,
+          json: async () => ({ message: 'No login mock' }),
+        }
+      )
     }
     if (url.includes('/api/v1/auth/email/verification/send')) {
       return { ok: true, json: async () => ({ message: 'Verification email sent' }) }
     }
     if (url.includes('/api/v1/auth/me/permissions')) {
-      return { ok: true, json: async () => ({ applicationId: 'app-test', organizationId: null, roles: ['admin'], permissions: ['orders:read', 'orders:create', 'users:*'] }) }
+      return {
+        ok: true,
+        json: async () => ({
+          applicationId: 'app-test',
+          organizationId: null,
+          roles: ['admin'],
+          permissions: ['orders:read', 'orders:create', 'users:*'],
+        }),
+      }
     }
     return { ok: false, status: 404 }
   })
@@ -195,7 +236,10 @@ function authMethodsWith(options: {
   }
 }
 
-function methodAvailability(type: PublicAuthMethodsResponse['methods'][number]['type'], available: boolean): PublicAuthMethodsResponse['methods'][number] {
+function methodAvailability(
+  type: PublicAuthMethodsResponse['methods'][number]['type'],
+  available: boolean,
+): PublicAuthMethodsResponse['methods'][number] {
   return {
     type,
     enabled: available,
@@ -230,7 +274,9 @@ describe('SignIn', () => {
     it('renders sign in button when not authenticated', async () => {
       setupFetchMock()
       renderWithProvider(createElement(SignIn))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       expect(screen.getByRole('button', { name: 'Sign in' })).toBeTruthy()
     })
@@ -238,7 +284,9 @@ describe('SignIn', () => {
     it('renders forgot password URL when configured', async () => {
       setupFetchMock()
       renderWithProvider(createElement(SignIn, { forgotPasswordUrl: '/forgot-password' }))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       expect(screen.getByText('Forgot password?').getAttribute('href')).toBe('/forgot-password')
     })
@@ -247,17 +295,66 @@ describe('SignIn', () => {
       storeTestTokens()
       setupFetchMock()
       renderWithProvider(createElement(SignIn))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       expect(screen.getByText('Signed in as test@example.com')).toBeTruthy()
     })
   })
 
   describe('embedded mode', () => {
+    it.each(['en', 'zh-CN'] as const)('owns one bidirectional registration footer in %s', async (locale) => {
+      setupFetchMock()
+      renderWithProvider(createElement(SignIn, { mode: 'embedded' }), { locale })
+      await act(async () => vi.advanceTimersByTimeAsync(10))
+      const up = locale === 'en' ? 'Sign up' : '注册'
+      const down = locale === 'en' ? 'Sign in' : '登录'
+      expect(screen.getAllByRole('button', { name: up })).toHaveLength(1)
+      expect(screen.getByText(locale === 'en' ? "Don't have an account?" : '还没有账户？')).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: up }))
+      expect(screen.getByLabelText(locale === 'en' ? 'Username (optional)' : '用户名（可选）')).toBeTruthy()
+      expect(screen.getAllByRole('button', { name: down })).toHaveLength(1)
+      fireEvent.click(screen.getByRole('button', { name: down }))
+      expect(screen.getByPlaceholderText(locale === 'en' ? 'you@example.com or +86 13800138000' : 'you@example.com 或 +86 13800138000')).toBeTruthy()
+      expect(screen.getAllByRole('button', { name: up })).toHaveLength(1)
+    })
+
+    it.each(['host', 'policy', 'capability', 'self-registration', 'method'] as const)(
+      'hides the signup footer when the %s gate excludes it', async (gate) => {
+        setupFetchMock({
+          authPolicy: gate === 'policy' ? { signupMode: 'DISABLED' } : {},
+          authMethods: {
+            ...defaultAuthMethods,
+            ...(gate === 'capability' ? { signupEnabled: false } : {}),
+            ...(gate === 'self-registration' ? { selfRegistrationEnabled: false } : {}),
+            ...(gate === 'method' ? { methods: defaultAuthMethods.methods.map((method) => ({ ...method, availableForSignup: false })) } : {}),
+          },
+        })
+        renderWithProvider(createElement(SignIn, { mode: 'embedded', allowSignUp: gate !== 'host' }))
+        await act(async () => vi.advanceTimersByTimeAsync(10))
+        expect(screen.queryByRole('button', { name: 'Sign up' })).toBeNull()
+      },
+    )
+
+    it('cancels the mounted signup view when the host disables allowSignUp', async () => {
+      setupFetchMock()
+      const view = renderWithProvider(createElement(SignIn, { mode: 'embedded' }))
+      await act(async () => vi.advanceTimersByTimeAsync(10))
+      fireEvent.click(screen.getByRole('button', { name: 'Sign up' }))
+      expect(screen.getByPlaceholderText('Choose a username')).toBeTruthy()
+      view.rerender(createElement(IamProvider, testProviderProps(), createElement(SignIn, { mode: 'embedded', allowSignUp: false })))
+      await act(async () => vi.advanceTimersByTimeAsync(10))
+      expect(screen.queryByPlaceholderText('Choose a username')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Sign up' })).toBeNull()
+    })
+
     it('renders identifier-first form and then password challenge for an email', async () => {
       setupFetchMock()
       renderWithProvider(createElement(SignIn, { mode: 'embedded' }))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       expect(screen.getByPlaceholderText('you@example.com or +86 13800138000')).toBeTruthy()
       expect(screen.queryByPlaceholderText('Enter your password')).toBeNull()
@@ -279,10 +376,14 @@ describe('SignIn', () => {
       })
 
       renderWithProvider(createElement(SignIn, { mode: 'embedded', onError }))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       await continueWithIdentifier('user@test.com')
-      fireEvent.change(screen.getByPlaceholderText('Enter your password'), { target: { value: 'wrong-pass' } })
+      fireEvent.change(screen.getByPlaceholderText('Enter your password'), {
+        target: { value: 'wrong-pass' },
+      })
 
       await act(async () => {
         fireEvent.submit(screen.getByPlaceholderText('Enter your password').closest('form')!)
@@ -311,10 +412,14 @@ describe('SignIn', () => {
       })
 
       renderWithProvider(createElement(SignIn, { mode: 'embedded', onSuccess }), { tokenStorage: 'memory' })
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       await continueWithIdentifier('user@test.com')
-      fireEvent.change(screen.getByPlaceholderText('Enter your password'), { target: { value: 'correct-pass' } })
+      fireEvent.change(screen.getByPlaceholderText('Enter your password'), {
+        target: { value: 'correct-pass' },
+      })
 
       await act(async () => {
         fireEvent.submit(screen.getByPlaceholderText('Enter your password').closest('form')!)
@@ -325,7 +430,8 @@ describe('SignIn', () => {
       expect(onSuccess.mock.calls[0][0].id).toBe('user-1')
 
       const loginRequest = fetchMock.mock.calls.find((call) => {
-        const url = typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
+        const url =
+          typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
         return url.includes('/api/v1/auth/login')
       })
       expect(loginRequest?.[1]?.method).toBe('POST')
@@ -341,36 +447,83 @@ describe('SignIn', () => {
       expect(sessionStorage.getItem('iam_permissions')).toBeNull()
     })
 
-    it('does not store an MFA challenge as tokens', async () => {
-      const onError = vi.fn()
+    it('continues a real-schema MFA challenge with camelCase proof and keeps it private', async () => {
       const onSuccess = vi.fn()
-      setupFetchMock({
+      const base = setupFetchMock({
         loginResponse: {
           ok: true,
-          json: async () => ({
-            mfa_required: true,
-            mfa_token: 'mfa_test',
-            methods: ['totp'],
-            message: 'MFA verification required',
-          }),
+          json: async () => ({ mfa_required: true, mfa_token: 'private-mfa-proof', mfa_methods: ['totp'] }),
         },
       })
-
-      renderWithProvider(createElement(SignIn, { mode: 'embedded', onError, onSuccess }))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
-
-      await continueWithIdentifier('user@test.com')
-      fireEvent.change(screen.getByPlaceholderText('Enter your password'), { target: { value: 'correct-pass' } })
-
-      await act(async () => {
-        fireEvent.submit(screen.getByPlaceholderText('Enter your password').closest('form')!)
-        await vi.advanceTimersByTimeAsync(100)
+      const implementation = base.getMockImplementation()!
+      base.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith('/mfa/verify'))
+          return {
+            ok: true,
+            json: async () => ({
+              access_token: makeTestJwt(),
+              refresh_token: 'rt',
+              token_type: 'Bearer',
+              expires_in: 3600,
+            }),
+          }
+        return implementation(input, init)
       })
-
-      expect(screen.getByText('Sign-in failed. Please try again.')).toBeTruthy()
-      expect(onError).toHaveBeenCalledTimes(1)
+      renderWithProvider(createElement(SignIn, { mode: 'embedded', onSuccess }), { tokenStorage: 'memory' })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+      await continueWithIdentifier('user@test.com')
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'correct-pass' } })
+      await act(async () => {
+        fireEvent.submit(screen.getByLabelText('Password').closest('form')!)
+        await vi.advanceTimersByTimeAsync(10)
+      })
+      expect(screen.getByLabelText('Authenticator code')).toBeTruthy()
+      expect(document.body.innerHTML).not.toContain('private-mfa-proof')
       expect(onSuccess).not.toHaveBeenCalled()
-      expect(sessionStorage.getItem('iam_tokens')).toBeNull()
+      fireEvent.change(screen.getByLabelText('Authenticator code'), { target: { value: '123456' } })
+      await act(async () => {
+        fireEvent.submit(screen.getByLabelText('Authenticator code').closest('form')!)
+        await vi.advanceTimersByTimeAsync(10)
+      })
+      const call = base.mock.calls.find((call) => String(call[0]).endsWith('/mfa/verify'))
+      expect(JSON.parse(call?.[1]?.body as string)).toEqual({ mfaToken: 'private-mfa-proof', code: '123456' })
+      expect(onSuccess).toHaveBeenCalledTimes(1)
+      expect(sessionStorage.getItem('axis_iam_session')).toBeNull()
+    })
+
+    it('does not let an old password finally clear the new attempt input', async () => {
+      let finish!: (value: MockResponse) => void
+      const delayed = new Promise<MockResponse>((resolve) => {
+        finish = resolve
+      })
+      const base = setupFetchMock()
+      const implementation = base.getMockImplementation()!
+      base.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) =>
+        String(input).endsWith('/auth/login') ? delayed : implementation(input, init),
+      )
+      const onError = vi.fn()
+      renderWithProvider(createElement(SignIn, { mode: 'embedded', onError }))
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+      await continueWithIdentifier('user@test.com')
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'old-secret' } })
+      await act(async () => {
+        fireEvent.submit(screen.getByLabelText('Password').closest('form')!)
+        await vi.advanceTimersByTimeAsync(10)
+      })
+      fireEvent.click(screen.getByText('Change'))
+      await continueWithIdentifier('new@test.com')
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'new-secret' } })
+      await act(async () => {
+        finish({ ok: false, status: 401, json: async () => ({ error: 'invalid_credentials' }) })
+        await vi.advanceTimersByTimeAsync(10)
+      })
+      expect((screen.getByLabelText('Password') as HTMLInputElement).value).toBe('new-secret')
+      expect(onError).not.toHaveBeenCalled()
+      expect(screen.queryByRole('alert')).toBeNull()
     })
 
     it('handles EMAIL_VERIFICATION_REQUIRED and resends when identifier is email', async () => {
@@ -387,10 +540,14 @@ describe('SignIn', () => {
       })
 
       renderWithProvider(createElement(SignIn, { mode: 'embedded', onError }))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       await continueWithIdentifier('verify@test.com')
-      fireEvent.change(screen.getByPlaceholderText('Enter your password'), { target: { value: 'correct-pass' } })
+      fireEvent.change(screen.getByPlaceholderText('Enter your password'), {
+        target: { value: 'correct-pass' },
+      })
 
       await act(async () => {
         fireEvent.submit(screen.getByPlaceholderText('Enter your password').closest('form')!)
@@ -408,7 +565,8 @@ describe('SignIn', () => {
       })
 
       const resendRequest = fetchMock.mock.calls.find((call) => {
-        const url = typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
+        const url =
+          typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
         return url.includes('/api/v1/auth/email/verification/send')
       })
       expect(resendRequest?.[1]).toMatchObject({
@@ -426,7 +584,9 @@ describe('SignIn', () => {
       setupFetchMock()
 
       renderWithProvider(createElement(SignIn, { mode: 'embedded' }))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       await continueWithIdentifier('username-only')
 
@@ -439,7 +599,9 @@ describe('SignIn', () => {
       const onForgotPassword = vi.fn()
       setupFetchMock()
       renderWithProvider(createElement(SignIn, { mode: 'embedded', onForgotPassword }))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       await continueWithIdentifier('user@test.com')
       fireEvent.click(screen.getByText('Forgot password?'))
@@ -463,7 +625,10 @@ describe('SignIn', () => {
 
     function renderEmbeddedWithAuthMethods(
       authMethods: PublicAuthMethodsResponse,
-      config: { authMethods?: string[]; socialProviders?: Array<{ provider: string; displayName?: string }> } = {},
+      config: {
+        authMethods?: string[]
+        socialProviders?: Array<{ provider: string; displayName?: string }>
+      } = {},
       fetchOverrides: Omit<Parameters<typeof setupFetchMock>[0], 'authMethods'> = {},
     ) {
       setupFetchMock({ ...fetchOverrides, authMethods })
@@ -480,12 +645,16 @@ describe('SignIn', () => {
         authMethods: authMethodsWith({ sms: true }),
         branding: { logoUrl: 'https://assets.example.test/logo.png' },
       })
-      render(createElement(
-        IamProvider,
-        { ...testProviderProps(), locale: 'zh-CN' },
-        createElement(SignIn, { mode: 'embedded' }),
-      ))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      render(
+        createElement(
+          IamProvider,
+          { ...testProviderProps(), locale: 'zh-CN' },
+          createElement(SignIn, { mode: 'embedded' }),
+        ),
+      )
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       expect(screen.getByAltText('应用标志')).toBeTruthy()
       const identifier = screen.getByPlaceholderText('you@example.com 或 +86 13800138000')
@@ -502,8 +671,12 @@ describe('SignIn', () => {
 
     it('keeps branding logo centered and bounded when host CSS makes images block-level', async () => {
       setupFetchMock({ branding: { logoUrl: 'https://assets.example.test/landscape.png' } })
-      const { container } = render(createElement(IamProvider, testProviderProps(), createElement(SignIn, { mode: 'embedded' })))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      const { container } = render(
+        createElement(IamProvider, testProviderProps(), createElement(SignIn, { mode: 'embedded' })),
+      )
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
       expect(screen.getByAltText('Application logo')).toBeTruthy()
 
       const hostReset = document.createElement('style')
@@ -518,8 +691,12 @@ describe('SignIn', () => {
     })
 
     it('shows only email-compatible actions for an email identifier', async () => {
-      renderEmbeddedWithAuthMethods(authMethodsWith({ password: true, sms: true, magicLink: true, emailOtp: true }))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      renderEmbeddedWithAuthMethods(
+        authMethodsWith({ password: true, sms: true, magicLink: true, emailOtp: true }),
+      )
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       await continueWithIdentifier('user@test.com')
 
@@ -532,7 +709,9 @@ describe('SignIn', () => {
 
     it('shows only SMS action for a phone-like identifier', async () => {
       renderEmbeddedWithAuthMethods(authMethodsWith({ password: true, sms: true }))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       await continueWithIdentifier('+8613800138000')
 
@@ -546,16 +725,35 @@ describe('SignIn', () => {
       const fetchMock = setupFetchMock()
       fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
         const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.includes('/auth-policy'))
+          return {
+            ok: true,
+            json: async () => ({
+              signupMode: 'OPEN',
+              allowedRegistrationGrantTypes: [],
+              emailVerificationMode: 'OFF',
+              idpAutoProvisioningEnabled: false,
+              minPasswordLength: 8,
+              requireUppercase: false,
+              requireLowercase: false,
+              requireDigit: false,
+              requireSpecialChar: false,
+          breachedPasswordCheck: false,
+            }),
+          }
         if (url.includes('openid-configuration')) return { ok: true, json: async () => mockOidcConfig }
         if (url.includes('/branding')) return { ok: false, status: 404 }
-        if (url.includes('/api/v1/apps/test-app/auth-methods')) return { ok: true, json: async () => authMethodsWith({ sms: true }) }
+        if (url.includes('/api/v1/apps/test-app/auth-methods'))
+          return { ok: true, json: async () => authMethodsWith({ sms: true }) }
         if (url.includes('/api/v1/auth/sms/send')) return { ok: true, json: async () => ({ sent: true }) }
         return { ok: false, status: 404 }
       })
 
       const props = { ...testProviderProps(), authMethods: ['password'] as string[] }
       render(createElement(IamProvider, props, createElement(SignIn, { mode: 'embedded' })))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       await continueWithIdentifier('+8613800138000')
       await act(async () => {
@@ -565,7 +763,8 @@ describe('SignIn', () => {
 
       expect(screen.getByPlaceholderText('Enter 6-digit code')).toBeTruthy()
       const smsRequest = fetchMock.mock.calls.find((call) => {
-        const url = typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
+        const url =
+          typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
         return url.includes('/api/v1/auth/sms/send')
       })
       expect(smsRequest?.[1]).toMatchObject({
@@ -584,9 +783,26 @@ describe('SignIn', () => {
       const fetchMock = setupFetchMock()
       fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
         const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.includes('/auth-policy'))
+          return {
+            ok: true,
+            json: async () => ({
+              signupMode: 'OPEN',
+              allowedRegistrationGrantTypes: [],
+              emailVerificationMode: 'OFF',
+              idpAutoProvisioningEnabled: false,
+              minPasswordLength: 8,
+              requireUppercase: false,
+              requireLowercase: false,
+              requireDigit: false,
+              requireSpecialChar: false,
+          breachedPasswordCheck: false,
+            }),
+          }
         if (url.includes('openid-configuration')) return { ok: true, json: async () => mockOidcConfig }
         if (url.includes('/branding')) return { ok: false, status: 404 }
-        if (url.includes('/api/v1/apps/test-app/auth-methods')) return { ok: true, json: async () => authMethodsWith({ sms: true }) }
+        if (url.includes('/api/v1/apps/test-app/auth-methods'))
+          return { ok: true, json: async () => authMethodsWith({ sms: true }) }
         if (url.includes('/api/v1/auth/sms/send')) return { ok: true, json: async () => ({ sent: true }) }
         if (url.includes('/api/v1/auth/sms/verify')) {
           return {
@@ -609,7 +825,9 @@ describe('SignIn', () => {
         tokenStorage: 'sessionStorage' as const,
       }
       render(createElement(IamProvider, props, createElement(SignIn, { mode: 'embedded', onSuccess })))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       await continueWithIdentifier('+8613800138000')
       await act(async () => {
@@ -623,7 +841,8 @@ describe('SignIn', () => {
       })
 
       const verifyRequest = fetchMock.mock.calls.find((call) => {
-        const url = typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
+        const url =
+          typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
         return url.includes('/api/v1/auth/sms/verify')
       })
       expect(verifyRequest?.[1]).toMatchObject({
@@ -649,7 +868,9 @@ describe('SignIn', () => {
 
     it('renders magic link form', async () => {
       renderEmbeddedWithAuthMethods(authMethodsWith({ magicLink: true }), { authMethods: ['password'] })
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       await continueWithIdentifier('user@test.com')
 
@@ -661,16 +882,35 @@ describe('SignIn', () => {
       const fetchMock = setupFetchMock()
       fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
         const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.includes('/auth-policy'))
+          return {
+            ok: true,
+            json: async () => ({
+              signupMode: 'OPEN',
+              allowedRegistrationGrantTypes: [],
+              emailVerificationMode: 'OFF',
+              idpAutoProvisioningEnabled: false,
+              minPasswordLength: 8,
+              requireUppercase: false,
+              requireLowercase: false,
+              requireDigit: false,
+              requireSpecialChar: false,
+          breachedPasswordCheck: false,
+            }),
+          }
         if (url.includes('openid-configuration')) return { ok: true, json: async () => mockOidcConfig }
         if (url.includes('/branding')) return { ok: false, status: 404 }
-        if (url.includes('/api/v1/apps/test-app/auth-methods')) return { ok: true, json: async () => authMethodsWith({ magicLink: true }) }
+        if (url.includes('/api/v1/apps/test-app/auth-methods'))
+          return { ok: true, json: async () => authMethodsWith({ magicLink: true }) }
         if (url.includes('/magic-link')) return { ok: true, json: async () => ({}) }
         return { ok: false, status: 404 }
       })
 
       const props = { ...testProviderProps(), authMethods: ['password'] as string[] }
       render(createElement(IamProvider, props, createElement(SignIn, { mode: 'embedded' })))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       await continueWithIdentifier('user@test.com')
       await act(async () => {
@@ -681,7 +921,8 @@ describe('SignIn', () => {
       expect(screen.getByText('Check your email')).toBeTruthy()
       expect(screen.getByText('We sent a sign-in link to user@test.com.')).toBeTruthy()
       const magicLinkRequest = fetchMock.mock.calls.find((call) => {
-        const url = typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
+        const url =
+          typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
         return url.includes('/api/v1/auth/passwordless/magic-link')
       })
       expect(magicLinkRequest?.[1]).toMatchObject({
@@ -695,11 +936,15 @@ describe('SignIn', () => {
     })
 
     it('renders backend-discovered provider buttons', async () => {
-      renderEmbeddedWithAuthMethods(authMethodsWith({
-        password: true,
-        providers: [googleAuthProvider, githubAuthProvider, unavailableSamlAuthProvider],
-      }))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      renderEmbeddedWithAuthMethods(
+        authMethodsWith({
+          password: true,
+          providers: [googleAuthProvider, githubAuthProvider, unavailableSamlAuthProvider],
+        }),
+      )
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       expect(screen.getByText(/Continue with Google/)).toBeTruthy()
       expect(screen.getByText(/Continue with GitHub/)).toBeTruthy()
@@ -730,9 +975,13 @@ describe('SignIn', () => {
       fireEvent.click(googleButton)
 
       await waitFor(() => {
-        expect(fetchMock.mock.calls.some((call) => call[0] === googleAuthProvider.authorizationUrl)).toBe(true)
+        expect(fetchMock.mock.calls.some((call) => call[0] === googleAuthProvider.authorizationUrl)).toBe(
+          true,
+        )
       })
-      const providerRequest = fetchMock.mock.calls.find((call) => call[0] === googleAuthProvider.authorizationUrl)
+      const providerRequest = fetchMock.mock.calls.find(
+        (call) => call[0] === googleAuthProvider.authorizationUrl,
+      )
       expect(providerRequest?.[1]?.method).toBe('POST')
 
       const body = JSON.parse(providerRequest?.[1]?.body as string) as Record<string, string>
@@ -756,27 +1005,33 @@ describe('SignIn', () => {
     })
 
     it('does not create clickable providers from deprecated static config', async () => {
-      renderEmbeddedWithConfig({
-        socialProviders: [
-          { provider: 'google', displayName: 'Google' },
-        ],
-      }, {
-        authMethods: authMethodsWith({ password: true, providers: [] }),
+      renderEmbeddedWithConfig(
+        {
+          socialProviders: [{ provider: 'google', displayName: 'Google' }],
+        },
+        {
+          authMethods: authMethodsWith({ password: true, providers: [] }),
+        },
+      )
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
       })
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
 
       expect(screen.queryByText(/Continue with Google/)).toBeNull()
     })
 
     it('uses deprecated static config only as a display override for discovered providers', async () => {
-      renderEmbeddedWithConfig({
-        socialProviders: [
-          { provider: 'google', displayName: 'Acme Google' },
-        ],
-      }, {
-        authMethods: authMethodsWith({ password: true, providers: [googleAuthProvider] }),
+      renderEmbeddedWithConfig(
+        {
+          socialProviders: [{ provider: 'google', displayName: 'Acme Google' }],
+        },
+        {
+          authMethods: authMethodsWith({ password: true, providers: [googleAuthProvider] }),
+        },
+      )
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
       })
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
 
       expect(screen.getByText(/Continue with Acme Google/)).toBeTruthy()
       expect(screen.queryByText(/Continue with Google$/)).toBeNull()
@@ -785,45 +1040,59 @@ describe('SignIn', () => {
     it('supports custom provider button rendering', async () => {
       setupFetchMock({ authMethods: authMethodsWith({ password: true, providers: [googleAuthProvider] }) })
       const props = { ...testProviderProps() }
-      render(createElement(
-        IamProvider,
-        props,
-        createElement(SignIn, {
-          mode: 'embedded',
-          renderProviderButton: ({ provider, label, disabled, onClick }) => createElement(
-            'button',
-            {
-              type: 'button',
-              disabled,
-              onClick: () => void onClick(),
-              'data-testid': `custom-${provider.id}`,
-            },
-            `Custom ${label}`,
-          ),
-        }),
-      ))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      render(
+        createElement(
+          IamProvider,
+          props,
+          createElement(SignIn, {
+            mode: 'embedded',
+            renderProviderButton: ({ provider, label, disabled, onClick }) =>
+              createElement(
+                'button',
+                {
+                  type: 'button',
+                  disabled,
+                  onClick: () => void onClick(),
+                  'data-testid': `custom-${provider.id}`,
+                },
+                `Custom ${label}`,
+              ),
+          }),
+        ),
+      )
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       expect(screen.getByTestId('custom-idp-google').textContent).toBe('Custom Continue with Google')
     })
 
     it('shows a sanitized auth-methods discovery error', async () => {
-      renderEmbeddedWithConfig({}, {
-        authMethods: {
-          ok: false,
-          status: 500,
-          json: async () => ({ message: 'raw provider backend details' }),
+      renderEmbeddedWithConfig(
+        {},
+        {
+          authMethods: {
+            ok: false,
+            status: 500,
+            json: async () => ({ message: 'raw provider backend details' }),
+          },
         },
+      )
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
       })
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
 
       expect(screen.getByText('Sign-in options are unavailable right now.')).toBeTruthy()
       expect(screen.queryByText(/raw provider backend details/)).toBeNull()
     })
 
     it('does not show credential method actions before identifier continue', async () => {
-      renderEmbeddedWithAuthMethods(authMethodsWith({ password: true, sms: true, magicLink: true, emailOtp: true }))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      renderEmbeddedWithAuthMethods(
+        authMethodsWith({ password: true, sms: true, magicLink: true, emailOtp: true }),
+      )
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       expect(screen.getByText('Continue')).toBeTruthy()
       expect(screen.queryByText('Password')).toBeNull()
@@ -833,11 +1102,12 @@ describe('SignIn', () => {
     })
 
     it('does not create visible methods from deprecated IamConfig authMethods', async () => {
-      renderEmbeddedWithAuthMethods(
-        authMethodsWith({ password: true }),
-        { authMethods: ['password', 'sms', 'magic_link'] },
-      )
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      renderEmbeddedWithAuthMethods(authMethodsWith({ password: true }), {
+        authMethods: ['password', 'sms', 'magic_link'],
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       await continueWithIdentifier('user@test.com')
 
@@ -848,7 +1118,9 @@ describe('SignIn', () => {
 
     it('does not fall back to password when no sign-in method is available', async () => {
       renderEmbeddedWithAuthMethods(authMethodsWith({}))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       expect(screen.getByText('No sign-in method is currently available.')).toBeTruthy()
       expect(screen.queryByPlaceholderText('Enter your password')).toBeNull()
@@ -860,10 +1132,28 @@ describe('SignIn', () => {
       const fetchMock = setupFetchMock()
       fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
         const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.includes('/auth-policy'))
+          return {
+            ok: true,
+            json: async () => ({
+              signupMode: 'OPEN',
+              allowedRegistrationGrantTypes: [],
+              emailVerificationMode: 'OFF',
+              idpAutoProvisioningEnabled: false,
+              minPasswordLength: 8,
+              requireUppercase: false,
+              requireLowercase: false,
+              requireDigit: false,
+              requireSpecialChar: false,
+          breachedPasswordCheck: false,
+            }),
+          }
         if (url.includes('openid-configuration')) return { ok: true, json: async () => mockOidcConfig }
         if (url.includes('/branding')) return { ok: false, status: 404 }
-        if (url.includes('/api/v1/apps/test-app/auth-methods')) return { ok: true, json: async () => authMethodsWith({ emailOtp: true }) }
-        if (url.endsWith('/api/v1/auth/passwordless/email-otp')) return { ok: true, json: async () => ({ sent: true }) }
+        if (url.includes('/api/v1/apps/test-app/auth-methods'))
+          return { ok: true, json: async () => authMethodsWith({ emailOtp: true }) }
+        if (url.endsWith('/api/v1/auth/passwordless/email-otp'))
+          return { ok: true, json: async () => ({ sent: true }) }
         if (url.endsWith('/api/v1/auth/passwordless/email-otp/verify')) {
           return {
             ok: true,
@@ -886,7 +1176,9 @@ describe('SignIn', () => {
         tokenStorage: 'sessionStorage' as const,
       }
       render(createElement(IamProvider, props, createElement(SignIn, { mode: 'embedded', onSuccess })))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       await continueWithIdentifier('user@test.com')
       await act(async () => {
@@ -900,7 +1192,8 @@ describe('SignIn', () => {
       })
 
       const sendRequest = fetchMock.mock.calls.find((call) => {
-        const url = typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
+        const url =
+          typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
         return url.endsWith('/api/v1/auth/passwordless/email-otp')
       })
       expect(sendRequest?.[1]).toMatchObject({
@@ -913,7 +1206,8 @@ describe('SignIn', () => {
       expect(sendRequest?.[1]?.headers).not.toHaveProperty('X-Application-Id')
 
       const verifyRequest = fetchMock.mock.calls.find((call) => {
-        const url = typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
+        const url =
+          typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
         return url.endsWith('/api/v1/auth/passwordless/email-otp/verify')
       })
       expect(verifyRequest?.[1]).toMatchObject({
@@ -927,7 +1221,13 @@ describe('SignIn', () => {
       expect(JSON.parse(sessionStorage.getItem('axis_iam_session') ?? '{}')).toMatchObject({
         version: 4,
         expiresAt: expect.any(Number),
-        tokens: { access_token: jwt, refresh_token: 'email-otp-rt', id_token: 'id-token', token_type: 'Bearer', expires_in: 3600 },
+        tokens: {
+          access_token: jwt,
+          refresh_token: 'email-otp-rt',
+          id_token: 'id-token',
+          token_type: 'Bearer',
+          expires_in: 3600,
+        },
         authenticationProvenance: 'DIRECT_AUTH',
         refreshProvenance: 'DIRECT_AUTH',
       })
@@ -939,12 +1239,16 @@ describe('SignIn', () => {
     })
 
     it('hides providers when social login is disabled by auth-methods', async () => {
-      renderEmbeddedWithAuthMethods(authMethodsWith({
-        password: true,
-        socialLoginEnabled: false,
-        providers: [googleAuthProvider],
-      }))
-      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      renderEmbeddedWithAuthMethods(
+        authMethodsWith({
+          password: true,
+          socialLoginEnabled: false,
+          providers: [googleAuthProvider],
+        }),
+      )
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
 
       expect(screen.queryByText(/Continue with Google/)).toBeNull()
     })

@@ -16,3 +16,5 @@ coverage/
 /docs/plans/
 /docs/guides/
 .lifecycle-smoke/
+
+.auth-entries-smoke/

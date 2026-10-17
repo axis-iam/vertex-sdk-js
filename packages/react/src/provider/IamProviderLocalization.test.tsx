@@ -29,6 +29,20 @@ describe('IamProvider localization', () => {
     expect(normalizeIamLocale('fr-FR')).toEqual({ locale: 'en', unsupported: true })
   })
 
+  it.each(['en', 'zh-CN'] as const)('shows the effective breach requirement only when enabled in %s', (locale) => {
+    const l = resolveIamLocalization(locale).localization
+    const rules = { requireUppercase: true, requireLowercase: true, requireDigit: true, requireSpecialChar: true, breachedPasswordCheck: false }
+    const off = l.signUp.passwordRequirements(10, rules)
+    const on = l.signUp.passwordRequirements(10, { ...rules, breachedPasswordCheck: true })
+    expect(off).not.toMatch(/breach|泄露/)
+    expect(on).toMatch(/breach|泄露/)
+    expect(on).toContain('10')
+    if (locale === 'zh-CN') {
+      expect(l.authDialog.signUpTab).toBe('还没有账户？注册')
+      expect(l.authDialog.signInTab).toBe('已有账户？登录')
+    }
+  })
+
   it('is deterministic in SSR and applies component copy after the provider override', () => {
     const html = renderToString(createElement(
       IamProvider,

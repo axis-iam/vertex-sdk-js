@@ -31,7 +31,7 @@ export interface IamContextValue {
   /** Refresh and atomically apply tokens and authoritative authorization. */
   refreshToken: () => Promise<TokenSet>
   /** Redirect to login page (Authorization Code + PKCE flow) */
-  login: () => Promise<void>
+  login: (options?: { locale?: string }) => Promise<void>
   /** Handle OAuth callback (exchange code for tokens) */
   handleCallback: (code: string, state: string) => Promise<void>
   /** Handle and scrub the current OAuth redirect callback URL */
@@ -109,8 +109,8 @@ export function IamProvider({ children, locale, localization, colorScheme, appea
     }
   }, [client])
 
-  const login = useCallback(async () => {
-    const url = await client.startAuthorizationFlow()
+  const login = useCallback(async (options?: { locale?: string }) => {
+    const url = await client.startAuthorizationFlow(options)
     window.location.href = url
   }, [client])
 

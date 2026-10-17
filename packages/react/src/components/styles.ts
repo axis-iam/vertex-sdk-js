@@ -28,7 +28,7 @@ const DEFAULT_APPEARANCE: Required<Appearance> = {
   mutedTextColor: '#64748b',
   surfaceColor: '#ffffff',
   subtleColor: '#f8fafc',
-  borderColor: '#dbe3ea',
+  borderColor: '#7b8798',
   inputBackgroundColor: '#ffffff',
   successColor: '#15803d',
   warningColor: '#a16207',
@@ -39,13 +39,13 @@ const DEFAULT_APPEARANCE: Required<Appearance> = {
 }
 
 export const darkAppearanceDefaults: Appearance = {
-  primaryColor: '#0284c7',
+  primaryColor: '#0369a1',
   backgroundColor: '#101417',
   textColor: '#f4f7f8',
   mutedTextColor: '#a6b0b5',
   surfaceColor: '#151a1e',
   subtleColor: '#20272c',
-  borderColor: '#3b464d',
+  borderColor: '#75838c',
   inputBackgroundColor: '#101417',
   successColor: '#6ee7a0',
   warningColor: '#f7c66b',
@@ -88,7 +88,11 @@ export function useResolvedAppearance(
   }, [colorScheme])
 
   const dark = colorScheme === 'dark' || (colorScheme === 'system' && systemDark)
-  const shared = { borderRadius: appearance?.borderRadius, fontFamily: appearance?.fontFamily }
+  const shared = {
+    ...(appearance?.primaryColor !== undefined ? { primaryColor: appearance.primaryColor } : {}),
+    ...(appearance?.borderRadius !== undefined ? { borderRadius: appearance.borderRadius } : {}),
+    ...(appearance?.fontFamily !== undefined ? { fontFamily: appearance.fontFamily } : {}),
+  }
   return [dark
     ? resolveAppearance({ ...darkAppearanceDefaults, ...shared, ...darkAppearance })
     : resolveAppearance(appearance), dark ? 'dark' : 'light'] as const
@@ -120,7 +124,6 @@ export function inputStyle(a: Required<Appearance>): CSSProperties {
     borderRadius: a.borderRadius,
     backgroundColor: a.inputBackgroundColor,
     color: a.textColor,
-    outline: 'none',
     boxSizing: 'border-box',
     transition: 'border-color 0.15s',
   }
@@ -164,7 +167,7 @@ export function errorStyle(a: Required<Appearance>): CSSProperties {
 }
 
 export function linkStyle(a: Required<Appearance>): CSSProperties {
-  return { color: a.primaryColor, fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', padding: 0, textDecoration: 'underline' }
+  return { color: a.focusColor, fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', padding: 0, textDecoration: 'underline' }
 }
 
 export function dividerStyle(a: Required<Appearance>): CSSProperties {

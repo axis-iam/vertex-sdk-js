@@ -1,3 +1,5 @@
+export { useAuthFlow, AuthFlowStateError } from './hooks/useAuthFlow'
+export type { AuthFlowState, AuthFlowActions, AuthFlowIntent, AuthCredentialMethod, UseAuthFlowOptions, UseAuthFlowResult } from './hooks/useAuthFlow'
 // --- Provider ---
 export { IamProvider } from './provider/IamProvider'
 export type { IamProviderProps, IamContextValue } from './provider/IamProvider'
@@ -173,3 +175,6 @@ export type {
 
 // --- Re-export core permission utils for convenience ---
 export { hasPermission, hasAllPermissions, hasAnyPermission, matchPermission } from '@axis-iam/vertex'
+
+export { useBranding, BrandingFetchError } from './components/useBranding'
+export type { BrandingConfig, BrandingIntent, UseBrandingResult } from './components/useBranding'

@@ -49,6 +49,10 @@ export interface IamLocalization {
     resend: string
     resendIn: (seconds: number) => string
     verifying: string
+    mfaDescription: string
+    authenticatorCode: string
+    verify: string
+    back: string
     signInBusy: string
     forgotPassword: string
     providerSignIn: (provider: string) => string
@@ -61,6 +65,12 @@ export interface IamLocalization {
     sending: string
     credentialMethod: (method: 'password' | 'sms' | 'magic_link' | 'email_otp') => string
     redirecting: string
+    noAccount: string
+    haveAccount: string
+    signUp: string
+    brandingLoading: string
+    brandingUnavailable: string
+    retryBranding: string
     logoAlt: string
   }
   authDialog: {
@@ -71,6 +81,8 @@ export interface IamLocalization {
   }
   signUp: {
     title: string
+    username: string
+    usernamePlaceholder: string
     email: string
     emailPlaceholder: string
     password: string
@@ -91,11 +103,14 @@ export interface IamLocalization {
     verificationEmailSent: string
     verificationEmailFailed: string
     accessCode: string
+    accessCodeOptional: string
+    accessCodeRequired: string
     accessCodePlaceholder: string
     invitationRequired: string
     invitationOrAccessCodeRequired: string
     passwordMismatch: string
     passwordMinLength: string
+    passwordRequirements: (minimum: number, rules?: { requireUppercase: boolean; requireLowercase: boolean; requireDigit: boolean; requireSpecialChar: boolean; breachedPasswordCheck: boolean }) => string
     unavailable: string
     grantNotAccepted: string
     signUp: string
@@ -218,17 +233,22 @@ export const iamLocalizationEnglish: IamLocalization = {
     verificationCode: 'Verification code', verificationCodePlaceholder: 'Enter 6-digit code', sendCode: 'Send code', resend: 'Resend', resendIn: (seconds) => `Resend in ${seconds}s`,
     verifying: 'Verifying...', signInBusy: 'Signing in...', forgotPassword: 'Forgot password?', providerSignIn: (provider) => `Continue with ${provider}`,
     magicLinkSent: (email) => `We sent a sign-in link to ${email}.`, sendMagicLink: 'Send magic link', sendingMagicLink: 'Sending link...',
-    resendVerification: 'Resend verification email', verificationEmailSent: 'Verification email sent.', verificationEmailFailed: 'Verification email could not be sent. Try again later.', sending: 'Sending...', credentialMethod: (method) => ({ password: 'Password', email_otp: 'Email code', magic_link: 'Magic link', sms: 'SMS code' })[method], redirecting: 'Redirecting...', logoAlt: 'Application logo',
+    resendVerification: 'Resend verification email', verificationEmailSent: 'Verification email sent.', verificationEmailFailed: 'Verification email could not be sent. Try again later.', sending: 'Sending...', credentialMethod: (method) => ({ password: 'Password', email_otp: 'Email code', magic_link: 'Magic link', sms: 'SMS code' })[method], redirecting: 'Redirecting...', noAccount: "Don't have an account?", haveAccount: 'Already have an account?', signUp: 'Sign up', brandingLoading: 'Loading application branding…', brandingUnavailable: 'Application branding could not be loaded.', retryBranding: 'Retry branding', logoAlt: 'Application logo',
+    mfaDescription: 'Enter the code from your authenticator app to finish signing in.', authenticatorCode: 'Authenticator code', verify: 'Verify and sign in', back: 'Back',
   },
-  authDialog: { close: 'Close authentication dialog', signInTab: 'Sign in', signUpTab: 'Sign up', title: (view) => view === 'sign-in' ? 'Sign in' : 'Create account' },
+  authDialog: { close: 'Close authentication dialog', signInTab: 'Already have an account? Sign in', signUpTab: "Don't have an account? Sign up", title: (view) => view === 'sign-in' ? 'Sign in' : 'Create account' },
   signUp: {
-    title: 'Create account', email: 'Email', emailPlaceholder: 'you@example.com', password: 'Password', passwordPlaceholder: 'At least 8 characters',
+    title: 'Create account', username: 'Username (optional)', usernamePlaceholder: 'Choose a username', email: 'Email', emailPlaceholder: 'you@example.com', password: 'Password', passwordPlaceholder: 'At least 8 characters',
     confirmPassword: 'Confirm password', confirmPasswordPlaceholder: 'Confirm your password', createAccount: 'Create account', creatingAccount: 'Creating account...',
     checkEmail: 'Check your email', accountCreated: 'Account created', accountCreatedDetail: (email) => `${email} can now sign in.`,
     verificationOptional: (email) => `We sent a verification email to ${email}. You can sign in now and verify your email when you are ready.`,
     verificationRequired: (email) => `We sent a verification email to ${email}. Verify your email before signing in.`, verificationUnknown: 'Your account was created. Check your email for any verification message from this application.',
     resendVerification: 'Resend verification email', resendIn: (seconds) => `Resend in ${seconds}s`, sending: 'Sending...', verificationEmailSent: 'Verification email sent.', verificationEmailFailed: 'Verification email could not be sent. Try again later.',
-    accessCode: 'Registration access code', accessCodePlaceholder: 'Enter access code', invitationRequired: 'An invitation is required to create an account.', invitationOrAccessCodeRequired: 'An invitation or registration access code is required.', passwordMismatch: 'Passwords do not match', passwordMinLength: 'Password must be at least 8 characters', unavailable: 'Sign-up is unavailable right now.', grantNotAccepted: 'This registration invitation is not accepted by this application.', signUp: 'Sign up',
+    accessCodeOptional: 'Registration access code (optional)', accessCodeRequired: 'Registration access code (required)', accessCode: 'Registration access code', accessCodePlaceholder: 'Enter access code', invitationRequired: 'An invitation is required to create an account.', invitationOrAccessCodeRequired: 'An invitation or registration access code is required.', passwordMismatch: 'Passwords do not match', passwordMinLength: 'Password must be at least 8 characters',
+    passwordRequirements: (minimum, rules) => {
+      const required = rules ? [rules.requireUppercase && 'an uppercase letter', rules.requireLowercase && 'a lowercase letter', rules.requireDigit && 'a digit', rules.requireSpecialChar && 'a symbol'].filter(Boolean) : []
+      return `Use at least ${minimum} characters${required.length ? `, including ${required.join(', ')}` : ''}.${rules?.breachedPasswordCheck ? ' Passwords found in known data breaches are not allowed.' : ''}`
+    }, unavailable: 'Sign-up is unavailable right now.', grantNotAccepted: 'This registration invitation is not accepted by this application.', signUp: 'Sign up',
   },
   passwordReset: {
     resetPassword: 'Reset password', createNewPassword: 'Create new password', checkEmail: 'Check your email', resetSent: 'If an account exists, a password reset link has been sent.',
@@ -261,11 +281,16 @@ export const iamLocalizationZhCN: IamLocalization = {
     sessionCount: (count) => `${count} 个活跃会话`, revokeSessionAria: (sessionId) => `撤销会话 ${sessionId}`, permissionResult: (permission, allowed) => `${permission}：${allowed ? '允许' : '拒绝'}`, profileStatus: (status) => formatProfileStatus(status, 'zh-CN'), errorMessage: () => '无法完成该操作，请重试。', formatDateTime: (value) => formatDateTime(value, 'zh-CN'),
   },
   auth: {
-    signIn: '登录', signedInAs: (email) => `已登录为 ${email}`, loadingOptions: '正在加载登录选项…', optionsUnavailable: '暂时无法使用登录选项。', noMethodAvailable: '当前没有可用的登录方式。', identifierLabel: '邮箱或手机号', identifierPlaceholder: 'you@example.com 或 +86 13800138000', identifierInvalid: '请输入有效的邮箱地址或手机号。', continue: '继续', signingInAs: (identifier) => `正在以 ${identifier} 登录`, change: '更改', noMethodForIdentifier: '此标识没有可用的登录方式。', or: '或', password: '密码', passwordPlaceholder: '请输入您的密码', email: '邮箱', emailPlaceholder: 'you@example.com', phone: '手机号', phonePlaceholder: '+86 13800138000', verificationCode: '验证码', verificationCodePlaceholder: '请输入 6 位验证码', sendCode: '发送验证码', resend: '重新发送', resendIn: (seconds) => `${seconds} 秒后重新发送`, verifying: '正在验证…', signInBusy: '正在登录…', forgotPassword: '忘记密码？', providerSignIn: (provider) => `使用 ${provider} 继续`, magicLinkSent: (email) => `我们已向 ${email} 发送登录链接。`, sendMagicLink: '发送登录链接', sendingMagicLink: '正在发送链接…', resendVerification: '重新发送验证邮件', verificationEmailSent: '验证邮件已发送。', verificationEmailFailed: '无法发送验证邮件，请稍后重试。', sending: '正在发送…', credentialMethod: (method) => ({ password: '密码', email_otp: '邮箱验证码', magic_link: '登录链接', sms: '短信验证码' })[method], redirecting: '正在跳转…', logoAlt: '应用标志',
+    signIn: '登录', signedInAs: (email) => `已登录为 ${email}`, loadingOptions: '正在加载登录选项…', optionsUnavailable: '暂时无法使用登录选项。', noMethodAvailable: '当前没有可用的登录方式。', identifierLabel: '邮箱或手机号', identifierPlaceholder: 'you@example.com 或 +86 13800138000', identifierInvalid: '请输入有效的邮箱地址或手机号。', continue: '继续', signingInAs: (identifier) => `正在以 ${identifier} 登录`, change: '更改', noMethodForIdentifier: '此标识没有可用的登录方式。', or: '或', password: '密码', passwordPlaceholder: '请输入您的密码', email: '邮箱', emailPlaceholder: 'you@example.com', phone: '手机号', phonePlaceholder: '+86 13800138000', verificationCode: '验证码', verificationCodePlaceholder: '请输入 6 位验证码', sendCode: '发送验证码', resend: '重新发送', resendIn: (seconds) => `${seconds} 秒后重新发送`, verifying: '正在验证…', signInBusy: '正在登录…', forgotPassword: '忘记密码？', providerSignIn: (provider) => `使用 ${provider} 继续`, magicLinkSent: (email) => `我们已向 ${email} 发送登录链接。`, sendMagicLink: '发送登录链接', sendingMagicLink: '正在发送链接…', resendVerification: '重新发送验证邮件', verificationEmailSent: '验证邮件已发送。', verificationEmailFailed: '无法发送验证邮件，请稍后重试。', sending: '正在发送…', credentialMethod: (method) => ({ password: '密码', email_otp: '邮箱验证码', magic_link: '登录链接', sms: '短信验证码' })[method], redirecting: '正在跳转…', noAccount: '还没有账户？', haveAccount: '已有账户？', signUp: '注册', brandingLoading: '正在加载应用品牌…', brandingUnavailable: '无法加载应用品牌。', retryBranding: '重试品牌加载', logoAlt: '应用标志',
+    mfaDescription: '请输入身份验证器中的验证码以完成登录。', authenticatorCode: '身份验证器验证码', verify: '验证并登录', back: '返回',
   },
-  authDialog: { close: '关闭认证窗口', signInTab: '登录', signUpTab: '注册', title: (view) => view === 'sign-in' ? '登录' : '创建账户' },
+  authDialog: { close: '关闭认证窗口', signInTab: '已有账户？登录', signUpTab: '还没有账户？注册', title: (view) => view === 'sign-in' ? '登录' : '创建账户' },
   signUp: {
-    title: '创建账户', email: '邮箱', emailPlaceholder: 'you@example.com', password: '密码', passwordPlaceholder: '至少 8 个字符', confirmPassword: '确认密码', confirmPasswordPlaceholder: '再次输入您的密码', createAccount: '创建账户', creatingAccount: '正在创建账户…', checkEmail: '查看您的邮箱', accountCreated: '账户已创建', accountCreatedDetail: (email) => `${email} 现在可以登录。`, verificationOptional: (email) => `我们已向 ${email} 发送验证邮件。您可以现在登录，并在方便时完成验证。`, verificationRequired: (email) => `我们已向 ${email} 发送验证邮件。请先验证邮箱再登录。`, verificationUnknown: '您的账户已创建。请查看来自此应用的验证邮件。', resendVerification: '重新发送验证邮件', resendIn: (seconds) => `${seconds} 秒后重新发送`, sending: '正在发送…', verificationEmailSent: '验证邮件已发送。', verificationEmailFailed: '无法发送验证邮件，请稍后重试。', accessCode: '注册访问码', accessCodePlaceholder: '请输入访问码', invitationRequired: '创建账户需要邀请。', invitationOrAccessCodeRequired: '注册需要邀请或注册访问码。', passwordMismatch: '两次输入的密码不一致', passwordMinLength: '密码至少需要 8 个字符', unavailable: '暂时无法注册。', grantNotAccepted: '此应用不接受该注册邀请。', signUp: '注册',
+    title: '创建账户', username: '用户名（可选）', usernamePlaceholder: '请输入用户名', email: '邮箱', emailPlaceholder: 'you@example.com', password: '密码', passwordPlaceholder: '至少 8 个字符', confirmPassword: '确认密码', confirmPasswordPlaceholder: '再次输入您的密码', createAccount: '创建账户', creatingAccount: '正在创建账户…', checkEmail: '查看您的邮箱', accountCreated: '账户已创建', accountCreatedDetail: (email) => `${email} 现在可以登录。`, verificationOptional: (email) => `我们已向 ${email} 发送验证邮件。您可以现在登录，并在方便时完成验证。`, verificationRequired: (email) => `我们已向 ${email} 发送验证邮件。请先验证邮箱再登录。`, verificationUnknown: '您的账户已创建。请查看来自此应用的验证邮件。', resendVerification: '重新发送验证邮件', resendIn: (seconds) => `${seconds} 秒后重新发送`, sending: '正在发送…', verificationEmailSent: '验证邮件已发送。', verificationEmailFailed: '无法发送验证邮件，请稍后重试。', accessCodeOptional: '注册访问码（选填）', accessCodeRequired: '注册访问码（必填）', accessCode: '注册访问码', accessCodePlaceholder: '请输入访问码', invitationRequired: '创建账户需要邀请。', invitationOrAccessCodeRequired: '注册需要邀请或注册访问码。', passwordMismatch: '两次输入的密码不一致', passwordMinLength: '密码至少需要 8 个字符',
+    passwordRequirements: (minimum, rules) => {
+      const required = rules ? [rules.requireUppercase && '大写字母', rules.requireLowercase && '小写字母', rules.requireDigit && '数字', rules.requireSpecialChar && '符号'].filter(Boolean) : []
+      return `请使用至少 ${minimum} 个字符${required.length ? `，并包含${required.join('、')}` : ''}。${rules?.breachedPasswordCheck ? '不得使用已知泄露的密码。' : ''}`
+    }, unavailable: '暂时无法注册。', grantNotAccepted: '此应用不接受该注册邀请。', signUp: '注册',
   },
   passwordReset: { resetPassword: '重置密码', createNewPassword: '创建新密码', checkEmail: '查看您的邮箱', resetSent: '如果该账户存在，密码重置链接已发送。', email: '邮箱', emailPlaceholder: 'you@example.com', sendResetLink: '发送重置链接', sending: '正在发送…', newPassword: '新密码', passwordPlaceholder: '至少 8 个字符', confirmPassword: '确认密码', confirmPasswordPlaceholder: '再次输入您的密码', resetting: '正在重置…', resetComplete: '密码已重置', resetCompleteDetail: '您的密码已更新，请使用新密码登录。', resetTokenRequired: '需要密码重置令牌', passwordMinLength: '密码至少需要 8 个字符', passwordMismatch: '两次输入的密码不一致', invalidEmail: '请输入有效的邮箱地址' },
   connectedAccounts: { aria: '已关联账户', title: '已关联账户', description: '管理此账户的登录方式。', signInMethods: '登录方式', noSignInMethods: '没有可用的登录方式。', connectAccount: '关联账户', noProviders: '没有可关联的身份提供商。', loading: '正在加载已关联账户', disconnect: '解除关联', disconnecting: '正在解除关联', disconnectAria: (name) => `解除 ${name} 的关联`, connect: '关联', opening: '正在打开', connectAria: (name) => `关联 ${name}`, connected: '已关联', connectedAt: (value) => `关联时间：${value}`, requiredForAccess: '需要保留此方式以确保账户可以登录。', confirmDisconnect: (name) => `解除 ${name} 的关联吗？`, stepUpRequired: '请再次验证后继续。', stepUpRequiredWithMethods: (methods) => `请再次验证后继续。可用方式：${methods}。`, unavailable: '暂时无法使用已关联账户。', credential: '凭据', credentialType: (type) => formatCredentialType(type, 'zh-CN'), providerType: (providerType, protocol) => formatProviderType(providerType, protocol, 'zh-CN'), stepUpMethod: (method) => formatStepUpMethod(method, 'zh-CN') },
