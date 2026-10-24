@@ -123,7 +123,7 @@ describe('OAuthClient account organization onboarding surface', () => {
         }),
       })
 
-    await client.updateAccountProfile({ username: 'new-user', displayName: 'New User', avatarUrl: null })
+    await client.updateAccountProfile({ displayName: 'New User', avatarUrl: null })
 
     const request = fetchMock.mock.calls.at(-1)
     expect(request?.[0]).toBe(`${ISSUER}/api/v1/auth/me/profile`)
@@ -133,7 +133,6 @@ describe('OAuthClient account organization onboarding surface', () => {
       'Content-Type': 'application/json',
     })
     expect(JSON.parse(request?.[1]?.body as string)).toEqual({
-      username: 'new-user',
       displayName: 'New User',
       avatarUrl: null,
     })

@@ -1,43 +1,39 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback } from 'react'
 import { useIamContext } from '../provider/IamProvider'
-import { requestNoContent } from '../core/http-client'
+import { requestJson } from '../core/http-client'
+import { IamConfigurationError } from '../core/types'
 
-/**
- * Step-up authentication hook.
- * Triggers MFA challenge for sensitive operations.
- *
- * @example
- * ```tsx
- * const { stepUp, isSteppedUp } = useStepUp()
- * async function handleSensitive() {
- *   if (!isSteppedUp) await stepUp({ reason: 'Confirm payment' })
- *   // proceed with sensitive action
- * }
- * ```
- */
+export type StepUpTrigger = 'PASSWORD_CHANGE' | 'MFA_CHANGE' | 'LOGIN_METHOD_CHANGE' | 'ACCOUNT_DELETE'
+  | 'ADMIN_ACCOUNT_RECOVERY_VERIFY' | 'ADMIN_ACCOUNT_RECOVERY' | 'ADMIN_IMPERSONATION'
+  | 'GLOBAL_IDENTITY_FREEZE' | 'SECRET_ROTATION'
+
+/** The server owns purpose/session-bound grants; displayed assurance is never a grant. */
 export function useStepUp() {
   const { user, client } = useIamContext()
-
-  const isSteppedUp = useMemo(() => {
-    return user?.raw.acr === 'urn:iam:acr:mfa'
-  }, [user?.raw.acr])
-
-  const stepUp = useCallback(async (options?: { reason?: string }) => {
+  const start = useCallback(async (trigger: StepUpTrigger, reason?: string) => {
+    if (client.mode === 'server_session') return client.startStepUp(trigger, reason ?? trigger)
     const token = client.getAccessToken()
-    if (!token) throw new Error('Not authenticated')
-    const generation = client.tokenManager.generation
-
-    await requestNoContent(`${(await client.discover()).issuer}/api/v1/auth/step-up/challenge`, {
-      method: 'POST',
-      bearerToken: token,
-      json: { reason: options?.reason },
-    })
-    client.tokenManager.assertCurrent(generation, token)
-
-    // After step-up, the server issues a new token with elevated acr
-    // The token refresh mechanism will pick up the new token
-    await client.refreshToken()
+    if (!token || !client.isAuthenticated()) throw new Error('Not authenticated')
+    const generation = client.state.generation
+    const config = await client.discover()
+    client.state.assertCurrent(generation, token)
+    const data = await requestJson<{ challengeId: string; availableMethods: string[] }>(
+      `${config.issuer}/api/v1/auth/step-up/start`, { bearerToken: token, json: { trigger, ...(reason ? { reason } : {}) } })
+    client.state.assertCurrent(generation, token)
+    if (!data || typeof data.challengeId !== 'string' || !data.challengeId || !Array.isArray(data.availableMethods)
+      || !data.availableMethods.every(method => method === 'totp' || method === 'webauthn'))
+      throw new IamConfigurationError('Invalid step-up challenge')
+    // Continuations capture this token and generation; another login cannot reuse the challenge.
+    return { challengeId: data.challengeId, availableMethods: data.availableMethods, verifyTotp: async (code: string) => {
+      client.state.assertCurrent(generation, token)
+      if (!client.isAuthenticated()) throw new Error('Not authenticated')
+      if (!data.availableMethods.includes('totp')) throw new IamConfigurationError('TOTP is unavailable for this challenge')
+      const result = await requestJson<{ verified: boolean }>(`${config.issuer}/api/v1/auth/step-up/verify`,
+        { bearerToken: token, json: { challengeId: data.challengeId, code } })
+      client.state.assertCurrent(generation, token)
+      if (result?.verified !== true) throw new IamConfigurationError('Step-up was not verified')
+      // The sensitive API consumes the server grant. No refresh or local "stepped up" flag.
+    } }
   }, [client])
-
-  return { stepUp, isSteppedUp }
+  return { start, authenticationContext: user?.authenticationContext ?? null }
 }

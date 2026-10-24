@@ -41,7 +41,7 @@ describe('shared Direct completion ownership', () => {
         await waitFor(() => expect(hook.result.current.state.step).toBe('identifier'))
         act(() => {
           hook.result.current.actions.continueWithIdentifier(
-            method === 'sms' ? '+15555550123' : 'u@example.invalid',
+            method === 'sms' ? { kind: 'PHONE', value: '+15555550123' } : { kind: 'EMAIL', value: 'u@example.invalid' },
           )
           hook.result.current.actions.selectMethod(method)
         })
@@ -72,7 +72,7 @@ describe('shared Direct completion ownership', () => {
           if (replacement === 'logout') client.tokenManager.clear()
           if (replacement === 'dispose') client.dispose()
           if (replacement === 'new-login')
-            client.tokenManager.store(token('new-login'), 'DIRECT_AUTH', 'DIRECT_AUTH')
+            client.tokenManager.store(token('new-login'), 'OAUTH_AUTHORIZATION_CODE', 'OAUTH_TOKEN_ENDPOINT')
         })
         await act(async () => {
           complete(new Response(JSON.stringify(token('old-login')), { status: 200 }))

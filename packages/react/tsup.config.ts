@@ -14,12 +14,4 @@ export default defineConfig([
       options.jsx = 'automatic'
     },
   },
-  {
-    entry: { server: 'src/server.ts' },
-    format: ['esm', 'cjs'],
-    dts: true,
-    sourcemap: true,
-    external: ['react', 'react-dom', '@axis-iam/vertex'],
-    platform: 'node',
-  },
 ])

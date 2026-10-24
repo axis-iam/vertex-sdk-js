@@ -12,7 +12,7 @@ const clientId = process.env.IAM_LIFECYCLE_CLIENT_ID
 const identifier = process.env.IAM_LIFECYCLE_IDENTIFIER
 const password = process.env.IAM_LIFECYCLE_PASSWORD
 const fixturesOnly = process.argv.includes('--fixtures-only')
-if (!fixturesOnly && !(issuer && clientId && identifier && password)) throw new Error('The live gate requires IAM_LIFECYCLE_ISSUER/CLIENT_ID/IDENTIFIER/PASSWORD')
+if (!fixturesOnly) throw new Error('Live password admission requires the unified transaction fixture; use --fixtures-only for bounded OAuth lifecycle checks')
 const consumer = join(output, 'consumer')
 const artifacts = join(output, 'artifacts')
 const profile = join(output, 'chrome-profile')
@@ -70,13 +70,6 @@ const server = createServer(async (request, response) => {
     if (url.pathname === '/browser.js') { response.writeHead(200, { 'Content-Type': 'text/javascript' }); response.end(await readFile(join(consumer, 'browser.js'))); return }
     if (url.pathname === '/counts') return json(response, { count: counts.get(url.searchParams.get('name')) ?? 0 })
     if (url.pathname === '/live/config') return json(response, { enabled: !fixturesOnly, issuer, clientId })
-    if (url.pathname === '/live/login') {
-      if (fixturesOnly || request.method !== 'POST') return json(response, {}, 404)
-      const upstream = await fetch(`${issuer}/api/v1/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier, password, client_id: clientId }) })
-      response.writeHead(upstream.status, { 'Content-Type': 'application/json' })
-      response.end(await upstream.text())
-      return
-    }
     if (url.pathname === '/live/oauth/authorize') {
       if (fixturesOnly || request.method !== 'POST') return json(response, {}, 404)
       let body = ''
@@ -114,14 +107,14 @@ const server = createServer(async (request, response) => {
       return json(response, { redirected: result.status >= 300 && result.status < 400 })
     }
     if (url.pathname.endsWith('/openid-configuration')) return json(response, { issuer: origin, authorization_endpoint: `${origin}/authorize`, token_endpoint: `${origin}/token`, userinfo_endpoint: `${origin}/userinfo`, jwks_uri: `${origin}/jwks`, end_session_endpoint: `${origin}/end-session` })
+    if (url.pathname.endsWith('/me')) return json(response,{ id: 'fixture-user', email: null, username: null, status:'ACTIVE', emailVerified:true, metadata:{}, authenticationContext:{subjectType:'USER',applicationId:'fixture-app',clientId:'fixture-client',sessionId:'fixture-session',workspaceId:null,workspaceSelectionRequired:true,organizationId:null,organizationSlug:null,organizationRole:null,authTime:null,authenticationMethods:[],assuranceLevel:null,impersonation:null} })
     if (url.pathname.endsWith('/permissions')) return json(response, { applicationId: 'fixture-app', organizationId: null, roles: ['member'], permissions: ['orders:read'] })
     if (url.pathname === '/api/v1/auth/logout') { response.writeHead(204); response.end(); return }
-    if (url.pathname === '/api/v1/auth/token/refresh' || url.pathname === '/token') {
+    if (url.pathname === '/token') {
       let body = ''
       for await (const chunk of request) body += chunk
-      const oauth = url.pathname === '/token'
-      const payload = oauth ? Object.fromEntries(new URLSearchParams(body)) : JSON.parse(body)
-      if (oauth && (payload.grant_type !== 'refresh_token' || !String(request.headers['content-type']).includes('application/x-www-form-urlencoded'))) return json(response, {}, 400)
+      const payload = Object.fromEntries(new URLSearchParams(body))
+      if ((payload.grant_type !== 'refresh_token' || !String(request.headers['content-type']).includes('application/x-www-form-urlencoded'))) return json(response, {}, 400)
       const match = /^fixture-(.+)-initial$/.exec(payload.refresh_token)
       if (!match) return json(response, { error: 'invalid_grant' }, 400)
       const name = match[1]

@@ -1,3 +1,5 @@
+import { ServerSessionClient } from '../core/server-session-client'
+import type { AuthClient } from '../core/auth-client'
 import { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import type { ReactNode } from 'react'
 import { OAuthClient } from '../core/oauth-client'
@@ -26,6 +28,7 @@ export interface IamContextValue {
   initializationError: Error | null
   /** Most recent permissions fetch error. Permissions remain fail-closed on error. */
   permissionFetchError: Error | null
+  sessionView: ReturnType<AuthClient['state']['getViewState']>
   /** Safe failure metadata for automatic or manual refresh. */
   tokenRefreshError: IamTokenRefreshError | null
   /** Refresh and atomically apply tokens and authoritative authorization. */
@@ -45,7 +48,7 @@ export interface IamContextValue {
   /** Get current access token (for API calls) */
   getAccessToken: () => string | null
   /** Underlying OAuthClient instance (advanced usage) */
-  client: OAuthClient
+  client: AuthClient
 }
 
 const IamContext = createContext<IamContextValue | null>(null)
@@ -55,7 +58,7 @@ export interface IamProviderProps extends IamConfig, IamUiConfig {
 }
 
 export function IamProvider({ children, locale, localization, colorScheme, appearance, darkAppearance, ...config }: IamProviderProps) {
-  const clientRef = useRef<OAuthClient | null>(null)
+  const clientRef = useRef<AuthClient | null>(null)
   const [user, setUser] = useState<IamUser | null>(null)
   const [isLoaded, setIsLoaded] = useState(false)
   const [initializationError, setInitializationError] = useState<Error | null>(null)
@@ -64,47 +67,33 @@ export function IamProvider({ children, locale, localization, colorScheme, appea
 
   // Initialize OAuthClient once
   if (!clientRef.current) {
-    clientRef.current = new OAuthClient(config, { startPaused: true })
+    clientRef.current = config.sessionMode === 'server_session' ? new ServerSessionClient(config) : new OAuthClient(config, { startPaused: true })
   }
   const client = clientRef.current
+  const [sessionView, setSessionView] = useState(() => client.state.getViewState())
 
   // Listen for token changes
   useEffect(() => {
     let active = true
-    client.tokenManager.resume()
-    client.tokenManager.setTokensChangedHandler((newUser) => {
-      setUser(newUser)
-    })
-    client.tokenManager.setPermissionErrorChangedHandler((nextPermissionError) => {
-      setPermissionFetchError(nextPermissionError)
-    })
-    client.tokenManager.setRefreshErrorChangedHandler(setTokenRefreshError)
-
-    // Check existing tokens on mount
-    const existingUser = client.tokenManager.getUser()
-    setUser(existingUser)
-    setPermissionFetchError(client.tokenManager.getLastPermissionError())
-    setTokenRefreshError(client.tokenManager.getLastRefreshError())
-
-    // Pre-fetch OIDC discovery, then fetch permissions if authenticated
-    client.discover()
-      .then(async () => {
-        if (!active) return
-        setInitializationError(null)
-        if (client.isAuthenticated()) {
-          await client.fetchPermissions()
-          if (active) setPermissionFetchError(client.tokenManager.getLastPermissionError())
-        }
-      })
-      .catch((err: unknown) => {
-        if (active) setInitializationError(err instanceof Error ? err : new Error('IAM initialization failed'))
-      })
-      .finally(() => {
-        if (active) setIsLoaded(true)
-      })
+    const update = () => {
+      if (!active) return
+      setUser(client.state.getUser())
+      setSessionView(client.state.getViewState())
+      if (client.mode === 'oauth_tokens') {
+        setPermissionFetchError(client.tokenManager.getLastPermissionError())
+        setTokenRefreshError(client.tokenManager.getLastRefreshError())
+      }
+    }
+    const unsubscribe = client.state.subscribe(update)
+    update()
+    client.initialize()
+      .then(() => { if (active) { setInitializationError(null); update() } })
+      .catch((err: unknown) => { if (active) setInitializationError(err instanceof Error ? err : new Error('IAM initialization failed')) })
+      .finally(() => { if (active) setIsLoaded(true) })
 
     return () => {
       active = false
+      unsubscribe()
       client.dispose()
     }
   }, [client])
@@ -145,6 +134,7 @@ export function IamProvider({ children, locale, localization, colorScheme, appea
 
   const value = useMemo<IamContextValue>(() => ({
     user,
+    sessionView,
     isLoaded,
     isAuthenticated: !!user,
     initializationError,
@@ -159,7 +149,7 @@ export function IamProvider({ children, locale, localization, colorScheme, appea
     logout,
     getAccessToken,
     client,
-  }), [user, isLoaded, initializationError, permissionFetchError, tokenRefreshError, refreshToken, login, handleCallback, handleRedirectCallback, getAppContinuation, getLogoutUrl, logout, getAccessToken, client])
+  }), [user, sessionView, isLoaded, initializationError, permissionFetchError, tokenRefreshError, refreshToken, login, handleCallback, handleRedirectCallback, getAppContinuation, getLogoutUrl, logout, getAccessToken, client])
 
   return (
     <IamUiProvider locale={locale} localization={localization} colorScheme={colorScheme} appearance={appearance} darkAppearance={darkAppearance}>

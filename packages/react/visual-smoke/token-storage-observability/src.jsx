@@ -5,6 +5,7 @@ import { IamConfigurationError, IamProvider, SignIn, useAuth } from '@axis-iam/v
 const mode = new URLSearchParams(location.search).get('mode') ?? 'memory'
 const sessionKey = 'axis_iam_session'
 const sensitiveMarker = 'SENSITIVE_TOKEN_MARKER'
+const callbackState = 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc'
 const original = {
   getItem: Storage.prototype.getItem,
   setItem: Storage.prototype.setItem,
@@ -17,8 +18,12 @@ window.__authTransitions = []
 if (mode === 'valid' || mode === 'remove') seedValidSession()
 if (mode === 'corrupt') sessionStorage.setItem(sessionKey, `{"token":"${sensitiveMarker}"`)
 if (mode === 'write') {
-  sessionStorage.setItem('iam_oauth_state', 'expected-state')
-  sessionStorage.setItem('iam_pkce_verifier', 'verifier-value')
+  sessionStorage.setItem('axis_iam_pending_authorization', JSON.stringify({
+    version: 1, issuer: location.origin, clientId: 'packed-client',
+    redirectUri: new URL('/callback', location.origin).href, entryMode: 'HOSTED',
+    flowOwner: callbackState, state: callbackState, verifier: callbackState,
+    expiresAt: new Date(Date.now() + 600000).toISOString(),
+  }))
 }
 
 if (mode === 'memory') denyAllStorage()
@@ -73,7 +78,7 @@ function Probe() {
             if (key === sessionKey) throw new DOMException(`write denied ${sensitiveMarker}`, 'SecurityError')
             return original.setItem.call(this, key, value)
           }
-          await auth.handleCallback('authorization-code', 'expected-state')
+          await auth.handleCallback('authorization-code', callbackState)
         } else if (mode === 'remove') {
           Storage.prototype.removeItem = function (key) {
             storageCalls.remove++
@@ -136,10 +141,10 @@ function seedValidSession() {
   const now = Math.floor(Date.now() / 1000)
   const accessToken = jwt({ sub: 'packed-user', exp: now + 3600, roles: ['stale-role'] })
   sessionStorage.setItem(sessionKey, JSON.stringify({
-    version: 3,
+    version: 6,
+    expiresAt: Date.now()+3600_000,
+    owner:null,
     tokens: { access_token: accessToken, id_token: 'packed-id-token', token_type: 'Bearer', expires_in: 3600 },
-    roles: ['member'],
-    permissions: ['orders:read'],
     authenticationProvenance: 'OAUTH_AUTHORIZATION_CODE',
     refreshProvenance: null,
   }))
@@ -150,7 +155,8 @@ function jwt(payload) {
   return `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode(payload)}.signature`
 }
 
-globalThis.fetch = async (input) => {
+let pendingAuthentication
+globalThis.fetch = async (input,init) => {
   const url = String(input instanceof Request ? input.url : input)
   if (url.endsWith('/.well-known/openid-configuration')) return json({
     issuer: location.origin,
@@ -161,7 +167,7 @@ globalThis.fetch = async (input) => {
     end_session_endpoint: `${location.origin}/logout`,
   })
   if (url.endsWith('/token')) return json({
-    access_token: jwt({ sub: 'packed-user', exp: Math.floor(Date.now() / 1000) + 3600 }),
+    access_token: jwt({ sub: mode==='memory'?'memory-user':'packed-user', exp: Math.floor(Date.now() / 1000) + 3600 }),
     refresh_token: sensitiveMarker,
     token_type: 'Bearer',
     expires_in: 3600,
@@ -175,7 +181,6 @@ globalThis.fetch = async (input) => {
     socialLoginEnabled: false,
     signupEnabled: false,
     selfRegistrationEnabled: false,
-    emailVerificationMode: 'OFF',
     idpAutoProvisioningEnabled: false,
     loginInitiationUri: null,
     postVerificationRedirectUri: null,
@@ -190,14 +195,16 @@ globalThis.fetch = async (input) => {
     idpProviders: [],
     resend: { emailVerificationCooldownSeconds: 60 },
   })
-  if (url.endsWith('/api/v1/auth/login')) return json({
-    access_token: jwt({ sub: 'memory-user', email: 'memory@example.test', exp: Math.floor(Date.now() / 1000) + 3600 }),
-    token_type: 'Bearer',
-    expires_in: 3600,
-    permissions: ['orders:read'],
-  })
+  if(url.endsWith('/auth/transactions')){
+    pendingAuthentication=JSON.parse(init.body)
+    pendingAuthentication.expiresAt=new Date(Date.now()+600000).toISOString()
+    return json({transactionId:'storage-transaction',controlSecret:'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc',expiresAt:pendingAuthentication.expiresAt,nextAction:'authenticate'})
+  }
+  if(url.endsWith('/authenticate'))return json({transactionId:'storage-transaction',expiresAt:pendingAuthentication.expiresAt,state:'AUTHENTICATED',nextAction:'complete'})
+  if(url.endsWith('/complete'))return json({kind:'authorization_code',code:'storage-code',state:pendingAuthentication.state,expiresIn:120})
   if (url.endsWith('/api/v1/auth/logout')) return new Response(null, { status: 204 })
-  if (url.endsWith('/api/v1/auth/me/permissions')) return json({ roles: ['member'], permissions: ['orders:read'] })
+  if (url.endsWith('/api/v1/auth/me')) return json({ id: mode==='memory'?'memory-user':'packed-user', email: null, username: null, status:'ACTIVE', emailVerified:true, metadata:{}, authenticationContext:{subjectType:'USER',applicationId:'packed-app',clientId:'packed-client',sessionId:'packed-session',workspaceId:null,workspaceSelectionRequired:true,organizationId:null,organizationSlug:null,organizationRole:null,authTime:null,authenticationMethods:[],assuranceLevel:null,impersonation:null} })
+  if (url.endsWith('/api/v1/auth/me/permissions')) return json({ applicationId:'packed-app',organizationId:null,roles: ['member'], permissions: ['orders:read'] })
   return json({ message: 'not found' }, 404)
 }
 

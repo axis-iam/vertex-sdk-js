@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef } from 'react'
-import type { AuthMethodIdpProviderResponse, IamUser, PublicAuthMethodsResponse, SocialProviderConfig, TokenSet } from '../../core/types'
-import type { OAuthClient } from '../../core/oauth-client'
-import { parseTokenResponse } from '../../core/token-response'
+import type { AuthMethodIdpProviderResponse, IamUser, PublicAuthMethodsResponse, SocialProviderConfig } from '../../core/types'
+import type { AuthClient } from '../../core/auth-client'
 
 export type CredentialMethod = 'password' | 'sms' | 'magic_link' | 'email_otp'
-export type IdentifierKind = 'email' | 'phone'
+export type IdentifierKind = 'email' | 'phone' | 'username'
 
 export type EmbeddedFlowState =
   | { step: 'identifier'; identifierDraft: string; identifierError: string | null; selectedMethod: CredentialMethod | null }
@@ -66,51 +65,12 @@ export function useCountdown(countdown: number, setCountdown: (value: number | (
   }, [countdown, setCountdown])
 }
 
-export function storeTokensFromResponse(client: OAuthClient, data: unknown): void {
-  const { tokens, permissions } = normalizeDirectAuthTokenResponse(data)
-  client.tokenManager.store(tokens, 'DIRECT_AUTH', tokens.refresh_token ? 'DIRECT_AUTH' : null)
-  if (permissions) {
-    client.setPermissions(permissions)
-  }
-}
 
-export function completeWithStoredUser(client: OAuthClient, onSuccess?: (user: IamUser) => void): IamUser | null {
-  const user = client.tokenManager.getUser()
+
+export function completeWithStoredUser(client: AuthClient, onSuccess?: (user: IamUser) => void): IamUser | null {
+  const user = client.state.getUser()
   if (user) onSuccess?.(user)
   return user
-}
-
-type DirectAuthTokenResponse = {
-  access_token?: unknown
-  refresh_token?: unknown
-  id_token?: unknown
-  token_type?: unknown
-  expires_in?: unknown
-  permissions?: unknown
-  mfa_required?: unknown
-  mfa_token?: unknown
-}
-
-export function normalizeDirectAuthTokenResponse(data: unknown): { tokens: TokenSet; permissions?: string[] } {
-  if (!isRecord(data)) {
-    throw new Error('Invalid Direct Auth token response')
-  }
-
-  const resp = data as DirectAuthTokenResponse
-  if (resp.mfa_required === true || typeof resp.mfa_token === 'string') {
-    throw new Error('A token response cannot contain an MFA challenge')
-  }
-
-  if (typeof resp.access_token !== 'string' || resp.access_token.length === 0 || typeof resp.expires_in !== 'number') {
-    throw new Error('Invalid Direct Auth token response')
-  }
-
-  const tokens: TokenSet = parseTokenResponse(resp)
-
-  const permissions = Array.isArray(resp.permissions) && resp.permissions.every((item) => typeof item === 'string')
-    ? resp.permissions
-    : undefined
-  return { tokens, permissions }
 }
 
 export function isLikelyEmail(value: string): boolean {
@@ -131,9 +91,10 @@ export function getIdentifierKind(value: string): IdentifierKind | null {
 }
 
 export function canSelectMethod(identifierKind: IdentifierKind, method: CredentialMethod): boolean {
+  if (identifierKind === 'username') return method === 'password'
   return identifierKind === 'email'
     ? method === 'password' || method === 'email_otp' || method === 'magic_link'
-    : method === 'sms'
+    : method === 'sms' || method === 'password'
 }
 
 export function nextMethodForIdentifier(
@@ -176,15 +137,12 @@ function toErrorState(state: EmbeddedFlowState, message: string): EmbeddedFlowSt
 }
 
 export function hasAnyCredentialLoginMethod(authMethods: PublicAuthMethodsResponse): boolean {
-  return authMethods.methods.some((method) => method.availableForLogin
-    && (method.type === 'PASSWORD'
-      || method.type === 'EMAIL_OTP'
-      || method.type === 'EMAIL_MAGIC_LINK'
-      || method.type === 'SMS_OTP'))
+  return authMethods.identifierMethods.length > 0
 }
 
 export function getAvailableCredentialMethods(authMethods: PublicAuthMethodsResponse, identifierKind: IdentifierKind): { id: CredentialMethod }[] {
-  const methodAvailable = (type: PublicAuthMethodsResponse['methods'][number]['type']) => authMethods.methods.some((method) => method.type === type && method.availableForLogin)
+  const capability = authMethods.identifierMethods.find((entry) => entry.kind === identifierKind.toUpperCase())
+  const methodAvailable = (type: Exclude<PublicAuthMethodsResponse['methods'][number]['type'], 'SOCIAL'>) => capability?.methods.includes(type) === true
   const methods: { id: CredentialMethod }[] = []
   if (identifierKind === 'email') {
     if (methodAvailable('PASSWORD')) methods.push({ id: 'password' })
@@ -192,7 +150,12 @@ export function getAvailableCredentialMethods(authMethods: PublicAuthMethodsResp
     if (methodAvailable('EMAIL_MAGIC_LINK')) methods.push({ id: 'magic_link' })
     return methods
   }
+  if (identifierKind === 'username') {
+    if (methodAvailable('PASSWORD')) methods.push({ id: 'password' })
+    return methods
+  }
   if (methodAvailable('SMS_OTP')) methods.push({ id: 'sms' })
+  if (methodAvailable('PASSWORD')) methods.push({ id: 'password' })
   return methods
 }
 
@@ -228,12 +191,8 @@ function legacyProviderMatches(provider: AuthMethodIdpProviderResponse, legacy: 
   ].some((value) => value.toLowerCase() === key)
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-}
-
 /** Bind a final authentication response to this mounted form and current session. */
-export function useSessionOperation(client: OAuthClient, identity: string) {
+export function useSessionOperation(client: AuthClient, identity: string) {
   const mounted = useRef(true)
   const sequence = useRef(0)
   useEffect(() => {
@@ -242,8 +201,8 @@ export function useSessionOperation(client: OAuthClient, identity: string) {
   }, [client, identity])
   const begin = useCallback(() => {
     const operation = ++sequence.current
-    const generation = client.tokenManager.generation
-    return () => mounted.current && sequence.current === operation && client.tokenManager.generation === generation
+    const generation = client.state.generation
+    return () => mounted.current && sequence.current === operation && client.state.generation === generation
   }, [client])
   const isMounted = useCallback(() => mounted.current, [])
   return { begin, isMounted }

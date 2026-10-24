@@ -12,13 +12,13 @@ window.runSessionLifecycle = async () => {
   const count = async name => (await fetch(`/counts?name=${name}`).then(response => response.json())).count
   const clientFor = name => {
     const client = new OAuthClient({ issuerUri: location.origin, clientId: 'fixture-client' })
-    client.tokenManager.store(tokens(name), 'DIRECT_AUTH', 'DIRECT_AUTH')
+    client.tokenManager.store(tokens(name), 'OAUTH_AUTHORIZATION_CODE', 'OAUTH_TOKEN_ENDPOINT')
     return client
   }
 
   {
     const client = clientFor('concurrency')
-    client.tokenManager.store(tokens('concurrency', 1), 'DIRECT_AUTH', 'DIRECT_AUTH')
+    client.tokenManager.store(tokens('concurrency', 1), 'OAUTH_AUTHORIZATION_CODE', 'OAUTH_TOKEN_ENDPOINT')
     try {
       await wait(520)
       const first = client.refreshToken()
@@ -37,7 +37,7 @@ window.runSessionLifecycle = async () => {
       await wait(30)
       if (replacement === 'logout') await client.logout({ redirect: false })
       if (replacement === 'dispose') client.dispose()
-      if (replacement === 'new-login') client.tokenManager.store(tokens('new-login'), 'DIRECT_AUTH', 'DIRECT_AUTH')
+      if (replacement === 'new-login') client.tokenManager.store(tokens('new-login'), 'OAUTH_AUTHORIZATION_CODE', 'OAUTH_TOKEN_ENDPOINT')
       const result = await pending
       check(result?.code === 'SESSION_INVALIDATED', 'old refresh did not report invalidation')
       if (replacement === 'logout') check(client.getAccessToken() === null, 'logout session was resurrected')
@@ -48,7 +48,7 @@ window.runSessionLifecycle = async () => {
   {
     const client = clientFor('metadata')
     try {
-      client.tokenManager.store({ ...tokens('metadata', 1), access_token: 'opaque-shaped-fixture' }, 'DIRECT_AUTH', 'DIRECT_AUTH')
+      client.tokenManager.store({ ...tokens('metadata', 1), access_token: 'opaque-shaped-fixture' }, 'OAUTH_AUTHORIZATION_CODE', 'OAUTH_TOKEN_ENDPOINT')
       await wait(800)
       check(await count('metadata') === 1, 'expiry metadata did not schedule refresh')
       results.push({ scenario: 'expiry-metadata', pass: true, refreshRequests: 1 })
@@ -57,10 +57,10 @@ window.runSessionLifecycle = async () => {
   {
     const client = clientFor('failure')
     try {
-      client.tokenManager.store(tokens('failure', 2), 'DIRECT_AUTH', 'DIRECT_AUTH')
+      client.tokenManager.store(tokens('failure', 2), 'OAUTH_AUTHORIZATION_CODE', 'OAUTH_TOKEN_ENDPOINT')
       const error = await client.refreshToken().catch(error => error)
       check(error instanceof IamTokenRefreshError && error.retryable, 'temporary error was not typed/retryable')
-      check(client.isAuthenticated(), 'temporary error removed a valid session')
+      check(client.tokenManager.hasUsableToken(), 'temporary error removed a valid token session')
       check(!JSON.stringify(error).includes('fixture-private-marker'), 'error leaked provider details')
       await wait(1100)
       check(await count('failure') === 1, 'temporary error started an automatic retry loop')
@@ -85,7 +85,7 @@ window.runSessionLifecycle = async () => {
   {
     const config = { issuerUri: location.origin, clientId: 'fixture-client', tokenStorage: 'sessionStorage' }
     const initial = new OAuthClient(config)
-    initial.tokenManager.store(tokens('react-persist', 1), 'DIRECT_AUTH', 'DIRECT_AUTH')
+    initial.tokenManager.store(tokens('react-persist', 1), 'OAUTH_AUTHORIZATION_CODE', 'OAUTH_TOKEN_ENDPOINT')
     const deadline = JSON.parse(sessionStorage.getItem('axis_iam_session')).expiresAt
     initial.dispose()
     let auth
@@ -110,41 +110,6 @@ window.runSessionLifecycle = async () => {
   check(sessionStorage.getItem('axis_iam_session') === null && localStorage.getItem('axis_iam_session') === null, 'default memory session leaked to storage')
 
   const live = await fetch('/live/config').then(response => response.json())
-  if (live.enabled) {
-    const response = await fetch('/live/login', { method: 'POST' })
-    check(response.ok, 'live backend login failed')
-    const initial = await response.json()
-    const client = new OAuthClient({ issuerUri: live.issuer, clientId: live.clientId })
-    client.tokenManager.store(initial, 'DIRECT_AUTH', 'DIRECT_AUTH')
-    const originalFetch = window.fetch
-    let refreshRequests = 0
-    window.fetch = (input, init) => {
-      if (String(input) === `${live.issuer}/api/v1/auth/token/refresh`) refreshRequests += 1
-      return originalFetch(input, init)
-    }
-    try {
-      const first = client.refreshToken()
-      check(first === client.refreshToken(), 'live callers did not share refresh')
-      const rotated = await first
-      check(refreshRequests === 1 && rotated.refresh_token !== initial.refresh_token, 'live rotation/count failed')
-      check(client.tokenManager.getLastPermissionError() === null, 'live canonical permission lookup failed')
-      const replay = await fetch(`${live.issuer}/api/v1/auth/token/refresh`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: live.clientId, refresh_token: initial.refresh_token }) })
-      check(replay.status === 400 || replay.status === 401, 'live old refresh token was accepted')
-      // Replay may revoke the token family. Acquire a fresh login for an independent logout check.
-      const freshResponse = await fetch('/live/login', { method: 'POST' })
-      check(freshResponse.ok, 'second live login failed')
-      const fresh = await freshResponse.json()
-      client.tokenManager.store(fresh, 'DIRECT_AUTH', 'DIRECT_AUTH')
-      await client.logout({ redirect: false })
-      check(client.getAccessToken() === null, 'live logout did not clear local tokens')
-      const revoked = await fetch(`${live.issuer}/api/v1/auth/me/permissions`, { headers: { Authorization: `Bearer ${fresh.access_token}` } })
-      check(revoked.status === 401, 'live logout did not invalidate the server session')
-      results.push({ scenario: 'real-backend-direct-lifecycle', pass: true, refreshRequests: 1, replayRejected: true, logoutRevoked: true })
-    } finally {
-      window.fetch = originalFetch
-      client.dispose()
-    }
-  }
   if (live.enabled) {
     const client = new OAuthClient({ issuerUri: live.issuer, clientId: live.clientId, redirectUri: `${location.origin}/callback`, scopes: ['openid', 'profile', 'email', 'offline_access'] })
     try {

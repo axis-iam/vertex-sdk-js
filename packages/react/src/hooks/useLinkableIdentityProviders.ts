@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { isActionableLinkProvider } from '../core/account-linking'
+const isActionableLinkProvider = (provider: LinkableIdentityProvider) => provider.canLink
 import type { LinkableIdentityProvider } from '../core/types'
 import { IamApiError } from '../core/types'
 import { useIamContext } from '../provider/IamProvider'
@@ -43,7 +43,7 @@ export function useLinkableIdentityProviders(
       setProviders([])
       setError(next)
       setIsLoading(false)
-      return []
+      throw next
     }
 
     setIsLoading(true)
@@ -56,7 +56,7 @@ export function useLinkableIdentityProviders(
       const next = err instanceof Error ? err : new Error('Linkable providers are unavailable')
       setProviders([])
       setError(next)
-      return []
+      throw next
     } finally {
       setIsLoading(false)
     }

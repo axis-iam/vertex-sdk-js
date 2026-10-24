@@ -20,7 +20,6 @@ always emits a redacted event and cannot silently swallow failure.
 | `@axis-iam/vertex-react` | Browser / React SPA | `SPA` public ApplicationClient | No | Components and hooks for sign-in, sign-up, user UI, and permission gating |
 | `@axis-iam/vertex` | Shared core | Public/shared | No | JWT parsing helpers, permission utilities, and browser-safe shared types |
 | `@axis-iam/vertex/server` | Node.js / CLI / backend runtime | `WEB` or `M2M` confidential ApplicationClient | Yes | Confidential `IamClient`, `PortalOpenApiClient`, HTTP permission resolver, permission sync, and server verification helpers |
-| `@axis-iam/vertex-react/server` | Next.js / server runtime | `WEB` or `M2M` confidential ApplicationClient | Yes | Bearer-token route guards, token inspection, and limited middleware redirects |
 | `@axis-iam/vertex-express` | Express | `WEB` or `M2M` confidential ApplicationClient | Yes | Middleware for protected routes and permission checks |
 | `@axis-iam/vertex-nestjs` | NestJS | `WEB` or `M2M` confidential ApplicationClient | Yes | Guards, decorators, and protected route helpers |
 | `@axis-iam/vertex-codegen` | CLI / build tooling | `WEB` or `M2M` confidential ApplicationClient | Yes | Permission sync/upload against IAM |
@@ -52,7 +51,7 @@ Create one business Application for your product, then create the ApplicationCli
 
 `@axis-iam/vertex/server`, Express, NestJS, and codegen are server-side surfaces. They verify tokens, resolve permissions through confidential clients, call management APIs, or sync permission definitions. They are not browser login flows and do not replace the Axis Vertex login page.
 
-The `@axis-iam/vertex-react/server` middleware still contains a limited `/login?client_id=...&redirect_uri=...` redirect for unauthenticated protected routes. It is not a complete WEB Authorization Code login helper under current Axis Vertex behavior because it does not generate/store `state`, does not generate/store a PKCE verifier, does not send `code_challenge_method=S256`, and does not handle confidential token exchange with `clientSecret` plus `code_verifier`. Do not use it as the recommended WEB login implementation. Use the React SPA PKCE flow for public browser clients, or the supported `WebAuthClient` / Express `createWebAuth` flow below for confidential WEB/BFF clients.
+The decode-only React server helpers and incomplete Hosted-login redirect helper have been retired. Use `JwtVerifier` from `@axis-iam/vertex/server` (or the Express/Nest adapters) for verified server bearer handling. `WebAuthClient` and Express `createWebAuth` are the existing confidential WEB callback helpers; they remain distinct from the explicit CookieSessionTransport/server_session client.
 
 ## Quick Start
 
@@ -221,7 +220,6 @@ import {
   usePermission,
   PermissionGate,
   ConnectedAccounts,
-  useAccountLinkCallback,
   AccountCenter,
   OrganizationSwitcher,
   OrganizationInvitationAccept,
@@ -299,9 +297,9 @@ session.
 </IamProvider>
 ```
 
-Short-lived OAuth PKCE verifier/state and account-linking state still use `sessionStorage` for redirect correlation. They are not full token-set persistence.
+Short-lived sign-in OAuth PKCE verifier/state use `sessionStorage` for redirect correlation. Identity-operation provider verifiers remain in memory in the initiating window. With explicit `tokenStorage: 'sessionStorage'`, only a nonsecret pending operation ID is additionally saved under its issuer/client/Application/user/session context.
 
-Pre-GA breaking change: persisted token state now uses version 4 of the `axis_iam_session` envelope. It contains tokens, current authorization roles, resolved permissions, an explicit authentication provenance for logout routing, a separate optional refresh provenance, and an absolute `expiresAt` computed from validated `expires_in`. Reload does not reset that deadline. Authentication provenance is retained even when a caller intentionally omits `offline_access` and receives no refresh token. The SDK deletes the legacy `iam_tokens` and `iam_permissions` keys without reading or migrating them, and clears older session-envelope versions. Applications that previously enabled `tokenStorage="sessionStorage"` require users to sign in once after upgrading. Direct Auth refresh tokens are sent only to `/api/v1/auth/token/refresh`; Authorization Code + PKCE refresh tokens are sent only to the discovered OAuth token endpoint. Direct logout uses the authenticated JSON endpoint, while OAuth sessions retain OIDC end-session support with or without a refresh token. The SDK never infers or falls back between these protocols.
+Pre-GA breaking change: browser persistence uses version 6 of `axis_iam_session`: tokens, explicit OAuth transport provenance, original response-derived `expiresAt`, and owner. Required `/me` plus permissions views reload after restoration and refresh. No permissions or local JWT identity are restored. Embedded/Dialog/Custom primary sign-in uses controlled transactions, completion and OAuth PKCE; legacy Direct sessions are rejected and require reauthentication. There is no primary-action fallback. See the React guide for uncertainty, cancellation and navigation storage.
 
 `useAuth().refreshToken()` and the timer share a refresh transaction; old responses cannot restore a signed-out session or overwrite a newer login. Temporary failures expose `tokenRefreshError`, retain the session until its existing expiry, and require explicit retry. See the [React lifecycle contract and packed consumer harness](packages/react/README.md) for failure, cleanup, and validation details.
 
@@ -343,7 +341,7 @@ Use the surfaces according to their request ownership:
 - Embedded: `<SignIn mode="embedded" />` and `<SignUp mode="embedded" />` render SDK forms in place. `AuthDialog mode="embedded"` displays a small Sign In / Sign Up switch when registration is available. It mounts one active form and clears the previous attempt on switching.
 - AuthDialog: the dialog is a controlled composition and does not create another authentication flow. Choose embedded mode for in-place forms, or redirect mode for a hosted entry (with an explicit registration grant only when a distinct hosted signup path is required).
 
-Custom presentation uses the public `useAuthFlow()` hook. Embedded, Dialog and Custom share the same Direct Auth actions, capabilities, registration policy, MFA continuation and cancellation behavior. Hosted keeps its own Authorization Code + S256 PKCE protocol. See the [React auth-entry guide](packages/react/README.md#authentication-entries) and the [public Custom example](packages/react/examples/CustomAuth.tsx).
+Custom presentation uses the public `useAuthFlow()` hook. Embedded, Dialog and Custom share the same primary transaction actions, capabilities, registration policy, MFA continuation and cancellation behavior. Hosted keeps its own Authorization Code + S256 PKCE protocol. See the [React auth-entry guide](packages/react/README.md#authentication-entries) and the [public Custom example](packages/react/examples/CustomAuth.tsx).
 
 `AccountCenter` includes responsive modal styling, so Tailwind or host CSS is not required. On desktop it
 uses a left menu and one content pane; on small screens it becomes a full-screen dialog with a Menu return
@@ -489,107 +487,11 @@ On your OAuth callback route, prefer `handleRedirectCallback()` over manual quer
 
 `<SignIn mode="embedded" />` renders an identifier-first SDK UI and backend-discovered provider buttons. Users first enter an email or phone-like identifier. For email identifiers, the SDK shows only the runtime-available password, email code, and magic-link actions. For phone-like identifiers, it shows SMS only when `SMS_OTP.availableForLogin=true`. Redirect mode remains hosted IAM UI and is not affected by embedded behavior.
 
-Password direct-auth posts the SPA public client id as `client_id` and reads OAuth-style snake_case token fields:
+Primary password, email OTP, SMS OTP and Magic link actions use the Core `AuthenticationTransaction` protocol at `/api/v1/auth/transactions`. Create binds the public client, exact redirect, scopes, random state, S256 and optional OIDC nonce. Controlled challenge/authenticate/MFA/complete calls return state and finally an authorization code; the discovered token endpoint exchanges it once. The SDK loads `/me` and `/me/permissions` before announcing success. No primary endpoint returns tokens directly.
 
-```http
-POST /api/v1/auth/login
-Content-Type: application/json
+See the [React transaction guide](packages/react/README.md#public-transaction-flow) for exact public actions, Magic link original-tab requirements, TOTP/recovery-code MFA, parent/challenge deadlines, cancellation failure and lost-response recovery. Core exposes the same framework-neutral `AuthenticationTransaction` class. Java, Go and Python currently expose server verification/account APIs and no public primary browser login API; this migration adds no browser protocol facade to those packages.
 
-{
-  "identifier": "user@example.com",
-  "password": "********",
-  "client_id": "your-spa-public-client-id"
-}
-```
-
-```json
-{
-  "access_token": "...",
-  "refresh_token": "...",
-  "id_token": "...",
-  "token_type": "Bearer",
-  "expires_in": 3600,
-  "permissions": ["orders:read"]
-}
-```
-
-Embedded `<SignIn mode="embedded" />` first resolves `GET {issuer}/api/v1/apps/{clientId}/auth-methods`. Password, Email OTP, Email Magic Link, SMS, and provider buttons are visible only when IAM reports the corresponding method/provider as available for login. `IamConfig.authMethods` is deprecated metadata and no longer creates visible methods.
-
-SMS, Email OTP, and Magic Link direct-auth requests also post the SPA public client id as `client_id`. The browser SDK never asks for an IAM internal Application UUID:
-
-```http
-POST /api/v1/auth/sms/send
-Content-Type: application/json
-
-{
-  "phone": "+8613800138000",
-  "client_id": "your-spa-public-client-id"
-}
-```
-
-If IAM returns `EMAIL_VERIFICATION_REQUIRED` during embedded password sign-in, the component shows an email-verification required state. When the typed identifier is an email address, it offers a resend action through `POST /api/v1/auth/email/verification/send` using `{ "email": "...", "client_id": "your-spa-public-client-id" }` and uses `auth-methods.resend.emailVerificationCooldownSeconds` for local cooldown. IAM hosted `/verify-email?token=...` handles the verification token; applications should configure Application-level `loginInitiationUri` / `postVerificationRedirectUri` back to their own login/start route and then call SDK login to start a fresh OAuth PKCE flow. The browser SDK does not send `X-Application-Id`.
-
-```http
-POST /api/v1/auth/sms/verify
-Content-Type: application/json
-
-{
-  "phone": "+8613800138000",
-  "code": "123456",
-  "client_id": "your-spa-public-client-id"
-}
-```
-
-```http
-POST /api/v1/auth/passwordless/magic-link
-Content-Type: application/json
-
-{
-  "email": "user@example.com",
-  "client_id": "your-spa-public-client-id"
-}
-```
-
-```http
-POST /api/v1/auth/passwordless/email-otp
-Content-Type: application/json
-
-{
-  "email": "user@example.com",
-  "client_id": "your-spa-public-client-id"
-}
-```
-
-```http
-POST /api/v1/auth/passwordless/email-otp/verify
-Content-Type: application/json
-
-{
-  "email": "user@example.com",
-  "code": "123456",
-  "client_id": "your-spa-public-client-id"
-}
-```
-
-Email OTP verification reuses the same direct-auth token normalization path as password and SMS. If the response includes `permissions`, the SDK keeps them with the active token state for `usePermission()`; it does not read permissions from JWT claims. By default that state is memory-only; `tokenStorage="sessionStorage"` persists both tokens and resolved permissions for the browser session.
-
-For embedded provider buttons, the SDK uses `GET {issuer}/api/v1/apps/{clientId}/auth-methods` and renders only `idpProviders` where social login is enabled, the provider is enabled/configured/clickable, `availableForLogin=true`, and `authorizationUrl` is non-empty. It starts the selected provider with:
-
-```http
-POST {provider.authorizationUrl}
-Content-Type: application/json
-
-{
-  "completionMode": "AUTHORIZATION_CODE",
-  "redirectUri": "https://app.example.com/callback",
-  "scope": "openid profile email offline_access",
-  "state": "<sdk-generated-oauth-state>",
-  "codeChallenge": "<sdk-generated-pkce-challenge>",
-  "codeChallengeMethod": "S256"
-}
-```
-
-The response contains the upstream provider `authorizationUrl`. The browser redirects there, and the final business app callback calls `handleRedirectCallback()` to exchange the Axis Vertex authorization code with PKCE and scrub the callback URL. The browser SDK does not construct Google/GitHub URLs and never takes provider secrets.
+For embedded provider buttons, discovery still determines availability. Starting a selected provider creates the same public authentication transaction and sends `POST /api/v1/auth/transactions/{id}/authorize` with exact `{ "providerId": "..." }` and original transaction control. The backend returns `{authorizationUrl,expiresAt}`; the SDK never constructs Google/GitHub URLs or accepts provider secrets. On return, `handleRedirectCallback()` exchanges a normal code once, or returns `status: "continuation"` for transaction MFA. `useAuthFlow().actions.resumeProviderCallback(url)` restores that MFA in Custom/Embedded/Dialog. See the React guide for precise original-tab storage and callback requirements.
 
 For custom login pages, use the headless hooks:
 
@@ -622,43 +524,28 @@ function CustomProviderLogin() {
 
 `IamConfig.socialProviders` is deprecated for embedded provider buttons. Static entries are only legacy display-name overrides for matching backend-enabled providers; they cannot create clickable providers that IAM has not enabled for the current `ApplicationClient`.
 
-JWTs carry identity and roles, but not final business permissions. `IamProvider` keeps permissions returned by embedded login responses and otherwise fetches `GET /api/v1/auth/me/permissions` with the IAM access token, so `usePermission()` and `<PermissionGate>` work from resolved permissions.
+`IamProvider` loads the safe `/api/v1/auth/me` view plus `/me/permissions` under the current owner before reporting authentication. It never decodes Access Tokens or uses callback/profile metadata to establish authority.
 
 #### Connected accounts
 
-Use account linking on an authenticated account settings page. This is separate from sign-in: it requires the current access token, uses the current-user account-linking endpoints, exchanges only an account-link ticket, and never calls `handleCallback(code, state)` or the OAuth token endpoint.
+Manage identifiers and connected providers on an authenticated account settings page through durable identity operations. Provider confirmation binds its proof to the operation using PKCE and finishes in the initiating window.
 
 ```tsx
-import { ConnectedAccounts, useAccountLinkCallback } from '@axis-iam/vertex-react'
+import { ConnectedAccounts, useIdentityOperations } from '@axis-iam/vertex-react'
 
-function AccountSecurity() {
-  return (
-    <ConnectedAccounts redirectUri="https://app.example.com/account-link/callback" />
-  )
-}
+// Inside IamProvider; register this exact callback URI on your Application Client.
+<ConnectedAccounts redirectUri="/identity-operation/callback" />
 
-function AccountLinkCallbackRoute() {
-  const { status, result } = useAccountLinkCallback({
-    onSuccess: () => {
-      window.location.assign('/settings/account')
-    },
-  })
-
-  if (status === 'success') {
-    return <p>{result?.method.displayName} is connected.</p>
-  }
-  if (status === 'error') {
-    return <p role="alert">Account connection could not be completed.</p>
-  }
-  return <p>Completing account connection...</p>
-}
+// Custom presentation uses the same durable state and actions.
+const { state, actions } = useIdentityOperations()
+await actions.reopen(operationId)
+await actions.reauthenticate({ method: 'PASSWORD', password })
+// The server advertises remaining proof methods; request target proof only after reauth.
+await actions.challenge('EMAIL_OTP')
+await actions.complete('EMAIL_OTP', code)
 ```
 
-`<ConnectedAccounts />` lists `GET /api/v1/auth/me/login-methods` and `GET /api/v1/auth/me/linkable-identity-providers` with the current bearer token. It starts only enabled, unlinked `OIDC` and `OAUTH2` providers that support account linking, stores a separate `iam_account_link_state` pending state, verifies the effective state returned by IAM, then redirects to the backend-provided provider URL.
-
-The callback route handles `/account-link/callback?link_ticket=...&state=...`, validates the pending state, scrubs the URL, and exchanges the ticket through `POST /api/v1/auth/me/identity-providers/link-ticket/exchange`. The SDK does not store or display the ticket. Unlink uses the stable `methodId` with URL encoding.
-
-If IAM returns `STEP_UP_REQUIRED`, hooks expose a typed `IamApiError` with safe fields such as `status`, `code`, `details.trigger`, and `details.methods`. The prebuilt component shows safe copy only. Customer apps can use `isStepUpRequiredError(error)` to trigger their own step-up UI.
+`<ConnectedAccounts />` reads identifiers, the versioned login-method envelope and linkable providers. All changes use `/api/v1/auth/me/identity-operations`; no ticket exchange or direct login-method deletion remains. Reauthentication, target proof, final completion and cancellation are separate actions. Provider confirmation uses operation-bound PKCE; keep the initiating window open, then finish the callback there.
 
 Real Google/GitHub account-link browser validation requires IAM running, provider credentials, stable IAM provider callbacks, the SDK callback URI allowed for the SPA client, a logged-in test account, and an operator completing upstream provider login. Without those inputs, local SDK tests validate the contract with mocked IAM responses only.
 
@@ -670,14 +557,14 @@ Troubleshooting:
 
 #### End-user signup
 
-`<SignUp mode="embedded" />` creates users for your customer application:
+`<SignUp mode="embedded" />` starts an email verification operation for your customer application; the completion callback receives a registration result:
 
 ```tsx
 function Register() {
   return (
     <SignUp
       mode="embedded"
-      onSuccess={(user) => {
+      onSuccess={(registration) => {
         // Navigate to your sign-in page or show a success state.
       }}
     />
@@ -685,42 +572,9 @@ function Register() {
 }
 ```
 
-Embedded signup calls:
+Embedded `<SignUp mode="embedded" />` resolves public auth-methods and auth-policy before showing registration. Signup, self-registration, method readiness, registration-grant policy and password constraints remain authoritative. The retired email verification mode is absent from both public types and validation; there is no OFF/OPTIONAL fallback.
 
-```http
-POST /api/v1/auth/signup
-Content-Type: application/json
-
-{
-  "email": "user@example.com",
-  "password": "********",
-  "client_id": "your-spa-public-client-id"
-}
-```
-
-The signup response is user info, not OAuth tokens. Embedded `<SignUp mode="embedded" />` resolves `GET /api/v1/apps/{clientId}/auth-methods` before signup. It renders the form only when `signupEnabled=true`, `selfRegistrationEnabled=true`, and the password method is available for signup. It uses `emailVerificationMode` from the same response to choose the next step:
-
-- `OFF`: account created; the user can sign in.
-- `OPTIONAL`: account created; the user can sign in and may verify email from the message IAM sends.
-- `REQUIRED`: the user must verify email before signing in.
-
-If signup returns `status: "PENDING"`, the SDK treats email verification as required. The SDK does not infer `OFF` or `OPTIONAL` from `emailVerified=false`.
-
-Embedded signup and sign-in verification resend both call:
-
-```http
-POST /api/v1/auth/email/verification/send
-Content-Type: application/json
-
-{
-  "email": "user@example.com",
-  "client_id": "your-spa-public-client-id"
-}
-```
-
-The local resend button cooldown comes from `auth-methods.resend.emailVerificationCooldownSeconds`; backend rate limiting remains authoritative.
-
-The component does not store tokens or assume automatic login after signup.
+Email registration uses the registration operation protocol: `POST /api/v1/auth/signup` creates a `PENDING_VERIFICATION` operation; challenge/complete/cancel address that operation. A valid email proof is required before activation. Resend honors `auth-methods.resend.emailVerificationCooldownSeconds` and server rate limits. The component neither stores OAuth tokens nor announces sign-in after registration. See the React guide for access-code and grant inputs.
 
 #### Registration grants
 
@@ -748,11 +602,10 @@ Organization invitation proof cannot be supplied together. The preview helper ca
 unauthenticated preview endpoint and never attaches a bearer token. Keep proof values in memory;
 do not write them to browser storage, cookies, URLs, logs, analytics, or rendered content.
 
-For OIDC/OAuth2 provider continuation, `useProviderLogin().startProviderLogin(provider, {
-registrationGrant })` supports only `EMAIL_LINK` and `ACCESS_CODE`. The SDK sends that proof to
-IAM's provider-authorize POST for server-side session binding, never in the upstream redirect URL.
-`ORG_INVITATION` is intentionally rejected for provider continuation and remains supported by
-embedded signup only.
+Provider sign-in uses the delivered transaction DTO containing only `providerId`.
+Provider signup supports mutually exclusive `registrationGrantToken` (2048 max) or
+`registrationAccessCode` (128 max) through typed `registrationGrant` options; no legacy broker fallback is used.
+Embedded non-Provider registration retains its separate typed grant contract.
 
 IAM Developer Portal registration is a separate IAM-owned onboarding flow. SDKs must not call `POST /portal/v1/auth/register`; developers register through the IAM Developer Portal web app, not through customer application SDK signup.
 
@@ -866,3 +719,20 @@ pnpm clean           # Remove dist/ from all packages
 ## License
 
 Apache License 2.0
+
+### Application identity operations
+
+Password login and registration accept an explicit `LoginIdentifier` (`EMAIL`, `USERNAME`, or `PHONE` with an explicit region when needed). Text never changes the selected kind. Email registration returns a registration operation, not a User or session. Use `client.identity.startRegistration`, `getRegistration`, and `registrationAction` (`challenges`, `complete`, `cancel`). The Registration-Control secret stays in memory and is separate from the email code. If it is lost, restart and choose your own password. Only a completed operation offers sign-in; completion does not sign in automatically.
+
+`client.identity` exposes identifier/version facts, durable create/get/reauthenticate/challenge/authorize/providerCallback/complete/cancel/confirmTransfer actions and independent recovery authorization/status/challenge/completion/cancellation. `useIdentityOperations` exposes the same shared state to Custom and AccountCenter. Preserve the operation ID when a cancellation is uncertain and GET it before retrying. Provider confirmation uses PKCE and a separate window so the initiating context keeps the verifier in memory. The callback page contains no token handling; return to the initiating window to finish confirmation. A receiving account opens the operation ID in its own session and reauthenticates before ACCEPT; REJECT ends the transfer.
+
+`listAccountLoginMethods` returns `{ loginMethodVersion, methods }`; capabilities and unavailable reasons come from the server. Profile PATCH accepts displayName/avatarUrl only; username changes use identifier operations. The old link-ticket/exchange/direct DELETE protocol and hooks are retired. Users without a primary email have a nullable email projection.
+
+### Explicit server_session clients
+
+Use `sessionMode: 'server_session'` plus the public `SessionTransport` for same-origin Cookie/CSRF BFF sessions.
+IamProvider/useAuth/useAuthFlow and AccountCenter consume safe session/actions without requiring an Access Token.
+No TokenManager is created in this mode; token-only calls reject with UNSUPPORTED_OPERATION. Customers may implement
+the finite transport for their own BFF. See packages/react/README.md for configuration, Workspace, operation refs,
+purpose step-up, enrollment and caller-owned recovery-code examples. Ordinary oauth_tokens refresh/logout no longer
+uses Direct routes or provenance branches; legacy Direct browser sessions require reauthentication.

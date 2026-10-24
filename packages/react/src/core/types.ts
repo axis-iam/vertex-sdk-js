@@ -21,37 +21,11 @@ export interface TokenSet {
   scope?: string
 }
 
-/** Decoded JWT payload (client-side decode, no signature verification) */
-export interface JWTPayload {
-  sub: string
-  iss?: string
-  aud?: string | string[]
-  exp?: number
-  iat?: number
-  email?: string
-  username?: string
-  name?: string
-  roles?: string[]
-  org_id?: string
-  org_slug?: string
-  org_role?: string
-  workspace_id?: string
-  acr?: string
-  act?: { sub: string }
-  [key: string]: unknown
-}
+export type { CurrentUser, AuthenticationContext } from '@axis-iam/vertex'
+import type { CurrentUser } from '@axis-iam/vertex'
 
-/**
- * Runtime user context extracted from JWT identity plus resolved permissions.
- *
- * Profile metadata from /api/v1/auth/me is not part of this authorization
- * context, and App User authorization attributes are app-scoped management
- * fields outside the React runtime SDK.
- */
-export interface IamUser {
-  id: string
-  email?: string
-  username?: string
+/** Identity and context come only from authenticated API views. */
+export interface IamUser extends CurrentUser {
   name?: string
   roles: string[]
   permissions: string[]
@@ -61,7 +35,6 @@ export interface IamUser {
   workspaceId?: string
   isImpersonating: boolean
   actorId?: string
-  raw: JWTPayload
 }
 
 export type IdentityProviderProtocol = 'OIDC' | 'OAUTH2' | 'SAML' | 'UNSUPPORTED' | (string & {})
@@ -124,7 +97,6 @@ export interface ProviderAuthorizationOptions {
   registrationGrant?: ProviderRegistrationGrantInput
 }
 
-export type EmailVerificationMode = 'OFF' | 'OPTIONAL' | 'REQUIRED'
 
 export type AuthMethodType = 'PASSWORD' | 'EMAIL_MAGIC_LINK' | 'EMAIL_OTP' | 'SMS_OTP' | 'SOCIAL'
 
@@ -159,12 +131,17 @@ export interface PublicAuthMethodsResponse {
   socialLoginEnabled: boolean
   signupEnabled: boolean
   selfRegistrationEnabled: boolean
-  emailVerificationMode: EmailVerificationMode
   idpAutoProvisioningEnabled: boolean
   loginInitiationUri: string | null
   postVerificationRedirectUri: string | null
   methods: AuthMethodAvailabilityResponse[]
   idpProviders: AuthMethodIdpProviderResponse[]
+  /** Authoritative supported identifier/method pairs; never inferred from global flags. */
+  identifierMethods: {
+    kind: 'EMAIL' | 'PHONE' | 'USERNAME'
+    methods: Exclude<AuthMethodType, 'SOCIAL'>[]
+  }[]
+  defaultIdentifierKind: 'EMAIL' | 'PHONE' | 'USERNAME' | null
   resend: {
     emailVerificationCooldownSeconds: number
   }
@@ -178,6 +155,8 @@ export interface AppContinuation {
 }
 
 export type RedirectCallbackResult =
+  | { status: 'session'; user: IamUser }
+  | { status: 'continuation'; transaction: import('@axis-iam/vertex').AuthenticationFlow; view: import('@axis-iam/vertex').LoginView }
   | { status: 'idle' }
   | { status: 'success'; tokens: TokenSet }
   | { status: 'error'; error: Error }
@@ -216,7 +195,6 @@ export interface PublicAuthPolicyResponse {
   maxLoginAttempts: number
   lockoutDurationMinutes: number
   progressiveLockout: boolean
-  emailVerificationMode: EmailVerificationMode
   idpAutoProvisioningEnabled: boolean
   signupMode: SignupMode
   allowedRegistrationGrantTypes: RegistrationGrantType[]
@@ -271,11 +249,11 @@ export class IamConfigurationError extends Error {
   }
 }
 
-export type TokenRefreshFailureReason = 'SESSION_UNAVAILABLE' | 'SESSION_REJECTED' | 'INVALID_RESPONSE' | 'TEMPORARY_FAILURE' | 'CONFIGURATION_ERROR'
+export type TokenRefreshFailureReason = 'SESSION_UNAVAILABLE' | 'SESSION_REJECTED' | 'INVALID_RESPONSE' | 'TEMPORARY_FAILURE' | 'CONFIGURATION_ERROR' | 'RESULT_UNCERTAIN'
 
 /** Safe refresh failure metadata. Never retains a raw response or transport cause. */
 export class IamTokenRefreshError extends Error {
-  readonly code = 'TOKEN_REFRESH_FAILED'
+  readonly code: 'TOKEN_REFRESH_FAILED' | 'TOKEN_REFRESH_UNCERTAIN'
 
   constructor(
     readonly reason: TokenRefreshFailureReason,
@@ -284,6 +262,7 @@ export class IamTokenRefreshError extends Error {
     readonly retryAfterSeconds?: number,
   ) {
     super(`Token refresh failed: ${reason}`)
+    this.code = reason === 'RESULT_UNCERTAIN' ? 'TOKEN_REFRESH_UNCERTAIN' : 'TOKEN_REFRESH_FAILED'
     this.name = 'IamTokenRefreshError'
   }
 }
@@ -300,19 +279,7 @@ export type AccountLoginMethodKind = 'CREDENTIAL' | 'IDENTITY_PROVIDER' | (strin
 export type AccountCredentialType = 'PASSWORD' | 'TOTP' | 'WEBAUTHN' | 'RECOVERY_CODE' | (string & {})
 export type AccountLinkProtocol = 'OIDC' | 'OAUTH2' | 'SAML' | (string & {})
 
-export interface AccountLoginMethod {
-  methodId: string
-  kind: AccountLoginMethodKind
-  credentialType: AccountCredentialType | null
-  identityProviderId: string | null
-  providerKey: string | null
-  providerType: string | null
-  protocol: AccountLinkProtocol | null
-  displayName: string
-  linkedAt: string | null
-  providerUserId: string | null
-  unlinkable: boolean
-}
+export type AccountLoginMethod = import('@axis-iam/vertex').LoginMethod
 
 export interface LinkableIdentityProvider {
   id: string
@@ -323,26 +290,9 @@ export interface LinkableIdentityProvider {
   linked: boolean
   linkedAt: string | null
   supportsAccountLinking: boolean
-}
-
-export interface AccountLinkAuthorizeOptions {
-  redirectUri?: string
-  state?: string
-}
-
-export interface AccountLinkAuthorizeResult {
-  authorizationUrl: string
-  state: string
-  expiresAt: string
-}
-
-export interface AccountLinkTicketExchangeInput {
-  linkTicket: string
-  state: string
-}
-
-export interface AccountLinkCallbackResult {
-  method: AccountLoginMethod
+  canLink: boolean
+  canReauthenticate: boolean
+  unavailableReasons: string[]
 }
 
 export interface AccountOrganization {
@@ -358,7 +308,7 @@ export interface AccountProfile {
   userId: string
   applicationId: string
   globalIdentityId: string | null
-  email: string
+  email: string | null
   emailVerified: boolean
   username: string | null
   displayName: string | null
@@ -370,7 +320,6 @@ export interface AccountProfile {
 }
 
 export interface AccountUpdateProfileInput {
-  username?: string | null
   displayName?: string | null
   avatarUrl?: string | null
 }
@@ -462,6 +411,12 @@ export interface SocialProviderConfig {
 
 /** SDK configuration */
 export interface IamConfig {
+  sessionMode?: 'oauth_tokens' | 'server_session'
+  /** Required only in server_session mode; never inferred from issuer or token availability. */
+  /** Exact same-origin HTML return path after server-owned identity Provider confirmation. */
+  sessionLoginUri?: string
+  sessionProviderReturnUri?: string
+  sessionTransport?: import('@axis-iam/vertex').SessionTransport
   /** SPA/NATIVE public ApplicationClient.clientId. Browser SDK config must not include a secret. */
   clientId: string
   issuerUri: string
@@ -527,8 +482,4 @@ export interface EmailVerificationResponse {
 export interface ChangePasswordInput {
   currentPassword: string
   newPassword: string
-}
-
-export interface LogoutAccountOptions {
-  refreshToken?: string | null
 }

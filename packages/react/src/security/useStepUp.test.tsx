@@ -1,86 +1,60 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import type { ReactNode } from 'react'
-import { IamProvider } from '../provider/IamProvider'
+import { IamProvider, useIamContext } from '../provider/IamProvider'
 import { useStepUp } from './useStepUp'
-import { setupMockFetch, storeTestTokens, makeTestJwt, testProviderProps } from '../test-utils'
-
-function wrapper({ children }: { children: ReactNode }) {
-  return createElement(IamProvider, testProviderProps(), children)
-}
-
-describe('useStepUp', () => {
-  beforeEach(() => {
-    sessionStorage.clear()
-    vi.useFakeTimers()
-    setupMockFetch()
+import { useAuth } from '../hooks/useAuth'
+import { setupMockFetch, storeTestTokens, makeTestUser, testProviderProps } from '../test-utils'
+function wrapper({ children }: { children: ReactNode }) { return createElement(IamProvider, testProviderProps(), children) }
+const response = (data: unknown, status = 200) => new Response(JSON.stringify(data), {status})
+beforeEach(() => { sessionStorage.clear(); setupMockFetch() })
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+describe('server-bound step-up', () => {
+  it('displays safe MFA context without treating assurance as a grant', async () => {
+    const user = makeTestUser(); user.authenticationContext.assuranceLevel = 'mfa'
+    setupMockFetch(undefined, user); storeTestTokens()
+    const h = renderHook(() => ({step:useStepUp(),auth:useAuth(),context:useIamContext()}), {wrapper})
+    await waitFor(() => expect(h.result.current.auth.isAuthenticated).toBe(true))
+    expect(h.result.current.step.authenticationContext?.assuranceLevel).toBe('mfa')
+    expect(h.result.current.step).not.toHaveProperty('isSteppedUp')
   })
-
-  afterEach(() => {
-    vi.useRealTimers()
-    vi.restoreAllMocks()
-  })
-
-  it('isSteppedUp is false without MFA acr', async () => {
+  it('starts a purpose-bound challenge and verifies without refresh or fabricated grant state', async () => {
     storeTestTokens()
-    const { result } = renderHook(() => useStepUp(), { wrapper })
-    await act(async () => { await vi.advanceTimersByTimeAsync(10) })
-
-    expect(result.current.isSteppedUp).toBe(false)
+    const h = renderHook(() => ({step:useStepUp(),auth:useAuth(),context:useIamContext()}), {wrapper})
+    await waitFor(() => expect(h.result.current.auth.isAuthenticated).toBe(true))
+    const mock = vi.fn<typeof fetch>().mockResolvedValueOnce(response({challengeId:'challenge-1',availableMethods:['totp']})).mockResolvedValueOnce(response({verified:true,acr:'mfa'}))
+    vi.stubGlobal('fetch', mock)
+    const challenge = await h.result.current.step.start('PASSWORD_CHANGE','Change password')
+    await challenge.verifyTotp('123456')
+    expect(mock).toHaveBeenCalledTimes(2)
+    expect(mock.mock.calls.map(([url]) => String(url))).toEqual(['https://auth.test.com/api/v1/auth/step-up/start','https://auth.test.com/api/v1/auth/step-up/verify'])
+    expect(JSON.parse(String(mock.mock.calls[0][1]?.body))).toEqual({trigger:'PASSWORD_CHANGE',reason:'Change password'})
+    expect(JSON.parse(String(mock.mock.calls[1][1]?.body))).toEqual({challengeId:'challenge-1',code:'123456'})
+    act(() => h.result.current.context.client.tokenManager.clear())
+    await expect(challenge.verifyTotp('123456')).rejects.toMatchObject({code:'SESSION_INVALIDATED'})
+    expect(mock).toHaveBeenCalledTimes(2)
   })
-
-  it('isSteppedUp is true when acr is urn:iam:acr:mfa', async () => {
-    const jwt = makeTestJwt({ acr: 'urn:iam:acr:mfa' })
-    storeTestTokens(jwt)
-    const { result } = renderHook(() => useStepUp(), { wrapper })
-    await act(async () => { await vi.advanceTimersByTimeAsync(10) })
-
-    expect(result.current.isSteppedUp).toBe(true)
-  })
-
-  it('stepUp sends challenge request and refreshes token', async () => {
+  it.each([false, null])('rejects an unverified result %s', async verified => {
     storeTestTokens()
-    const { result } = renderHook(() => useStepUp(), { wrapper })
-    await act(async () => { await vi.advanceTimersByTimeAsync(10) })
-
-    // Mock: challenge endpoint + token refresh
-    const newJwt = makeTestJwt({ acr: 'urn:iam:acr:mfa' })
-    const fetchMock = vi.fn()
-      // Step-up challenge
-      .mockResolvedValueOnce({ ok: true, json: async () => ({}) })
-      // Refresh token (from refreshToken → discover is cached, so this is the token endpoint)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          access_token: newJwt,
-          refresh_token: 'new-rt',
-          token_type: 'Bearer',
-          expires_in: 3600,
-        }),
-      })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ applicationId: 'app-test', organizationId: null, roles: ['admin'], permissions: ['orders:read'] }) })
-    globalThis.fetch = fetchMock
-
-    await act(async () => {
-      await result.current.stepUp({ reason: 'Confirm payment' })
-    })
-
-    expect(fetchMock).toHaveBeenCalledTimes(3)
-    // Verify challenge was sent
-    const challengeCall = fetchMock.mock.calls[0]
-    expect(challengeCall[0]).toContain('/step-up/challenge')
-    expect(JSON.parse(challengeCall[1].body)).toEqual({ reason: 'Confirm payment' })
-    expect(fetchMock.mock.calls[1]?.[0]).toBe('https://auth.test.com/token')
-    expect(fetchMock.mock.calls[2]?.[0]).toBe('https://auth.test.com/api/v1/auth/me/permissions')
+    const h = renderHook(() => ({step:useStepUp(),auth:useAuth(),context:useIamContext()}), {wrapper})
+    await waitFor(() => expect(h.result.current.auth.isAuthenticated).toBe(true))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(response({challengeId:'c',availableMethods:['totp']})).mockResolvedValueOnce(response({verified})))
+    const c = await h.result.current.step.start('MFA_CHANGE')
+    await expect(c.verifyTotp('bad')).rejects.toThrow('not verified')
   })
-
-  it('stepUp throws when not authenticated', async () => {
-    const { result } = renderHook(() => useStepUp(), { wrapper })
-    await act(async () => { await vi.advanceTimersByTimeAsync(10) })
-
-    await expect(
-      act(() => result.current.stepUp()),
-    ).rejects.toThrow('Not authenticated')
+  it('rejects TOTP when the server offered only WebAuthn', async () => {
+    storeTestTokens()
+    const h=renderHook(()=>({step:useStepUp(),auth:useAuth()}),{wrapper})
+    await waitFor(()=>expect(h.result.current.auth.isAuthenticated).toBe(true))
+    const mock=vi.fn().mockResolvedValue(response({challengeId:'c',availableMethods:['webauthn']}))
+    vi.stubGlobal('fetch',mock)
+    const challenge=await h.result.current.step.start('MFA_CHANGE')
+    await expect(challenge.verifyTotp('code')).rejects.toThrow('TOTP is unavailable')
+    expect(mock).toHaveBeenCalledOnce()
+  })
+  it('rejects an unauthenticated start', async () => {
+    const h=renderHook(() => useStepUp(), {wrapper})
+    await expect(h.result.current.start('MFA_CHANGE')).rejects.toThrow('Not authenticated')
   })
 })

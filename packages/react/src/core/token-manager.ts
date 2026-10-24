@@ -1,29 +1,35 @@
 import { SessionLifecycle, SessionInvalidatedError } from '@axis-iam/vertex'
 import { IamApiError, IamConfigurationError, IamNetworkError, IamTokenRefreshError } from './types'
 import type { TokenSet } from './types'
-import { decodeJwt, isTokenExpired, extractUser } from './jwt'
-import type { IamUser, JWTPayload } from './types'
+import type { CurrentUser } from '@axis-iam/vertex'
+import type { IamUser } from './types'
 import { InvalidTokenResponseError, parseTokenResponse } from './token-response'
 
 const SESSION_KEY = 'axis_iam_session'
 const LEGACY_STORAGE_KEYS = ['iam_tokens', 'iam_permissions'] as const
-const SESSION_VERSION = 4 as const
+const SESSION_VERSION = 6 as const
 
 export type TokenStorageMode = 'memory' | 'sessionStorage'
-export type AuthenticationProvenance = 'DIRECT_AUTH' | 'OAUTH_AUTHORIZATION_CODE'
-export type RefreshProvenance = 'DIRECT_AUTH' | 'OAUTH_TOKEN_ENDPOINT'
+export type AuthenticationProvenance = 'OAUTH_AUTHORIZATION_CODE'
+export type RefreshProvenance = 'OAUTH_TOKEN_ENDPOINT'
 
 interface TokenSession {
   version: typeof SESSION_VERSION
   tokens: TokenSet
-  roles: string[]
-  permissions: string[]
+  owner: SessionOwner | null
   authenticationProvenance: AuthenticationProvenance
   refreshProvenance: RefreshProvenance | null
   expiresAt: number
 }
 
+export interface SessionOwner {
+  id: string
+  applicationId: string
+  clientId: string
+  sessionId: string
+}
 export interface AuthorizationState {
+  user: CurrentUser
   roles: string[]
   permissions: string[]
 }
@@ -39,6 +45,9 @@ export interface TokenManagerOptions {
 
 export class TokenManager {
   private session: TokenSession | null = null
+  private user: IamUser | null = null
+  private viewStatus: 'anonymous' | 'loading' | 'ready' | 'error' = 'anonymous'
+  private viewError: Error | null = null
   private lastPermissionError: Error | null = null
   private readonly lifecycle = new SessionLifecycle<TokenSet>()
   private paused = false
@@ -134,8 +143,7 @@ export class TokenManager {
     const session: TokenSession = {
       version: SESSION_VERSION,
       tokens: parsed,
-      roles: tokenRoles(tokens.access_token),
-      permissions: [],
+      owner: null,
       authenticationProvenance,
       refreshProvenance,
       expiresAt: tokenDeadline(parsed),
@@ -143,6 +151,9 @@ export class TokenManager {
     this.saveSessionToStorage(session)
     this.lifecycle.invalidate()
     this.session = session
+    this.user = null
+    this.viewStatus = 'loading'
+    this.viewError = null
     this.lastPermissionError = null
     this.lastRefreshError = null
     this.scheduleRefresh()
@@ -150,18 +161,52 @@ export class TokenManager {
   }
 
   setPermissions(permissions: string[]): void {
-    if (!this.session) return
-    const session = { ...this.session, permissions: [...permissions] }
-    this.saveSessionToStorage(session)
-    this.session = session
-    this.notifyChange()
+    if (this.user) { this.user = { ...this.user, permissions: [...permissions] }; this.notifyChange() }
   }
 
   setAuthorization(roles: string[], permissions: string[]): void {
+    if (this.user) { this.user = { ...this.user, roles: [...roles], permissions: [...permissions] }; this.notifyChange() }
+  }
+
+  getViewState() { return { status: this.session && !this.hasUsableToken() ? 'expired' as const : this.viewStatus, error: this.viewError, expiresAt: this.session?.expiresAt ?? null } }
+
+  beginViewLoad(): void {
     if (!this.session) return
-    const session = { ...this.session, roles: [...roles], permissions: [...permissions] }
+    this.user = null
+    this.viewStatus = 'loading'
+    this.viewError = null
+    this.notifyChange()
+  }
+
+  failViewLoad(error: Error): void {
+    this.user = null
+    this.viewStatus = 'error'
+    this.viewError = error
+    this.lastPermissionError = error
+    this.notifyChange()
+  }
+
+  applyViews(state: AuthorizationState): void {
+    if (!this.hasUsableToken()) throw new SessionInvalidatedError()
+    const { user, roles, permissions } = state
+    const c = user.authenticationContext
+    const owner: SessionOwner = { id: user.id, applicationId: c.applicationId, clientId: c.clientId, sessionId: c.sessionId }
+    const previous = this.session!.owner
+    if (previous && Object.keys(owner).some(key => owner[key as keyof SessionOwner] !== previous[key as keyof SessionOwner])) {
+      const error = new IamConfigurationError('Current-user owner changed within a token session')
+      this.failViewLoad(error)
+      throw error
+    }
+    const session = { ...this.session!, owner }
     this.saveSessionToStorage(session)
     this.session = session
+    this.user = { ...user, roles: [...roles], permissions: [...permissions],
+      ...(typeof user.metadata.displayName === 'string' ? { name: user.metadata.displayName } : {}),
+      orgId: c.organizationId ?? undefined, orgSlug: c.organizationSlug ?? undefined, orgRole: c.organizationRole ?? undefined,
+      workspaceId: c.workspaceId ?? undefined, isImpersonating: c.impersonation !== null, actorId: c.impersonation?.actorId }
+    this.viewStatus = 'ready'
+    this.viewError = null
+    this.lastPermissionError = null
     this.notifyChange()
   }
 
@@ -175,11 +220,11 @@ export class TokenManager {
   }
 
   getPermissions(): string[] {
-    return this.session && this.isAuthenticated() ? [...this.session.permissions] : []
+    return this.session && this.isAuthenticated() ? [...this.user!.permissions] : []
   }
 
   getRoles(): string[] {
-    return this.session && this.isAuthenticated() ? [...this.session.roles] : []
+    return this.session && this.isAuthenticated() ? [...this.user!.roles] : []
   }
 
   getRefreshProvenance(): RefreshProvenance | null {
@@ -202,26 +247,11 @@ export class TokenManager {
     return this.session?.tokens.id_token ?? null
   }
 
-  isAuthenticated(): boolean {
-    const token = this.getAccessToken()
-    return token && this.session ? Date.now() < this.session.expiresAt && !isTokenExpired(token) : false
-  }
+  hasUsableToken(): boolean { return this.session !== null && Date.now() < this.session.expiresAt }
 
-  decodePayload(): JWTPayload | null {
-    const token = this.getAccessToken()
-    if (!token) return null
-    try {
-      return decodeJwt(token)
-    } catch {
-      return null
-    }
-  }
+  isAuthenticated(): boolean { return this.hasUsableToken() && this.viewStatus === 'ready' && this.user !== null }
 
-  getUser(): IamUser | null {
-    if (!this.isAuthenticated()) return null
-    const payload = this.decodePayload()
-    return payload ? extractUser(payload, this.getPermissions(), this.getRoles()) : null
-  }
+  getUser(): IamUser | null { return this.isAuthenticated() ? structuredClone(this.user) : null }
 
   clear(): void {
     this.endSession(null)
@@ -231,6 +261,9 @@ export class TokenManager {
     this.lifecycle.invalidate()
     this.expiry.invalidate()
     this.session = null
+    this.user = null
+    this.viewStatus = 'anonymous'
+    this.viewError = null
     this.lastPermissionError = null
     this.lastRefreshError = refreshError
     try {
@@ -281,10 +314,13 @@ export class TokenManager {
           previousRefreshToken: previous.tokens.refresh_token,
         })
         const session: TokenSession = {
-          ...previous, tokens: { ...tokens, ...(tokens.id_token === undefined && previous.tokens.id_token !== undefined ? { id_token: previous.tokens.id_token } : {}) }, expiresAt: tokenDeadline(tokens), roles: [], permissions: [],
+          ...previous, tokens: { ...tokens, ...(tokens.id_token === undefined && previous.tokens.id_token !== undefined ? { id_token: previous.tokens.id_token } : {}) }, expiresAt: tokenDeadline(tokens),
         }
         this.saveSessionToStorage(session)
         this.session = session
+        this.user = null
+        this.viewStatus = 'loading'
+        this.viewError = null
         this.lastRefreshError = null
         this.lastPermissionError = null
         this.scheduleRefresh()
@@ -303,11 +339,16 @@ export class TokenManager {
         throw failure
       }
       this.assertCurrent(generation)
+      if (!this.onPermissionsRefreshNeeded) {
+        const error = new IamConfigurationError('Session view refresh handler is required')
+        this.failViewLoad(error)
+        throw error
+      }
       if (this.onPermissionsRefreshNeeded) {
         try {
           const state = await this.onPermissionsRefreshNeeded()
           this.assertCurrent(generation)
-          this.setAuthorization(state.roles, state.permissions)
+          this.applyViews(state)
           this.setLastPermissionError(null)
         } catch (error) {
           this.assertCurrent(generation)
@@ -316,7 +357,10 @@ export class TokenManager {
             this.endSession(failure)
             throw failure
           }
-          this.setLastPermissionError(error instanceof Error ? error : new Error('Permission refresh failed'))
+          const failure = error instanceof Error ? error : new Error('Session view refresh failed')
+          this.failViewLoad(failure)
+          this.scheduleRefresh()
+          throw failure
         }
       }
       this.assertCurrent(generation)
@@ -325,7 +369,11 @@ export class TokenManager {
     })
   }
 
+  private readonly listeners = new Set<() => void>()
+  subscribe = (listener: () => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener) }
+
   private notifyChange(): void {
+    for (const listener of this.listeners) listener()
     this.onTokensChanged?.(this.getUser())
     this.onPermissionErrorChanged?.(this.lastPermissionError)
     this.onRefreshErrorChanged?.(this.lastRefreshError)
@@ -362,6 +410,7 @@ export class TokenManager {
       throw new IamConfigurationError('Stored token session is invalid')
     }
     this.session = session
+    this.viewStatus = 'loading'
   }
 
   private discardCorruptSession(): void {
@@ -393,13 +442,15 @@ export class TokenManager {
 
 function parseSession(value: unknown): TokenSession | null {
   if (!isRecord(value) || value.version !== SESSION_VERSION) return null
-  if (!hasExactKeys(value, ['version', 'tokens', 'roles', 'permissions', 'authenticationProvenance', 'refreshProvenance', 'expiresAt'])) return null
-  if (!isTokenSet(value.tokens) || !isStringArray(value.roles) || !isStringArray(value.permissions)) return null
+  if (!hasExactKeys(value, ['version', 'tokens', 'owner', 'authenticationProvenance', 'refreshProvenance', 'expiresAt'])) return null
+  if (!isTokenSet(value.tokens)) return null
+  const owner = value.owner === null ? null : parseOwner(value.owner)
+  if (value.owner !== null && owner === null) return null
   if (typeof value.expiresAt !== 'number' || !Number.isSafeInteger(value.expiresAt) || value.expiresAt <= 0) return null
   const authenticationProvenance = value.authenticationProvenance
-  if (authenticationProvenance !== 'DIRECT_AUTH' && authenticationProvenance !== 'OAUTH_AUTHORIZATION_CODE') return null
+  if (authenticationProvenance !== 'OAUTH_AUTHORIZATION_CODE') return null
   const provenance = value.refreshProvenance
-  if (provenance !== null && provenance !== 'DIRECT_AUTH' && provenance !== 'OAUTH_TOKEN_ENDPOINT') return null
+  if (provenance !== null && provenance !== 'OAUTH_TOKEN_ENDPOINT') return null
   try {
     validateSessionContext(value.tokens, authenticationProvenance, provenance)
   } catch {
@@ -408,21 +459,19 @@ function parseSession(value: unknown): TokenSession | null {
   return {
     version: SESSION_VERSION,
     tokens: { ...value.tokens },
-    roles: [...value.roles],
-    permissions: [...value.permissions],
+    owner,
     authenticationProvenance,
     refreshProvenance: provenance,
     expiresAt: value.expiresAt,
   }
 }
 
-function tokenRoles(accessToken: string): string[] {
-  try {
-    const roles = decodeJwt(accessToken).roles
-    return isStringArray(roles) ? [...roles] : []
-  } catch {
-    return []
-  }
+function parseOwner(value: unknown): SessionOwner | null {
+  if (!isRecord(value) || !hasExactKeys(value, ['id', 'applicationId', 'clientId', 'sessionId'])) return null
+  const { id, applicationId, clientId, sessionId } = value
+  if (typeof id !== 'string' || !id.trim() || typeof applicationId !== 'string' || !applicationId.trim()
+    || typeof clientId !== 'string' || !clientId.trim() || typeof sessionId !== 'string' || !sessionId.trim()) return null
+  return { id, applicationId, clientId, sessionId }
 }
 
 function validateSessionContext(
@@ -430,7 +479,7 @@ function validateSessionContext(
   authenticationProvenance: AuthenticationProvenance,
   refreshProvenance: RefreshProvenance | null,
 ): void {
-  if (authenticationProvenance !== 'DIRECT_AUTH' && authenticationProvenance !== 'OAUTH_AUTHORIZATION_CODE') {
+  if (authenticationProvenance !== 'OAUTH_AUTHORIZATION_CODE') {
     throw new TypeError('Tokens require explicit authentication provenance')
   }
   if (tokens.refresh_token && !refreshProvenance) {
@@ -439,12 +488,7 @@ function validateSessionContext(
   if (!tokens.refresh_token && refreshProvenance) {
     throw new TypeError('Refresh provenance requires a refresh token')
   }
-  if (authenticationProvenance === 'DIRECT_AUTH' && refreshProvenance === 'OAUTH_TOKEN_ENDPOINT') {
-    throw new TypeError('Direct Auth tokens cannot use OAuth refresh provenance')
-  }
-  if (authenticationProvenance === 'OAUTH_AUTHORIZATION_CODE' && refreshProvenance === 'DIRECT_AUTH') {
-    throw new TypeError('OAuth tokens cannot use Direct Auth refresh provenance')
-  }
+
 }
 
 function isTokenSet(value: unknown): value is TokenSet {
@@ -455,10 +499,6 @@ function isTokenSet(value: unknown): value is TokenSet {
     && (value.refresh_token === undefined || typeof value.refresh_token === 'string')
     && (value.id_token === undefined || typeof value.id_token === 'string')
     && (value.scope === undefined || typeof value.scope === 'string')
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every(item => typeof item === 'string')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

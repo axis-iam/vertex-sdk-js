@@ -1,4 +1,6 @@
 import type { IamSdkConfig } from '../config.js'
+import { parseCurrentUser } from './current-user.js'
+import type { CurrentUser } from './current-user.js'
 import type {
   RequestPasswordResetInput,
   ResetPasswordInput,
@@ -17,6 +19,14 @@ export class IamClient {
   private endpoint: string
   private clientId: string
   private clientSecret: string
+
+  /** Explicit safe context read; metadata is not a permission source. */
+  async getCurrentUser(accessToken: string): Promise<CurrentUser> {
+    if (!accessToken.trim()) throw new TypeError('A user bearer token is required')
+    return this.fetchWithRetry(`${this.endpoint}/api/v1/auth/me`,
+      { method: 'GET', headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' } },
+      parseCurrentUser)
+  }
 
   constructor(config: Pick<IamSdkConfig, 'endpoint' | 'clientId' | 'clientSecret'>) {
     if (!config.endpoint?.trim()) {

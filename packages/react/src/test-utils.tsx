@@ -35,7 +35,8 @@ export function makeTestUser(overrides: Partial<IamUser> = {}): IamUser {
     orgRole: 'ADMIN',
     workspaceId: 'ws-1',
     isImpersonating: false,
-    raw: { sub: 'user-1' },
+    status: 'ACTIVE', emailVerified: true, username: null, metadata: {},
+    authenticationContext: { subjectType: 'USER', applicationId: 'app-test', clientId: 'test-app', sessionId: 's1', workspaceId: 'ws-1', workspaceSelectionRequired: false, organizationId: null, organizationSlug: null, organizationRole: null, authTime: null, authenticationMethods: [], assuranceLevel: null, impersonation: null },
     ...overrides,
   }
 }
@@ -70,10 +71,13 @@ const mockPermissionsResponse = {
  * Setup mock fetch for IamProvider's OIDC discovery + current-user permissions endpoint.
  * Call this in beforeEach.
  */
-export function setupMockFetch(permissions?: string[]): void {
+export function setupMockFetch(permissions?: string[], user: IamUser = makeTestUser()): void {
   const permsResponse = permissions ? { ...mockPermissionsResponse, permissions } : mockPermissionsResponse
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+    if (url.endsWith('/api/v1/auth/me')) {
+      return { ok: true, json: async () => user }
+    }
     if (url.includes('/api/v1/auth/me/permissions')) {
       return { ok: true, json: async () => permsResponse }
     }
@@ -82,14 +86,13 @@ export function setupMockFetch(permissions?: string[]): void {
 }
 
 /**
- * Store a pre-authenticated token set in sessionStorage for opt-in persistence tests.
- * Optionally stores resolved permissions so the user context is fully populated immediately.
+ * Store tokens for opt-in persistence tests. Required views are always loaded from fetch.
  * Provider props must include tokenStorage: 'sessionStorage' for IamProvider to restore it.
  */
-export function storeTestTokens(jwt?: string, permissions?: string[], roles: string[] = ['admin']): void {
+export function storeTestTokens(jwt?: string, _permissions?: string[], _roles: string[] = ['admin']): void {
   const token = jwt ?? makeTestJwt()
   sessionStorage.setItem('axis_iam_session', JSON.stringify({
-    version: 4,
+    version: 6,
     expiresAt: Date.now() + 3600_000,
     tokens: {
       access_token: token,
@@ -97,8 +100,7 @@ export function storeTestTokens(jwt?: string, permissions?: string[], roles: str
       token_type: 'Bearer',
       expires_in: 3600,
     },
-    roles,
-    permissions: permissions ?? [],
+    owner: null,
     authenticationProvenance: 'OAUTH_AUTHORIZATION_CODE',
     refreshProvenance: 'OAUTH_TOKEN_ENDPOINT',
   }))

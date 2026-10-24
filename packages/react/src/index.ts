@@ -37,16 +37,6 @@ export { useOrganizationInvitation } from './hooks/useOrganizationInvitation'
 export type { UseOrganizationInvitationOptions, UseOrganizationInvitationResult } from './hooks/useOrganizationInvitation'
 export { useLinkableIdentityProviders } from './hooks/useLinkableIdentityProviders'
 export type { UseLinkableIdentityProvidersOptions, UseLinkableIdentityProvidersResult } from './hooks/useLinkableIdentityProviders'
-export { useAccountLinking } from './hooks/useAccountLinking'
-export type { StartAccountLinkOptions, UseAccountLinkingOptions, UseAccountLinkingResult } from './hooks/useAccountLinking'
-export { useAccountLinkCallback }
-  from './hooks/useAccountLinkCallback'
-export type {
-  AccountLinkCallbackStatus,
-  UseAccountLinkCallbackOptions,
-  UseAccountLinkCallbackResult,
-} from './hooks/useAccountLinkCallback'
-
 // --- Permission ---
 export { usePermission } from './permission/usePermission'
 export { PermissionGate, Protect } from './permission/PermissionGate'
@@ -58,7 +48,7 @@ export type { MenuItem } from './permission/useMenuFilter'
 export { SignIn } from './components/SignIn'
 export type { SignInProps } from './components/SignIn'
 export { SignUp } from './components/SignUp'
-export type { SignUpProps, SignUpUserInfo } from './components/SignUp'
+export type { SignUpProps, RegistrationOperation } from './components/SignUp'
 export { AuthDialog, SignInButton, SignUpButton } from './components/AuthDialog'
 export type { AuthDialogProps, AuthDialogView, AuthEntryButtonProps } from './components/AuthDialog'
 export { ForgotPassword } from './components/ForgotPassword'
@@ -91,6 +81,7 @@ export type { Appearance } from './components/styles'
 
 // --- Security ---
 export { useStepUp } from './security/useStepUp'
+export type { StepUpTrigger } from './security/useStepUp'
 export { useImpersonation } from './security/useImpersonation'
 export { useDevices } from './security/useDevices'
 export type { Device } from './security/useDevices'
@@ -103,7 +94,6 @@ export type {
   IamApiErrorOptions,
   IamUser,
   AppContinuation,
-  EmailVerificationMode,
   AuthMethodAvailabilityResponse,
   AuthMethodIdpProviderResponse,
   AuthMethodType,
@@ -116,11 +106,7 @@ export type {
   AccountSecuritySummary,
   AccountSession,
   AccountUpdateProfileInput,
-  AccountLinkAuthorizeOptions,
-  AccountLinkAuthorizeResult,
-  AccountLinkCallbackResult,
   AccountLinkProtocol,
-  AccountLinkTicketExchangeInput,
   AccountLoginMethod,
   AccountLoginMethodKind,
   ChangePasswordInput,
@@ -128,7 +114,8 @@ export type {
   IdentityProviderOption,
   IdentityProviderProtocol,
   LinkableIdentityProvider,
-  JWTPayload,
+  CurrentUser,
+  AuthenticationContext,
   TokenSet,
   OIDCConfiguration,
   OrganizationSwitchResponse,
@@ -147,7 +134,6 @@ export type {
   RegistrationGrantPreviewResponse,
   RedirectCallbackOptions,
   RedirectCallbackResult,
-  LogoutAccountOptions,
   LogoutOptions,
   LogoutUrlOptions,
   RequestPasswordResetInput,
@@ -159,22 +145,24 @@ export type {
 export { IamApiError, IamNetworkError, IamConfigurationError, IamTokenRefreshError, isIamApiError, isStepUpRequiredError } from './core/types'
 export type { TokenRefreshFailureReason } from './core/types'
 export { SessionInvalidatedError } from '@axis-iam/vertex'
-export {
-  ACCOUNT_LINK_STATE_KEY,
-  clearPendingAccountLink,
-  generateAccountLinkState,
-  getPendingAccountLink,
-  isActionableLinkProvider,
-  storePendingAccountLink,
-} from './core/account-linking'
-export type {
-  PendingAccountLinkProvider,
-  PendingAccountLinkState,
-  StorePendingAccountLinkOptions,
-} from './core/account-linking'
 
 // --- Re-export core permission utils for convenience ---
 export { hasPermission, hasAllPermissions, hasAnyPermission, matchPermission } from '@axis-iam/vertex'
 
 export { useBranding, BrandingFetchError } from './components/useBranding'
 export type { BrandingConfig, BrandingIntent, UseBrandingResult } from './components/useBranding'
+
+export { useIdentityOperations } from './hooks/useIdentityOperations'
+export { IdentityClient } from './core/identity-client'
+export type * from '@axis-iam/vertex'
+export { assertIdentityWebAuthn } from './core/identity-webauthn'
+
+export { IdentityOperationStore, identityOperationStore } from './core/identity-operation-store'
+export type { IdentityOperationSnapshot, UncertainIdentityCreate } from './core/identity-operation-store'
+
+export { ServerSessionClient } from './core/server-session-client'
+export type { SessionIdentityOperation, OperationView } from './core/server-session-client'
+export type { AuthClient } from './core/auth-client'
+export { CookieSessionTransport, UnsupportedOperationError, SessionTransportError } from '@axis-iam/vertex'
+export type { SessionTransport, SessionRequest } from '@axis-iam/vertex'
+export { useServerSession } from './hooks/useServerSession'

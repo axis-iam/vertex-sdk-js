@@ -1,38 +1,36 @@
 import type {
+  LoginIdentifier,
+  RegistrationOperation,
+  MfaProofMethod,
+} from '@axis-iam/vertex'
+import type {
   AuthMethodIdpProviderResponse,
   IamUser,
   PublicAuthMethodsResponse,
   PublicAuthPolicyResponse,
   RegistrationGrantInput,
-  EmailVerificationMode,
 } from './types'
 
 export type AuthFlowIntent = 'sign-in' | 'sign-up'
-export type AuthCredentialMethod = 'password' | 'sms' | 'email_otp' | 'magic_link'
-export interface SignUpUserInfo {
-  id: string
-  email: string
-  username?: string | null
-  status: string
-  emailVerified: boolean
-  roles: string[]
-  /** Profile metadata, never an authorization source. */
-  metadata?: Record<string, unknown>
-}
-export interface AuthSignupResult {
-  readonly user: SignUpUserInfo
-  readonly verificationMode: EmailVerificationMode
-}
+export type AuthCredentialMethod =
+  | 'password'
+  | 'sms'
+  | 'email_otp'
+  | 'magic_link'
 export type AuthFlowPending =
   | 'password'
   | 'send-code'
   | 'verify-code'
   | 'magic-link'
   | 'complete-magic-link'
+  | 'retry-completion'
   | 'mfa'
   | 'sign-up'
   | 'resend-verification'
   | 'provider'
+  | 'provider-callback'
+  | 'complete-registration'
+  | 'cancel-registration'
 interface AuthFlowCommon {
   readonly intent: AuthFlowIntent
   readonly capabilities: PublicAuthMethodsResponse | null
@@ -42,7 +40,12 @@ interface AuthFlowCommon {
   readonly error: Error | null
   readonly retryAfterSeconds: number
   readonly verificationResendDeadline: number | null
+  readonly registrationCancelUnconfirmed: boolean
   readonly verificationEmail: string | null
+  readonly transactionExpiresAt: string | null
+  readonly challengeExpiresAt: string | null
+  readonly cancellationUnconfirmed: boolean
+  readonly completionPending: boolean
 }
 export type AuthFlowState = AuthFlowCommon &
   (
@@ -50,14 +53,22 @@ export type AuthFlowState = AuthFlowCommon &
     | {
         readonly step: 'method'
         readonly identifier: string
-        readonly identifierKind: 'email' | 'phone'
+        readonly identifierKind: 'email' | 'phone' | 'username'
+        readonly loginIdentifier: LoginIdentifier
         readonly method: AuthCredentialMethod | null
         readonly methods: readonly AuthCredentialMethod[]
         readonly codeSent: boolean
         readonly magicLinkSent: boolean
       }
-    | { readonly step: 'mfa'; readonly methods: readonly ['totp']; readonly identifier: string }
-    | { readonly step: 'verification'; readonly result: AuthSignupResult }
+    | {
+        readonly step: 'mfa'
+        readonly methods: readonly MfaProofMethod[]
+        readonly identifier: string
+      }
+    | {
+        readonly step: 'verification'
+        readonly registration: RegistrationOperation
+      }
     | { readonly step: 'success'; readonly user: IamUser }
   )
 export class AuthFlowStateError extends Error {
@@ -71,30 +82,35 @@ export interface UseAuthFlowOptions {
   initialIntent?: AuthFlowIntent
   registrationGrant?: RegistrationGrantInput
   onSignInSuccess?: (user: IamUser) => void
-  onSignUpSuccess?: (user: SignUpUserInfo) => void
+  onSignUpSuccess?: (operation: RegistrationOperation) => void
   onError?: (error: Error) => void
 }
 export interface AuthFlowActions {
-  setIntent(intent: AuthFlowIntent): void
-  continueWithIdentifier(identifier: string): void
+  retryOptions(): Promise<void>
+  resumeProviderCallback(url: string): Promise<void>
+  retryCompletion(): Promise<void>
+  setIntent(intent: AuthFlowIntent): Promise<void>
+  continueWithIdentifier(identifier: LoginIdentifier): void
   selectMethod(method: AuthCredentialMethod): void
-  back(): void
-  cancel(): void
-  reset(): void
+  back(): Promise<void>
+  cancel(): Promise<void>
+  reset(): Promise<void>
   submitPassword(password: string): Promise<void>
   sendCode(): Promise<void>
   verifyCode(code: string): Promise<void>
   sendMagicLink(): Promise<void>
-  completeMagicLink(token: string): Promise<void>
-  verifyMfa(code: string): Promise<void>
+  completeMagicLink(url: string): Promise<void>
+  verifyMfa(code: string, method?: MfaProofMethod): Promise<void>
   signUp(input: {
-    email: string
-    username?: string
+    identifier: LoginIdentifier
     password: string
     registrationGrant?: RegistrationGrantInput
   }): Promise<void>
+  completeRegistration(code: string): Promise<void>
+  cancelRegistration(): Promise<void>
+  resumeRegistration(id: string): Promise<void>
   resendVerification(): Promise<void>
-  startProvider(providerId: string): Promise<string>
+  startProvider(providerId: string, registrationGrant?: RegistrationGrantInput): Promise<string>
 }
 export interface UseAuthFlowResult {
   readonly state: AuthFlowState

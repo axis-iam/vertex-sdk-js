@@ -1,19 +1,14 @@
 import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createServer } from 'node:http'
-import { createHash, createHmac, randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, readFile, writeFile, rm } from 'node:fs/promises'
 import { resolve, join } from 'node:path'
 
 const repo = resolve(import.meta.dirname, '../../..')
 const output = resolve(process.env.AUTH_ENTRIES_OUTPUT ?? join(repo, '.auth-entries-smoke'))
-const issuer = process.env.IAM_ENTRIES_ISSUER
-const clientId = process.env.IAM_ENTRIES_CLIENT_ID
-const identifier = process.env.IAM_ENTRIES_IDENTIFIER
-const password = process.env.IAM_ENTRIES_PASSWORD
 const fixturesOnly = process.argv.includes('--fixtures-only')
-if (!fixturesOnly && !(issuer && clientId && identifier && password))
-  throw new Error('The live gate requires IAM_ENTRIES_ISSUER/CLIENT_ID/IDENTIFIER/PASSWORD')
+if (!fixturesOnly) throw new Error('Unified live authentication smoke awaits the complete backend/Hosted/Provider candidate; use --fixtures-only for protocol fixtures')
 const consumer = join(output, 'consumer')
 const artifacts = join(output, 'artifacts')
 const profile = join(output, 'chrome-profile')
@@ -160,7 +155,7 @@ await run(
   [
     '--input-type=module',
     '-e',
-    "import {useAuthFlow,AuthFlowStateError} from '@axis-iam/vertex-react'; if(!useAuthFlow||!AuthFlowStateError)process.exit(1); import('@axis-iam/vertex-react/server')",
+    "import {useAuthFlow,AuthFlowStateError} from '@axis-iam/vertex-react'; if(!useAuthFlow||!AuthFlowStateError)process.exit(1); await import('@axis-iam/vertex-react/server').then(()=>{throw new Error('retired export')},e=>{if(e.code!=='ERR_PACKAGE_PATH_NOT_EXPORTED')throw e})",
   ],
   consumer,
 )
@@ -168,7 +163,7 @@ await run(
   'node',
   [
     '-e',
-    "if(!require('@axis-iam/vertex-react').useAuthFlow||!require('@axis-iam/vertex-react').AuthFlowStateError)process.exit(1);require('@axis-iam/vertex-react/server')",
+    "if(!require('@axis-iam/vertex-react').useAuthFlow||!require('@axis-iam/vertex-react').AuthFlowStateError)process.exit(1);try{require('@axis-iam/vertex-react/server');process.exit(1)}catch(e){if(e.code!=='ERR_PACKAGE_PATH_NOT_EXPORTED')throw e}",
   ],
   consumer,
 )
@@ -186,7 +181,6 @@ const capabilities = {
   socialLoginEnabled: false,
   signupEnabled: true,
   selfRegistrationEnabled: true,
-  emailVerificationMode: 'OPTIONAL',
   idpAutoProvisioningEnabled: false,
   loginInitiationUri: null,
   postVerificationRedirectUri: null,
@@ -198,13 +192,14 @@ const capabilities = {
     availableForSignup: type === 'PASSWORD',
     unavailableReason: null,
   })),
+  identifierMethods: [{ kind: 'EMAIL', methods: ['PASSWORD', 'EMAIL_OTP', 'EMAIL_MAGIC_LINK'] }, { kind: 'PHONE', methods: ['PASSWORD', 'SMS_OTP'] }, { kind: 'USERNAME', methods: ['PASSWORD'] }],
+  defaultIdentifierKind: 'EMAIL',
   idpProviders: [],
   resend: { emailVerificationCooldownSeconds: 30 },
 }
 const policy = {
   signupMode: 'OPEN',
   allowedRegistrationGrantTypes: ['ACCESS_CODE'],
-  emailVerificationMode: 'OPTIONAL',
   idpAutoProvisioningEnabled: false,
   minPasswordLength: 10,
   requireUppercase: true,
@@ -213,7 +208,8 @@ const policy = {
   requireSpecialChar: true,
 }
 let fixture = {},
-  counts = {}
+  counts = {},
+  transaction = null
 const jwt = () =>
   `${Buffer.from('{"alg":"RS256"}').toString('base64url')}.${Buffer.from(JSON.stringify({ sub: 'fixture-user', email: 'member@example.invalid', exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')}.fixture-signature`
 const fixtureTokens = () => ({
@@ -265,6 +261,7 @@ const server = createServer(async (request, response) => {
           jwks_uri: `${origin}/fixture/jwks`,
         })
       if (path.endsWith('/branding')) return json(response, {}, 404)
+      if (path.endsWith('/me')) return json(response,{ id: 'fixture-user', email: null, username: null, status:'ACTIVE', emailVerified:true, metadata:{}, authenticationContext:{subjectType:'USER',applicationId:'fixture-app',clientId:'fixture-client',sessionId:'fixture-session',workspaceId:null,workspaceSelectionRequired:true,organizationId:null,organizationSlug:null,organizationRole:null,authTime:null,authenticationMethods:[],assuranceLevel:null,impersonation:null} })
       if (path.endsWith('/permissions'))
         return json(response, {
           applicationId: 'fixture-app',
@@ -272,39 +269,42 @@ const server = createServer(async (request, response) => {
           roles: [],
           permissions: [],
         })
-      if (path.endsWith('/login')) {
-        if (fixture.loginDelay) await new Promise((resolve) => setTimeout(resolve, fixture.loginDelay))
-        if (fixture.loginError) return json(response, { error: 'INVALID_CREDENTIALS' }, 401)
-        if (fixture.mfa)
-          return json(response, {
-            mfa_required: true,
-            mfa_token: 'controlled-private-proof',
-            mfa_methods: ['totp'],
-          })
-        return json(response, fixtureTokens())
+      if (path.endsWith('/auth/transactions')) {
+        const chunks=[];for await(const chunk of request)chunks.push(chunk)
+        const binding=JSON.parse(Buffer.concat(chunks).toString())
+        transaction={...binding,transactionId:randomBytes(16).toString('hex'),controlSecret:randomBytes(32).toString('base64url'),expiresAt:new Date(Date.now()+600000).toISOString()}
+        return json(response,{transactionId:transaction.transactionId,controlSecret:transaction.controlSecret,expiresAt:transaction.expiresAt,nextAction:'authenticate'})
       }
+      if (path.includes('/auth/transactions/')) {
+        if(!transaction||request.headers['authentication-transaction']!==transaction.controlSecret)return json(response,{error:'UNAUTHORIZED'},401)
+        const view=(state,nextAction)=>({transactionId:transaction.transactionId,expiresAt:transaction.expiresAt,state,nextAction})
+        if(path.endsWith('/authenticate')){
+          if(fixture.loginDelay)await new Promise(resolve=>setTimeout(resolve,fixture.loginDelay))
+          if(fixture.loginError)return json(response,{error:'INVALID_CREDENTIALS'},401)
+          return json(response,fixture.mfa?view('MFA_REQUIRED','mfa'):view('AUTHENTICATED','complete'))
+        }
+        if(path.endsWith('/mfa'))return json(response,view('AUTHENTICATED','complete'))
+        if(path.endsWith('/cancel'))return json(response,view('CANCELLED','none'))
+        if(path.endsWith('/complete'))return json(response,{kind:'authorization_code',code:'fixture-code',state:transaction.state,expiresIn:120})
+        if(path.endsWith('/challenges')){
+          if(fixture.rateLimit)return json(response,{error:'RATE_LIMITED'},429,{'Retry-After':'7'})
+          return json(response,{transactionId:transaction.transactionId,expiresAt:transaction.expiresAt,challengeExpiresAt:new Date(Date.now()+120000).toISOString(),cooldownSeconds:30,nextAction:'authenticate'})
+        }
+      }
+      if(path.endsWith('/token'))return json(response,fixtureTokens())
       if (path.endsWith('/signup'))
         return json(
           response,
           {
-            id: 'fixture-new-user',
-            email: 'member@example.invalid',
-            status: 'PENDING',
-            emailVerified: false,
-            roles: [],
+            registrationId: 'fixture-registration',
+            status: 'PENDING_VERIFICATION',
+            expiresAt: new Date(Date.now() + 900000).toISOString(),
+            nextAction: 'VERIFY_EMAIL',
+            controlSecret: 'fixture-registration-control',
           },
           201,
         )
-      if (path.endsWith('/mfa/verify') || path.endsWith('/verify')) return json(response, fixtureTokens())
-      if (
-        path.endsWith('/sms/send') ||
-        path.endsWith('/email-otp') ||
-        path.endsWith('/magic-link') ||
-        path.endsWith('/verification/send')
-      ) {
-        if (fixture.rateLimit) return json(response, { error: 'RATE_LIMITED' }, 429, { 'Retry-After': '7' })
-        return json(response, { sent: true })
-      }
+      if(path.endsWith('/verification/send'))return json(response,{sent:true})
       if (path.endsWith('/logout')) {
         response.writeHead(204)
         response.end()
@@ -340,41 +340,6 @@ const results = [],
 const check = (value, label) => {
   if (!value) throw new Error(label)
 }
-const sql = async (text) => {
-  const args = [
-    'exec',
-    '-i',
-    'iam-java-postgres',
-    'psql',
-    '-v',
-    'ON_ERROR_STOP=1',
-    '-U',
-    'axis_bootstrap',
-    '-d',
-    process.env.IAM_ENTRIES_DATABASE,
-    '-At',
-  ]
-  return await new Promise((resolve, reject) => {
-    let data = ''
-    const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'] })
-    child.stdout.on('data', (chunk) => (data += chunk))
-    child.on('error', reject)
-    child.on('exit', (code) =>
-      code === 0 ? resolve(data.trim()) : reject(new Error('Private SQL fixture failed')),
-    )
-    child.stdin.end(text)
-  })
-}
-const redis = async (...args) =>
-  (
-    await promisify(execFile)('docker', [
-      'exec',
-      process.env.IAM_ENTRIES_REDIS_CONTAINER,
-      'redis-cli',
-      '--raw',
-      ...args,
-    ])
-  ).stdout.trim()
 try {
   let target
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -454,132 +419,6 @@ try {
     const result = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
     await writeFile(join(output, `${name}.png`), Buffer.from(result.data, 'base64'))
   }
-  const live = { issuer, clientId }
-  if (!fixturesOnly) {
-    await mount({ ...live, entry: 'embedded' })
-    const passwordResult = await call('domPassword', identifier, password)
-    check(
-      passwordResult.authenticated && passwordResult.successes === 1 && !passwordResult.storage,
-      'live Embedded memory login',
-    )
-    await mount({ ...live, entry: 'signup' })
-    const signupEmail = `entries-${randomBytes(8).toString('hex')}@example.invalid`
-    const signupPassword = `A!4${randomBytes(18).toString('hex')}`
-    const signupResult = await call('domSignup', signupEmail, signupPassword)
-    check(!signupResult.authenticated && signupResult.successes === 1, 'live signup profile result')
-    record('embedded-password-signup', { producer: 'live', signupAuthenticated: false })
-    await mount({ ...live, entry: 'custom' })
-    const custom = await call('customPassword', identifier, password)
-    check(
-      custom.step === 'success' && custom.authenticated && !custom.privateState,
-      'live public Custom flow',
-    )
-    await mount({ ...live, entry: 'custom' })
-  await call('action', 'setIntent', 'sign-up')
-  const customSignup = await call('action', 'signUp', {
-    email: `custom-${randomBytes(8).toString('hex')}@example.invalid`,
-    password: `B!6${randomBytes(18).toString('hex')}`,
-  })
-  check(customSignup.ok && customSignup.step === 'verification' && !(await call('state')).authenticated, 'live Custom signup profile')
-  await mount({ ...live, entry: 'dialog' })
-  await call('click', '[data-axis-auth-view]')
-  check((await call('domPassword', identifier, password)).authenticated, 'live Dialog login')
-  record('custom-public-flow', { producer: 'live', publicImportsOnly: true, signupProfile: true })
-    await mount({ ...live, entry: 'hosted' })
-    await call('click', 'button')
-    for (let i = 0; i < 200; i++) {
-      if (await evaluate('Boolean(document.querySelector("#identifier"))')) break
-      await wait(50)
-    }
-    check(await evaluate('Boolean(document.querySelector("#identifier"))'), 'Hosted identifier template')
-    await evaluate(
-      `(()=>{const input=document.querySelector('#identifier');input.value=${JSON.stringify(identifier)};document.querySelector('#form-identifier').requestSubmit()})()`,
-      'Hosted identifier',
-    )
-    await wait(200)
-    await evaluate(
-      `(()=>{document.querySelector('#password').value=${JSON.stringify(password)};document.querySelector('#form-password').requestSubmit()})()`,
-      'Hosted password',
-    )
-    for (let i = 0; i < 200; i++) {
-      if (
-        await evaluate(
-          `location.origin===${JSON.stringify(origin)}&&location.pathname==='/callback'&&Boolean(window.entries)`,
-        )
-      )
-        break
-      await wait(50)
-    }
-    await ready()
-    await mount({ ...live, entry: 'custom' })
-    const callback = await call('callback')
-    check(callback.authenticated && callback.scrubbed, 'Hosted PKCE callback')
-    const duplicate = await call('callback')
-    check(duplicate.status === 'idle', 'duplicate callback')
-    check(await call('callbackNegative', 'mismatch'), 'callback state mismatch')
-    check(await call('callbackNegative', 'denied'), 'callback denial')
-    record('hosted-pkce-callback', {
-      producer: 'live',
-      actualHostedTemplate: true,
-      stateMismatch: true,
-      denial: true,
-      duplicate: true,
-    })
-    // Seed only this disposable database/user, using the existing backend risk and TOTP contracts.
-    const safeIdentifier = identifier.replaceAll("'", "''"),
-      safeClient = clientId.replaceAll("'", "''")
-    const identity = await sql(
-      `SELECT u.id||':'||u.application_id FROM users u JOIN application_clients c ON c.application_id=u.application_id WHERE u.email='${safeIdentifier}' AND c.client_id='${safeClient}';`,
-    )
-    check(/^[a-f0-9-]{36}:[a-f0-9-]{36}$/.test(identity), 'private MFA identity')
-    const [userId, applicationId] = identity.split(':')
-    const secretBytes = randomBytes(20)
-    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
-    let bits = ''
-    for (const byte of secretBytes) bits += byte.toString(2).padStart(8, '0')
-    let secret = ''
-    for (let i = 0; i < bits.length; i += 5)
-      secret += alphabet[parseInt(bits.slice(i, i + 5).padEnd(5, '0'), 2)]
-    const totp = () => {
-      const counter = Buffer.alloc(8)
-      counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)))
-      const digest = createHmac('sha1', secretBytes).update(counter).digest()
-      const offset = digest[digest.length - 1] & 15
-      return String((digest.readUInt32BE(offset) & 0x7fffffff) % 1000000).padStart(6, '0')
-    }
-    await sql(
-      `INSERT INTO user_credentials(user_id,application_id,credential_type,credential_data) VALUES('${userId}','${applicationId}','TOTP','${secret}');`,
-    )
-    await redis('SET', `login_failures:${userId}`, '5')
-    await redis('SET', `api_calls:${userId}`, '101')
-    await mount({ ...live, entry: 'custom' })
-    check((await call('customPassword', identifier, password)).step === 'mfa', 'live Direct challenge')
-    let proofKey = await redis('KEYS', 'iam:mfa_session:*')
-    check(proofKey.startsWith('iam:mfa_session:'), 'live challenge storage')
-    const wrong = totp() === '000000' ? '111111' : '000000'
-    check((await call('action', 'verifyMfa', wrong)).status === 401, 'wrong TOTP rejected')
-    check((await call('action', 'verifyMfa', totp())).step === 'success', 'live TOTP completion')
-    check((await redis('EXISTS', proofKey)) === '0', 'challenge consumed')
-    const replay = await fetch(`${issuer}/api/v1/auth/mfa/verify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mfaToken: proofKey.slice('iam:mfa_session:'.length), code: totp() }),
-    })
-    check(replay.status === 401, 'MFA replay rejected')
-    await mount({ ...live, entry: 'custom' })
-    check((await call('customPassword', identifier, password)).step === 'mfa', 'second live challenge')
-    proofKey = await redis('KEYS', 'iam:mfa_session:*')
-    await redis('DEL', proofKey)
-    check((await call('action', 'verifyMfa', totp())).status === 401, 'expired TOTP proof rejected')
-    await redis('DEL', `login_failures:${userId}`, `api_calls:${userId}`)
-    record('direct-totp-continuation', {
-      producer: 'live',
-      wrongCode: true,
-      consumedReplay: true,
-      expired: true,
-      hostedMfa: 'excluded: no producer pipeline',
-    })
-  }
   await fixtureMount({ entry: 'dialog' }, { loginDelay: 250 })
   await call('dialogRace', 'member@example.invalid', 'Controlled!42')
   record('dialog-flow-ownership', {
@@ -598,7 +437,7 @@ try {
   await fixtureMount({ entry: 'custom' }, { policy: { signupMode: 'INVITE_REQUIRED' } })
   await call('action', 'setIntent', 'sign-up')
   check(
-    !(await call('action', 'signUp', { email: 'member@example.invalid', password: 'Controlled!42' })).ok,
+    !(await call('action', 'signUp', { identifier: { kind: 'EMAIL', value: 'member@example.invalid' }, password: 'Controlled!42' })).ok,
     'registration grant required',
   )
   check(!counts['/api/v1/auth/signup'], 'grant gate did not reach transport')
@@ -612,7 +451,8 @@ try {
     await call('customIdentify', method === 'sms' ? '+15555550123' : 'member@example.invalid')
     await call('action','selectMethod',method)
     check((await call('action', method === 'magic_link' ? 'sendMagicLink' : 'sendCode')).ok, 'controlled method send')
-    const final = await call('action', method === 'magic_link' ? 'completeMagicLink' : 'verifyCode', 'controlled-proof')
+    const proof=method==='magic_link'?`${transaction.redirect_uri}#${new URLSearchParams({kind:'AUTH_PROOF',auth_transaction_id:transaction.transactionId,method:'EMAIL_MAGIC_LINK',state:transaction.state,proof:'controlled-proof'})}`:'controlled-proof'
+    const final = await call('action', method === 'magic_link' ? 'completeMagicLink' : 'verifyCode', proof)
     check(final.ok && final.step === 'success', 'controlled method completion')
   }
   record('availability-contract', {

@@ -1,9 +1,7 @@
+import type { AuthenticationFlow } from '@axis-iam/vertex'
+import { registrationGrantBody } from './auth-flow-client'
+import { IdentityClient } from './identity-client'
 import type {
-  AccountLinkAuthorizeOptions,
-  AccountLinkAuthorizeResult,
-  AccountLinkCallbackResult,
-  AccountLinkTicketExchangeInput,
-  AccountLoginMethod,
   AccountOrganization,
   AccountPermissionCheckInput,
   AccountPermissionCheckResponse,
@@ -20,7 +18,6 @@ import type {
   IdentityProviderOption,
   LinkableIdentityProvider,
   LogoutOptions,
-  LogoutAccountOptions,
   LogoutUrlOptions,
   OIDCConfiguration,
   OrganizationSwitchResponse,
@@ -39,12 +36,21 @@ import type {
   VerifyEmailInput,
   TokenSet,
 } from './types'
-import { IamApiError } from './types'
+import { IamApiError, IamConfigurationError } from './types'
+import {
+  AuthenticationTransaction,
+  IdTokenVerifier,
+  IdTokenValidationError,
+  PendingAuthorizationStore,
+  authorizationCallback,
+  parseCurrentUser,
+} from '@axis-iam/vertex'
+import { requestJson } from './http-client'
+import type { AuthorizationState } from './token-manager'
 import { TokenManager } from './token-manager'
-import type { RefreshProvenance } from './token-manager'
 import {
   cleanCallbackUrl,
-  consumeAuthorizationCodeVerifier,
+  consumeAuthorizationCodeContext,
   prepareAuthorizationCodeContext,
   resolveCallbackUrl,
 } from './oauth-callback'
@@ -52,15 +58,10 @@ import {
   exchangeAuthorizationCode,
   refreshOAuthToken,
 } from './oauth-token-client'
-import { refreshDirectAuthToken } from './direct-auth-token-client'
-import { logoutDirectAuth } from './direct-auth-logout'
-import {
-  buildLogoutUrl,
-  completeLogoutRedirect,
-} from './oauth-logout'
+import { buildLogoutUrl, completeLogoutRedirect } from './oauth-logout'
 import { fetchOAuthPermissionSummary } from './oauth-permissions-client'
 import { normalizeOAuthError } from './oauth-errors'
-import { startProviderAuthorization } from './oauth-provider-authorization'
+import { isEmbeddedSignInProvider } from './oauth-provider-authorization'
 import { OAuthAccountLinkingClient } from './oauth-account-linking'
 import { OAuthPublicMetadataClient } from './oauth-public-metadata-client'
 import { OAuthUserActionsClient } from './oauth-user-actions-client'
@@ -68,6 +69,15 @@ import { OAuthAccountOnboardingClient } from './oauth-account-onboarding'
 import { RegistrationGrantClient } from './registration-grant-client'
 
 export class OAuthClient {
+  readonly mode = 'oauth_tokens' as const
+  get state() {
+    return this.tokenManager
+  }
+  async initialize() {
+    this.tokenManager.resume()
+    await this.discover()
+    if (this.tokenManager.hasUsableToken()) await this.fetchPermissions()
+  }
   readonly clientId: string
   readonly config: IamConfig
   private readonly publicMetadata: OAuthPublicMetadataClient
@@ -75,27 +85,42 @@ export class OAuthClient {
   private readonly accountOnboarding: OAuthAccountOnboardingClient
   private readonly userActions: OAuthUserActionsClient
   private readonly registrationGrants: RegistrationGrantClient
+  readonly identity: IdentityClient
   readonly tokenManager: TokenManager
+  private authentication: AuthenticationTransaction | null = null
+  private authenticationRevision = 0
 
   constructor(config: IamConfig, options: { startPaused?: boolean } = {}) {
+    if (config.sessionMode === 'server_session' || config.sessionTransport)
+      throw new IamConfigurationError(
+        'Use ServerSessionClient for server_session',
+      )
     this.config = config
     this.clientId = config.clientId
     this.publicMetadata = new OAuthPublicMetadataClient(config)
-    this.tokenManager = new TokenManager({ storage: config.tokenStorage, startPaused: options.startPaused })
+    this.tokenManager = new TokenManager({
+      storage: config.tokenStorage,
+      startPaused: options.startPaused,
+    })
+    this.identity = new IdentityClient(this)
     this.tokenManager.setRefreshHandler(() => this.requestTokenRefresh())
-    this.tokenManager.setPermissionsRefreshHandler(() => this.fetchAuthorizationState())
+    this.tokenManager.setPermissionsRefreshHandler(() =>
+      this.fetchAuthorizationState(),
+    )
     this.accountLinking = new OAuthAccountLinkingClient({
       discover: () => this.discover(),
-      getAccessToken: () => this.tokenManager.isAuthenticated()
-        ? this.tokenManager.getAccessToken()
-        : null,
+      getAccessToken: () =>
+        this.tokenManager.hasUsableToken()
+          ? this.tokenManager.getAccessToken()
+          : null,
       resolveRedirectUri: (redirectUri) => this.resolveRedirectUri(redirectUri),
     })
     this.accountOnboarding = new OAuthAccountOnboardingClient({
       discover: () => this.discover(),
-      getAccessToken: () => this.tokenManager.isAuthenticated()
-        ? this.tokenManager.getAccessToken()
-        : null,
+      getAccessToken: () =>
+        this.tokenManager.hasUsableToken()
+          ? this.tokenManager.getAccessToken()
+          : null,
     })
     this.userActions = new OAuthUserActionsClient({
       clientId: config.clientId,
@@ -113,12 +138,127 @@ export class OAuthClient {
     return await this.publicMetadata.discover()
   }
 
+  /** Public primary authentication; Custom, Embedded and Dialog share this protocol. */
+  async beginAuthentication(): Promise<AuthenticationTransaction> {
+    const revision = ++this.authenticationRevision
+    this.authentication?.invalidate()
+    this.authentication = null
+    const config = await this.authenticationConfig()
+    const assertOwner = () => {
+      config.assertOwner()
+      if (revision !== this.authenticationRevision)
+        throw new IamConfigurationError('Authentication owner changed')
+    }
+    assertOwner()
+    const transaction = await AuthenticationTransaction.start({
+      ...config,
+      assertOwner,
+    })
+    assertOwner()
+    this.authentication = transaction
+    return transaction
+  }
+
+  async resumeMagicLink(url: string): Promise<AuthenticationTransaction> {
+    if (this.tokenManager.getAccessToken()) {
+      AuthenticationTransaction.discardNavigation({
+        issuer: this.config.issuerUri,
+        clientId: this.clientId,
+      })
+      throw new IamConfigurationError(
+        'A signed-in account cannot resume pending authentication',
+      )
+    }
+    if (this.authentication) return this.authentication
+    const revision = ++this.authenticationRevision
+    const config = await this.authenticationConfig()
+    const assertOwner = () => {
+      config.assertOwner()
+      if (revision !== this.authenticationRevision)
+        throw new IamConfigurationError('Authentication owner changed')
+    }
+    const transaction = AuthenticationTransaction.restoreMagicLink(
+      { ...config, assertOwner },
+      url,
+    )
+    this.authentication = transaction
+    return transaction
+  }
+
+  async completeAuthentication(
+    transaction: AuthenticationFlow,
+    onCommitted?: () => void,
+  ): Promise<TokenSet> {
+    if (
+      !(transaction instanceof AuthenticationTransaction) ||
+      transaction !== this.authentication
+    )
+      throw new IamConfigurationError('Authentication owner changed')
+    const generation = this.tokenManager.generation
+    const tokens = await transaction.exchange()
+    this.tokenManager.assertCurrent(generation)
+    this.authentication = null
+    this.tokenManager.store(
+      tokens,
+      'OAUTH_AUTHORIZATION_CODE',
+      tokens.refresh_token ? 'OAUTH_TOKEN_ENDPOINT' : null,
+    )
+    onCommitted?.()
+    await this.fetchPermissions()
+    return tokens
+  }
+
+  private async authenticationConfig() {
+    const generation = this.tokenManager.generation
+    const discovery = await this.discover()
+    this.tokenManager.assertCurrent(generation)
+    return {
+      issuer: discovery.issuer,
+      tokenEndpoint: discovery.token_endpoint,
+      clientId: this.clientId,
+      redirectUri: this.resolveRedirectUri(),
+      scopes: this.config.scopes ?? [
+        'openid',
+        'profile',
+        'email',
+        'offline_access',
+      ],
+      assertOwner: () => this.tokenManager.assertCurrent(generation),
+    }
+  }
+
   // --- Authorization Code + PKCE ---
 
-  async startAuthorizationFlow(options: { locale?: string } = {}): Promise<string> {
+  async startAuthorizationFlow(
+    options: { locale?: string } = {},
+  ): Promise<string> {
+    const generation = this.tokenManager.generation
+    const revision = ++this.authenticationRevision
+    const assertCurrent = () => {
+      this.tokenManager.assertCurrent(generation)
+      if (revision !== this.authenticationRevision)
+        throw new IamConfigurationError('Authentication owner changed')
+    }
     const config = await this.discover()
-    const { codeChallenge, state } = await prepareAuthorizationCodeContext()
-    const scopes = this.config.scopes ?? ['openid', 'profile', 'email', 'offline_access']
+    assertCurrent()
+    if (config.issuer !== this.config.issuerUri)
+      throw new IdTokenValidationError()
+    const scopes = this.config.scopes ?? [
+      'openid',
+      'profile',
+      'email',
+      'offline_access',
+    ]
+    const { codeChallenge, state, nonce } =
+      await prepareAuthorizationCodeContext(
+        {
+          issuer: config.issuer,
+          clientId: this.clientId,
+          redirectUri: this.resolveRedirectUri(),
+        },
+        assertCurrent,
+        scopes.includes('openid'),
+      )
 
     const params = new URLSearchParams({
       response_type: 'code',
@@ -129,6 +269,7 @@ export class OAuthClient {
       code_challenge: codeChallenge,
       code_challenge_method: 'S256',
     })
+    if (nonce) params.set('nonce', nonce)
 
     if (this.config.audience) {
       params.set('audience', this.config.audience)
@@ -146,7 +287,9 @@ export class OAuthClient {
     return await this.publicMetadata.getPublicAuthPolicy()
   }
 
-  async previewRegistrationGrant(input: RegistrationGrantInput): Promise<RegistrationGrantPreviewResponse> {
+  async previewRegistrationGrant(
+    input: RegistrationGrantInput,
+  ): Promise<RegistrationGrantPreviewResponse> {
     return await this.registrationGrants.preview(input)
   }
 
@@ -159,48 +302,91 @@ export class OAuthClient {
   }
 
   async startProviderAuthorizationFlow(
-    providerIdOrOption: string | IdentityProviderOption | AuthMethodIdpProviderResponse,
+    providerIdOrOption:
+      | string
+      | IdentityProviderOption
+      | AuthMethodIdpProviderResponse,
     options: ProviderAuthorizationOptions = {},
   ): Promise<string> {
     const generation = this.tokenManager.generation
     const assertCurrent = () => this.tokenManager.assertCurrent(generation)
-    const provider = typeof providerIdOrOption === 'string'
-      ? await this.findIdentityProvider(providerIdOrOption)
-      : providerIdOrOption
+    const provider =
+      typeof providerIdOrOption === 'string'
+        ? await this.findIdentityProvider(providerIdOrOption)
+        : providerIdOrOption
     assertCurrent()
 
-    return await startProviderAuthorization({
-      provider,
-      config: this.config,
-      options,
-      resolveRedirectUri: (redirectUri) => this.resolveRedirectUri(redirectUri),
-      assertCurrent,
-    })
+    if (!isEmbeddedSignInProvider(provider))
+      throw new IamConfigurationError('Provider is unavailable')
+    if (options.audience || options.redirectUri || options.scopes)
+      throw new IamConfigurationError(
+        'Transaction provider options must use the client configuration',
+      )
+    const transaction = await this.beginAuthentication()
+    assertCurrent()
+    const result = await transaction.authorizeProvider(
+      provider.id,
+      registrationGrantBody(options.registrationGrant),
+    )
+    assertCurrent()
+    return result.authorizationUrl
+  }
+
+  async resumeProviderCallback(
+    url: string,
+    onCommitted?: () => void,
+    assertAttempt?: () => void,
+  ) {
+    if (this.tokenManager.getAccessToken()) {
+      AuthenticationTransaction.discardNavigation({
+        issuer: this.config.issuerUri,
+        clientId: this.clientId,
+      })
+      throw new IamConfigurationError(
+        'A signed-in account cannot resume pending authentication',
+      )
+    }
+    const revision = ++this.authenticationRevision
+    const config = await this.authenticationConfig()
+    const assertOwner = () => {
+      assertAttempt?.()
+      config.assertOwner()
+      if (revision !== this.authenticationRevision)
+        throw new IamConfigurationError('Authentication owner changed')
+    }
+    const transaction = AuthenticationTransaction.restoreProvider(
+      { ...config, assertOwner },
+      url,
+    )
+    this.authentication?.invalidate(true)
+    this.authentication = transaction
+    const result = await transaction.completeProviderCallback(url)
+    if ('state' in result)
+      return { kind: 'continuation' as const, transaction, view: result }
+    this.authentication = null
+    this.tokenManager.store(
+      result,
+      'OAUTH_AUTHORIZATION_CODE',
+      result.refresh_token ? 'OAUTH_TOKEN_ENDPOINT' : null,
+    )
+    onCommitted?.()
+    await this.fetchPermissions()
+    return { kind: 'tokens' as const, tokens: result }
   }
 
   // --- Current-user account linking ---
 
-  async listAccountLoginMethods(): Promise<AccountLoginMethod[]> {
-    return await this.accountLinking.listAccountLoginMethods()
+  async listAccountLoginMethods(): Promise<
+    import('@axis-iam/vertex').AccountLoginMethods
+  > {
+    return await this.identity.loginMethods()
   }
 
   async listLinkableIdentityProviders(): Promise<LinkableIdentityProvider[]> {
-    return await this.accountLinking.listLinkableIdentityProviders()
-  }
-
-  async startAccountLink(
-    idpId: string,
-    options: AccountLinkAuthorizeOptions = {},
-  ): Promise<AccountLinkAuthorizeResult> {
-    return await this.accountLinking.startAccountLink(idpId, options)
-  }
-
-  async exchangeAccountLinkTicket(input: AccountLinkTicketExchangeInput): Promise<AccountLinkCallbackResult> {
-    return await this.accountLinking.exchangeAccountLinkTicket(input)
-  }
-
-  async unlinkAccountLoginMethod(methodId: string): Promise<void> {
-    await this.accountLinking.unlinkAccountLoginMethod(methodId)
+    const generation = this.tokenManager.generation
+    const providers = await this.accountLinking.listLinkableIdentityProviders()
+    this.tokenManager.assertCurrent(generation)
+    return providers
   }
 
   // --- Account center and Organization onboarding ---
@@ -209,7 +395,9 @@ export class OAuthClient {
     return await this.accountOnboarding.getAccountProfile()
   }
 
-  async updateAccountProfile(input: AccountUpdateProfileInput): Promise<AccountProfile> {
+  async updateAccountProfile(
+    input: AccountUpdateProfileInput,
+  ): Promise<AccountProfile> {
     return await this.accountOnboarding.updateAccountProfile(input)
   }
 
@@ -233,10 +421,8 @@ export class OAuthClient {
     await this.accountOnboarding.revokeOtherAccountSessions()
   }
 
-  async logoutAccount(options: LogoutAccountOptions = {}): Promise<void> {
-    await this.accountOnboarding.logoutAccount({
-      refreshToken: options.refreshToken ?? this.tokenManager.getRefreshToken(),
-    })
+  async logoutAccount(): Promise<void> {
+    await this.logout({ redirect: false })
   }
 
   async listAccountOrganizations(): Promise<AccountOrganization[]> {
@@ -247,44 +433,93 @@ export class OAuthClient {
     return await this.accountOnboarding.getCurrentAccountOrganization()
   }
 
-  async switchAccountOrganization(organizationId: string): Promise<OrganizationSwitchResponse> {
-    return await this.accountOnboarding.switchAccountOrganization(organizationId)
+  async switchAccountOrganization(
+    organizationId: string,
+  ): Promise<OrganizationSwitchResponse> {
+    return await this.accountOnboarding.switchAccountOrganization(
+      organizationId,
+    )
   }
 
-  async hasAccountOrganizationMembership(organizationId: string): Promise<boolean> {
-    return await this.accountOnboarding.hasAccountOrganizationMembership(organizationId)
+  async hasAccountOrganizationMembership(
+    organizationId: string,
+  ): Promise<boolean> {
+    return await this.accountOnboarding.hasAccountOrganizationMembership(
+      organizationId,
+    )
   }
 
-  async getAccountPermissionSummary(organizationId?: string | null): Promise<AccountPermissionSummary> {
-    return await this.accountOnboarding.getAccountPermissionSummary(organizationId)
+  async getAccountPermissionSummary(
+    organizationId?: string | null,
+  ): Promise<AccountPermissionSummary> {
+    return await this.accountOnboarding.getAccountPermissionSummary(
+      organizationId,
+    )
   }
 
-  async checkAccountPermission(input: AccountPermissionCheckInput): Promise<AccountPermissionCheckResponse> {
+  async checkAccountPermission(
+    input: AccountPermissionCheckInput,
+  ): Promise<AccountPermissionCheckResponse> {
     return await this.accountOnboarding.checkAccountPermission(input)
   }
 
-  async previewOrganizationInvitation(token: string): Promise<PublicOrganizationInvitationPreview> {
+  async previewOrganizationInvitation(
+    token: string,
+  ): Promise<PublicOrganizationInvitationPreview> {
     return await this.accountOnboarding.previewOrganizationInvitation(token)
   }
 
-  async acceptOrganizationInvitation(token: string): Promise<PublicOrganizationInvitationAcceptResponse> {
+  async acceptOrganizationInvitation(
+    token: string,
+  ): Promise<PublicOrganizationInvitationAcceptResponse> {
     return await this.accountOnboarding.acceptOrganizationInvitation(token)
   }
 
   async handleCallback(code: string, state: string): Promise<TokenSet> {
+    if (this.tokenManager.getAccessToken()) {
+      PendingAuthorizationStore.discard({
+        issuer: this.config.issuerUri,
+        clientId: this.clientId,
+      })
+      throw new IamConfigurationError(
+        'A signed-in account cannot consume pending login',
+      )
+    }
     const generation = this.tokenManager.generation
-    const codeVerifier = consumeAuthorizationCodeVerifier(state)
-
     const config = await this.discover()
+    this.tokenManager.assertCurrent(generation)
+    const revision = ++this.authenticationRevision
+    const pending = consumeAuthorizationCodeContext(state, {
+      issuer: config.issuer,
+      clientId: this.clientId,
+      redirectUri: this.resolveRedirectUri(),
+    })
+    const openid = (this.config.scopes ?? ['openid']).includes('openid')
+    if ((openid && !pending.nonce) || (!openid && pending.nonce))
+      throw new IdTokenValidationError()
 
     const tokens = await exchangeAuthorizationCode({
       tokenEndpoint: config.token_endpoint,
       clientId: this.config.clientId,
       code,
       redirectUri: this.resolveRedirectUri(),
-      codeVerifier,
+      codeVerifier: pending.verifier,
     })
+    if (openid) {
+      if (config.issuer !== this.config.issuerUri)
+        throw new IdTokenValidationError()
+      await new IdTokenVerifier({
+        issuer: config.issuer,
+        clientId: this.clientId,
+        jwksUri: config.jwks_uri,
+      }).verify(tokens.id_token, pending.nonce!)
+    }
     this.tokenManager.assertCurrent(generation)
+    if (revision !== this.authenticationRevision)
+      throw new IamConfigurationError('Authentication owner changed')
+    if (Date.parse(pending.expiresAt) <= Date.now())
+      throw new IdTokenValidationError()
+    PendingAuthorizationStore.assertNoReplacement()
     this.tokenManager.store(
       tokens,
       'OAUTH_AUTHORIZATION_CODE',
@@ -297,7 +532,9 @@ export class OAuthClient {
     return tokens
   }
 
-  async handleRedirectCallback(options: RedirectCallbackOptions = {}): Promise<RedirectCallbackResult> {
+  async handleRedirectCallback(
+    options: RedirectCallbackOptions = {},
+  ): Promise<RedirectCallbackResult> {
     const callbackUrl = resolveCallbackUrl(options.url, this.resolveUrlBase())
     if (!callbackUrl) {
       return { status: 'idle' }
@@ -308,14 +545,48 @@ export class OAuthClient {
     const state = params.get('state')
     const callbackError = params.get('error')
     const errorDescription = params.get('error_description')
-    const hasCallbackParams = Boolean(code || state || callbackError || errorDescription)
+    const hasCallbackParams = Boolean(
+      code || state || callbackError || errorDescription || params.has('kind'),
+    )
 
     if (!hasCallbackParams) {
       return { status: 'idle' }
     }
 
     try {
+      const generation = this.tokenManager.generation
+      const discovery = await this.discover()
+      this.tokenManager.assertCurrent(generation)
+      const pending = PendingAuthorizationStore.read({
+        issuer: discovery.issuer,
+        clientId: this.clientId,
+        redirectUri: this.resolveRedirectUri(),
+      })
+      if (pending.entryMode === 'CUSTOM') {
+        const result = await this.resumeProviderCallback(callbackUrl.href)
+        if (result.kind === 'continuation')
+          return {
+            status: 'continuation',
+            transaction: result.transaction,
+            view: result.view,
+          }
+        return { status: 'success', tokens: result.tokens }
+      }
+      authorizationCallback(
+        callbackUrl.href,
+        this.resolveRedirectUri(),
+        callbackError
+          ? errorDescription
+            ? ['error', 'error_description', 'state']
+            : ['error', 'state']
+          : ['code', 'state'],
+      )
       if (callbackError) {
+        consumeAuthorizationCodeContext(state ?? '', {
+          issuer: discovery.issuer,
+          clientId: this.clientId,
+          redirectUri: this.resolveRedirectUri(),
+        })
         return {
           status: 'error',
           error: new Error(errorDescription || callbackError),
@@ -348,12 +619,17 @@ export class OAuthClient {
   async fetchPermissions(): Promise<string[]> {
     const generation = this.tokenManager.generation
     const token = this.tokenManager.getAccessToken()
-    if (!token) return []
+    if (!token)
+      throw new IamApiError('Session unavailable', {
+        status: 401,
+        code: 'UNAUTHORIZED',
+      })
 
+    this.tokenManager.beginViewLoad()
     try {
       const authorization = await this.fetchAuthorizationState()
       this.tokenManager.assertCurrent(generation, token)
-      this.tokenManager.setAuthorization(authorization.roles, authorization.permissions)
+      this.tokenManager.applyViews(authorization)
       this.tokenManager.setLastPermissionError(null)
       return [...authorization.permissions]
     } catch (err) {
@@ -363,30 +639,61 @@ export class OAuthClient {
         this.tokenManager.clear()
         throw normalized
       }
-      this.tokenManager.setAuthorization([], [])
-      this.tokenManager.setLastPermissionError(normalized)
+      this.tokenManager.failViewLoad(normalized)
       throw normalized
     }
   }
 
-  private async fetchAuthorizationState(): Promise<{ roles: string[]; permissions: string[] }> {
+  private async fetchAuthorizationState(): Promise<AuthorizationState> {
     const token = this.tokenManager.getAccessToken()
-    if (!token) return { roles: [], permissions: [] }
+    const generation = this.tokenManager.generation
+    if (!token || !this.tokenManager.hasUsableToken())
+      throw new IamApiError('Session unavailable', {
+        status: 401,
+        code: 'UNAUTHORIZED',
+      })
     const config = await this.discover()
-    const summary = await fetchOAuthPermissionSummary({
-      issuer: config.issuer,
-      accessToken: token,
-    })
-    return { roles: summary.roles, permissions: summary.permissions }
+    this.tokenManager.assertCurrent(generation, token)
+    const [raw, summary] = await Promise.all([
+      requestJson<unknown>(
+        new URL('/api/v1/auth/me', config.issuer).toString(),
+        { bearerToken: token },
+      ),
+      fetchOAuthPermissionSummary({
+        issuer: config.issuer,
+        accessToken: token,
+      }),
+    ])
+    this.tokenManager.assertCurrent(generation, token)
+    if (!this.tokenManager.hasUsableToken())
+      throw new IamApiError('Session expired', {
+        status: 401,
+        code: 'UNAUTHORIZED',
+      })
+    const user = parseCurrentUser(raw)
+    const c = user.authenticationContext
+    if (
+      c.clientId !== this.clientId ||
+      c.applicationId !== summary.applicationId ||
+      c.organizationId !== summary.organizationId
+    )
+      throw new IamConfigurationError(
+        'Current-user and permissions context mismatch',
+      )
+    return { user, roles: summary.roles, permissions: summary.permissions }
   }
 
   // --- Password Reset ---
 
-  async sendEmailVerification(input: SendEmailVerificationInput): Promise<EmailVerificationResponse> {
+  async sendEmailVerification(
+    input: SendEmailVerificationInput,
+  ): Promise<EmailVerificationResponse> {
     return await this.userActions.sendEmailVerification(input)
   }
 
-  async verifyEmail(input: VerifyEmailInput): Promise<EmailVerificationResponse> {
+  async verifyEmail(
+    input: VerifyEmailInput,
+  ): Promise<EmailVerificationResponse> {
     return await this.userActions.verifyEmail(input)
   }
 
@@ -417,35 +724,29 @@ export class OAuthClient {
       throw new Error('No refresh token available')
     }
 
-    const provenance = this.requireRefreshProvenance()
-    if (provenance === 'DIRECT_AUTH') {
-      return await refreshDirectAuthToken({
-        issuer: this.config.issuerUri,
-        clientId: this.config.clientId,
-        refreshToken,
-      })
-    }
-
     const config = await this.discover()
-    return await refreshOAuthToken({ tokenEndpoint: config.token_endpoint, clientId: this.config.clientId, refreshToken })
-  }
-
-  private requireRefreshProvenance(): RefreshProvenance {
-    const provenance = this.tokenManager.getRefreshProvenance()
-    if (!provenance) throw new Error('Refresh token provenance is missing')
-    return provenance
+    return await refreshOAuthToken({
+      tokenEndpoint: config.token_endpoint,
+      clientId: this.config.clientId,
+      refreshToken,
+    })
   }
 
   // --- Logout ---
 
   async getLogoutUrl(options: LogoutUrlOptions = {}): Promise<string | null> {
-    if (this.tokenManager.getAuthenticationProvenance() !== 'OAUTH_AUTHORIZATION_CODE') return null
+    if (
+      this.tokenManager.getAuthenticationProvenance() !==
+      'OAUTH_AUTHORIZATION_CODE'
+    )
+      return null
 
     const idToken = this.tokenManager.getIdToken()
     if (!idToken) return null
 
     const config = await this.discover()
-    const postLogoutUri = options.postLogoutRedirectUri ?? this.config.postLogoutRedirectUri ?? null
+    const postLogoutUri =
+      options.postLogoutRedirectUri ?? this.config.postLogoutRedirectUri ?? null
 
     return buildLogoutUrl({
       endSessionEndpoint: config.end_session_endpoint,
@@ -455,37 +756,37 @@ export class OAuthClient {
   }
 
   async logout(options: LogoutOptions = {}): Promise<void> {
+    ++this.authenticationRevision
+    this.authentication?.invalidate()
+    this.authentication = null
+    AuthenticationTransaction.discardNavigation({
+      issuer: this.config.issuerUri,
+      clientId: this.clientId,
+    })
     const redirect = options.redirect === true
-    const postLogoutRedirectUri = options.postLogoutRedirectUri ?? this.config.postLogoutRedirectUri ?? null
+    const postLogoutRedirectUri =
+      options.postLogoutRedirectUri ?? this.config.postLogoutRedirectUri ?? null
     const accessToken = this.tokenManager.getAccessToken()
-    const refreshToken = this.tokenManager.getRefreshToken()
     const idToken = this.tokenManager.getIdToken()
-    const authenticationProvenance = this.tokenManager.getAuthenticationProvenance()
+    const authenticationProvenance =
+      this.tokenManager.getAuthenticationProvenance()
 
     if (!accessToken || !authenticationProvenance) {
       this.tokenManager.clear()
-      throw new Error('Logout requires an authenticated session with explicit authentication provenance')
+      throw new Error(
+        'Logout requires an authenticated session with explicit authentication provenance',
+      )
     }
 
     // Invalidate pending work before awaiting revocation/discovery. A new login owns new state.
     this.tokenManager.clear()
     const generation = this.tokenManager.generation
 
-    if (authenticationProvenance === 'DIRECT_AUTH') {
-      await logoutDirectAuth({
-        issuer: this.config.issuerUri,
-        accessToken,
-        refreshToken,
-      })
-      this.tokenManager.assertCurrent(generation)
-      completeLogoutRedirect({
-        options,
-        logoutUrl: null,
-        postLogoutRedirectUri,
-      })
-      return
-    }
-
+    await requestJson<void>(
+      new URL('/api/v1/auth/logout', this.config.issuerUri).href,
+      { method: 'POST', bearerToken: accessToken },
+    )
+    this.tokenManager.assertCurrent(generation)
     let logoutUrl: string | null = null
 
     if (redirect && idToken) {
@@ -516,16 +817,23 @@ export class OAuthClient {
   }
 
   dispose(): void {
+    ++this.authenticationRevision
+    this.authentication?.invalidate(true)
+    this.authentication = null
     this.tokenManager.dispose()
   }
 
   // --- Internal ---
 
-  private async findIdentityProvider(providerId: string): Promise<IdentityProviderOption> {
+  private async findIdentityProvider(
+    providerId: string,
+  ): Promise<IdentityProviderOption> {
     const providers = await this.listIdentityProviders()
     const provider = providers.find((item) => item.id === providerId)
     if (!provider) {
-      throw new Error('Identity provider is not available for this application client')
+      throw new Error(
+        'Identity provider is not available for this application client',
+      )
     }
     return provider
   }
@@ -547,7 +855,8 @@ export class OAuthClient {
       return window.location.href
     }
     const redirectUri = this.resolveRedirectUri()
-    return redirectUri.startsWith('http://') || redirectUri.startsWith('https://')
+    return redirectUri.startsWith('http://') ||
+      redirectUri.startsWith('https://')
       ? redirectUri
       : 'http://localhost/'
   }

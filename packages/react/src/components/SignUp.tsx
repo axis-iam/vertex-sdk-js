@@ -8,13 +8,13 @@ import { useAuthFlow } from '../hooks/useAuthFlow'
 import { BrandedAuthContent, useAuthBranding } from './sign-in/BrandedAuthContent'
 import { IamApiError } from '../core/types'
 import type { RegistrationGrantInput } from '../core/types'
-import type { SignUpUserInfo } from '../core/auth-flow-types'
+import type { RegistrationOperation } from '@axis-iam/vertex'
 import { localizeError } from '../localization'
-export type { SignUpUserInfo } from '../core/auth-flow-types'
+export type { RegistrationOperation } from '@axis-iam/vertex'
 export interface SignUpProps {
   mode?: 'redirect' | 'embedded'
   registrationGrant?: RegistrationGrantInput
-  onSuccess?: (user: SignUpUserInfo) => void
+  onSuccess?: (operation: RegistrationOperation) => void
   onError?: (error: Error) => void
   appearance?: Appearance
   presentation?: 'standalone' | 'dialog'
@@ -58,7 +58,7 @@ function RedirectSignUp({
     active.current &&
     operation.current === owner &&
     currentClient.current === owner.client &&
-    owner.client.tokenManager.generation === owner.generation
+    owner.client.state.generation === owner.generation
   const pending = operation.current !== null && pendingOwner === operation.current && owns(operation.current)
   useEffect(() => {
     active.current = true
@@ -69,7 +69,7 @@ function RedirectSignUp({
   }, [])
   const start = async () => {
     if (operation.current && owns(operation.current)) return
-    const owner = { client, generation: client.tokenManager.generation }
+    const owner = { client, generation: client.state.generation }
     operation.current = owner
     setPendingOwner(owner)
     setError(null)

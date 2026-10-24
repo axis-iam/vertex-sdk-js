@@ -1,3 +1,4 @@
+import type { LoginIdentifier, MfaProofMethod } from '@axis-iam/vertex'
 import { useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { SessionInvalidatedError } from '@axis-iam/vertex'
@@ -7,7 +8,13 @@ import type { UseAuthFlowResult } from '../../core/auth-flow-types'
 import type { RegistrationGrantInput } from '../../core/types'
 import type { Appearance } from '../styles'
 import type { BrandingConfig } from '../useBranding'
-import { buttonStyle, inputStyle, labelStyle, errorStyle, linkStyle } from '../styles'
+import {
+  buttonStyle,
+  inputStyle,
+  labelStyle,
+  errorStyle,
+  linkStyle,
+} from '../styles'
 import type { SignInProviderButtonRenderProps } from './types'
 
 export function AuthFlowForm({
@@ -37,28 +44,76 @@ export function AuthFlowForm({
   const root = useRef<HTMLDivElement>(null)
   const mounted = useRef(true)
   const [identifier, setIdentifier] = useState('')
-  const [username, setUsername] = useState('')
+  const [selectedKind, setKind] = useState<LoginIdentifier['kind'] | null>(null)
+  const kinds = s.capabilities?.identifierMethods ?? []
+  const kind = selectedKind && kinds.some((entry) => entry.kind === selectedKind)
+    ? selectedKind : s.capabilities?.defaultIdentifierKind ?? null
+  const [methodsExpanded, expandMethods] = useState(false)
+  const methodTrigger = useRef<HTMLButtonElement>(null)
+  const [registrationKind, setRegistrationKind] = useState<
+    'EMAIL' | 'USERNAME'
+  >('EMAIL')
+  const [region, setRegion] = useState('')
+  const typedIdentifier = (): LoginIdentifier =>
+    kind === null ? (() => { throw new Error('Identifier capability is unavailable') })() : kind === 'PHONE'
+      ? { kind, value: identifier, ...(region ? { region } : {}) }
+      : { kind, value: identifier }
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [code, setCode] = useState('')
+  const [mfaMethod, setMfaMethod] = useState<MfaProofMethod>('TOTP')
+  const magicCallback =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.hash.slice(1)).get('kind') ===
+      'AUTH_PROOF'
+  const providerCallback = typeof window !== 'undefined' &&
+    (new URLSearchParams(window.location.search).has('kind') || new URLSearchParams(window.location.search).has('code'))
   const [accessCode, setAccessCode] = useState('')
-  const canRegister = s.step === 'sign-up' && s.intent === 'sign-up' &&
-    s.capabilities?.signupEnabled && s.capabilities.selfRegistrationEnabled &&
-    s.policy !== null && s.policy.signupMode !== 'DISABLED'
-  const acceptsAccessCode = Boolean(canRegister &&
-    s.policy?.allowedRegistrationGrantTypes.includes('ACCESS_CODE') && !registrationGrant)
-  const requiresAccessCode = acceptsAccessCode && s.policy?.signupMode === 'INVITE_REQUIRED'
-  useEffect(() => { setAccessCode('') }, [s.intent, s.policy?.signupMode,
-    s.policy?.allowedRegistrationGrantTypes.join(','), registrationGrant])
+  const canRegister =
+    s.step === 'sign-up' &&
+    s.intent === 'sign-up' &&
+    s.capabilities?.signupEnabled &&
+    s.capabilities.selfRegistrationEnabled &&
+    s.policy !== null &&
+    s.policy.signupMode !== 'DISABLED'
+  const acceptsAccessCode = Boolean(
+    canRegister &&
+      s.policy?.allowedRegistrationGrantTypes.includes('ACCESS_CODE') &&
+      !registrationGrant,
+  )
+  const requiresAccessCode =
+    acceptsAccessCode && s.policy?.signupMode === 'INVITE_REQUIRED'
+  useEffect(() => {
+    setAccessCode('')
+  }, [
+    s.intent,
+    s.policy?.signupMode,
+    s.policy?.allowedRegistrationGrantTypes.join(','),
+    registrationGrant,
+  ])
   const [validation, setValidation] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  useEffect(() => {
+    setKind(null); setIdentifier(''); setRegion(''); expandMethods(false)
+    setPassword(''); setConfirmPassword(''); setCode(''); setValidation(null); setNotice(null)
+  }, [s.capabilities, s.intent])
+  const [, updateDeadline] = useState(0)
+  const registrationExpiry = s.step === 'verification' ? s.registration.expiresAt : null
+  const registrationExpired = registrationExpiry !== null && Date.parse(registrationExpiry) <= Date.now()
+  useEffect(() => {
+    if (!registrationExpiry || Date.parse(registrationExpiry) <= Date.now()) return
+    const timer = setTimeout(() => { setCode(''); updateDeadline((value) => value + 1) }, Math.min(Date.parse(registrationExpiry) - Date.now(), 2147483647))
+    return () => clearTimeout(timer)
+  }, [registrationExpiry])
   const previousStep = useRef(s.step)
   const view = `${s.intent}:${s.step}:${s.step === 'method' ? `${s.identifier}:${s.method}` : ''}`
   const ownership = useRef({ view, revision: 0 })
-  if (ownership.current.view !== view) ownership.current = { view, revision: ownership.current.revision + 1 }
-  const leave = (action: () => void) => {
+  if (ownership.current.view !== view)
+    ownership.current = { view, revision: ownership.current.revision + 1 }
+  const leave = (action: () => void | Promise<void>) => {
     ownership.current.revision++
-    action()
+    const result = action()
+    if (result) consume(result)
   }
   useEffect(() => {
     mounted.current = true
@@ -75,11 +130,12 @@ export function AuthFlowForm({
     if (previousStep.current !== s.step && previousStep.current !== 'loading')
       root.current?.querySelector<HTMLElement>('input,button')?.focus()
     previousStep.current = s.step
-  }, [s.step, s.intent, s.step === 'method' ? s.method : null])
+  }, [s.step, s.intent, s.step === 'method' ? s.method : null, s.step === 'verification' ? s.registration.status : null])
   const busy = s.pending !== null
   const consume = (promise: Promise<unknown>, onSuccess?: () => void) => {
     const revision = ownership.current.revision
-    const current = () => mounted.current && ownership.current.revision === revision
+    const current = () =>
+      mounted.current && ownership.current.revision === revision
     void promise
       .then(() => {
         if (current()) onSuccess?.()
@@ -91,7 +147,6 @@ export function AuthFlowForm({
       .finally(() => {
         if (current()) {
           setPassword('')
-          setCode('')
         }
       })
   }
@@ -138,27 +193,43 @@ export function AuthFlowForm({
       {label}
     </button>
   )
+  const textButton = (label: string, action: () => void, disabled = busy, subtle = false) => (
+    <button type="button" onClick={action} disabled={disabled}
+      className="axis-auth-text-action"
+      style={{ ...linkStyle(a), background: 'transparent', border: 0, minHeight: 44, padding: '8px 10px', font: 'inherit', textDecoration: undefined, cursor: disabled ? 'not-allowed' : 'pointer', color: disabled || subtle ? a.mutedTextColor : a.focusColor }}>
+      {label}
+    </button>
+  )
   const resend = s.verificationEmail && (
-    <div style={{ marginTop: 16 }}>
-      {button(
-        s.retryAfterSeconds
-          ? l.auth.resendIn(s.retryAfterSeconds)
-          : busy
+    <div style={{ marginTop: 12, textAlign: 'center', minHeight: 44, color: a.mutedTextColor, fontSize: 14 }}>
+      {s.retryAfterSeconds > 0 ? <span style={{ display: 'inline-flex', alignItems: 'center', minHeight: 44 }}>{l.auth.resendIn(s.retryAfterSeconds)}</span> : <>
+      <span>{l.identity.didNotReceive}</span>{textButton(
+        busy
             ? l.auth.sending
-            : l.auth.resendVerification,
+            : l.auth.resend,
         () => {
-          consume(actions.resendVerification(), () => setNotice(l.auth.verificationEmailSent))
+          consume(actions.resendVerification(), () =>
+            setNotice(l.auth.verificationEmailSent),
+          )
         },
-        busy || s.retryAfterSeconds > 0,
-      )}
+        busy || s.registrationCancelUnconfirmed,
+      )}</>}
     </div>
   )
   const error =
     validation ??
     (s.error
-      ? 'code' in s.error && s.error.code === 'PASSWORD_POLICY_VIOLATION' && s.policy
-        ? l.signUp.passwordRequirements(s.policy.minPasswordLength, s.policy)
-        : localizeError(s.error, l, s.intent === 'sign-up' ? 'signUpFailed' : 'signInFailed')
+      ? 'code' in s.error && s.error.code === 'REGISTRATION_RESTART_REQUIRED'
+        ? l.identity.restart
+        : 'code' in s.error &&
+            s.error.code === 'PASSWORD_POLICY_VIOLATION' &&
+            s.policy
+          ? l.signUp.passwordRequirements(s.policy.minPasswordLength, s.policy)
+          : localizeError(
+              s.error,
+              l,
+              s.intent === 'sign-up' ? 'signUpFailed' : 'signInFailed',
+            )
       : null)
   const formSubmit = (action: () => void) => (event: FormEvent) => {
     event.preventDefault()
@@ -172,8 +243,9 @@ export function AuthFlowForm({
         const onClick = async () => {
           const revision = ownership.current.revision
           try {
-            const url = await actions.startProvider(provider.id)
-            if (mounted.current && ownership.current.revision === revision) window.location.href = url
+            const url = await actions.startProvider(provider.id, s.intent === 'sign-up' && acceptsAccessCode && accessCode.trim() ? { type: 'ACCESS_CODE', registrationAccessCode: accessCode } : undefined)
+            if (mounted.current && ownership.current.revision === revision)
+              window.location.href = url
           } catch (error) {
             if (error instanceof SessionInvalidatedError) return
           }
@@ -210,30 +282,75 @@ export function AuthFlowForm({
       className="axis-iam-auth-form"
       style={{ '--axis-auth-focus': a.focusColor } as React.CSSProperties}
     >
-      <style>{`.axis-iam-auth-form input,.axis-iam-auth-form button{font-family:inherit;letter-spacing:normal;text-transform:none}.axis-iam-auth-form input::placeholder{color:inherit;opacity:.72}.axis-iam-auth-form input:focus-visible,.axis-iam-auth-form button:focus-visible,.axis-iam-auth-form a:focus-visible{outline:2px solid var(--axis-auth-focus);outline-offset:3px}.axis-iam-auth-form button:disabled{cursor:not-allowed}.axis-iam-auth-form button:not(:disabled):hover{filter:brightness(.95)}@media(prefers-reduced-motion:reduce){.axis-iam-auth-form *{transition:none!important}}`}</style>
+      <style>{`.axis-iam-auth-form input,.axis-iam-auth-form button{font-family:inherit;letter-spacing:normal;text-transform:none}.axis-iam-auth-form input::placeholder{color:inherit;opacity:.72}.axis-iam-auth-form input:focus-visible,.axis-iam-auth-form button:focus-visible,.axis-iam-auth-form a:focus-visible{outline:2px solid var(--axis-auth-focus);outline-offset:3px}.axis-iam-auth-form button:disabled{cursor:not-allowed}.axis-iam-auth-form button:not(:disabled):hover{filter:brightness(.95)}.axis-iam-auth-form .axis-auth-text-action{text-decoration:none}.axis-iam-auth-form .axis-auth-text-action:not(:disabled):hover{text-decoration:underline;text-underline-offset:3px}.axis-iam-auth-form{min-width:0;overflow-wrap:anywhere}@media(prefers-reduced-motion:reduce){.axis-iam-auth-form *{transition:none!important}}`}</style>
       {s.step === 'loading' && <p role="status">{l.auth.loadingOptions}</p>}
       {s.step === 'unavailable' && (
-        <p role="status">
+        <div><p role="status">
           {s.intent === 'sign-up'
             ? l.signUp.unavailable
             : s.error
               ? l.auth.optionsUnavailable
               : l.auth.noMethodAvailable}
-        </p>
+        </p>{s.error && textButton(l.identity.retry, () => consume(actions.retryOptions()))}</div>
       )}
-      {s.step === 'identifier' && (
+      {s.step === 'identifier' && providerCallback && (
+        <div>{button(l.auth.continue, () => consume(actions.resumeProviderCallback(window.location.href)))}</div>
+      )}
+      {s.step === 'identifier' && !providerCallback && (
         <>
-          <form onSubmit={formSubmit(() => sync(() => actions.continueWithIdentifier(identifier)))}>
-            {field('identifier', l.auth.identifierLabel, 'text', identifier, setIdentifier, {
-              placeholder: l.auth.identifierPlaceholder,
-              autoComplete: 'username',
-            })}
+          {kind !== null && <form
+            onSubmit={formSubmit(() =>
+              sync(() => actions.continueWithIdentifier(typedIdentifier())),
+            )}
+          >
+            {kind === 'PHONE' &&
+              field('region', l.identity.region, 'text', region, setRegion, {
+                required: !identifier.startsWith('+'),
+              })}
+            {field(
+              'identifier',
+              l.identity[kind],
+              kind === 'EMAIL' ? 'email' : kind === 'PHONE' ? 'tel' : 'text',
+              identifier,
+              setIdentifier,
+              {
+                placeholder: kind === 'EMAIL' ? l.auth.emailPlaceholder : kind === 'PHONE' ? l.auth.phonePlaceholder : l.signUp.usernamePlaceholder,
+                autoComplete: kind === 'PHONE' ? 'tel' : 'username',
+              },
+            )}
             {button(l.auth.continue)}
-          </form>
+          </form>}
+          {kinds.length > 1 && <div style={{ textAlign: 'center', marginTop: 12 }}
+            onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); expandMethods(false); methodTrigger.current?.focus() } }}>
+            <button ref={methodTrigger} type="button" aria-expanded={methodsExpanded} aria-controls={`${prefix}-other-methods`}
+              onClick={() => expandMethods(!methodsExpanded)} style={{ ...linkStyle(a), minHeight: 44, border: 0, background: 'transparent', cursor: 'pointer' }}>
+              {kinds.length === 2 ? l.identity.useKind(l.identity[kinds.find((entry) => entry.kind !== kind)!.kind]) : l.identity.otherMethods}
+            </button>
+            {methodsExpanded && <div id={`${prefix}-other-methods`} style={{ display: 'grid', gap: 8 }}>
+              {kinds.filter((entry) => entry.kind !== kind).map((entry) => <button key={entry.kind} type="button"
+                style={{ ...buttonStyle(a, 'ghost'), minHeight: 44 }}
+                onClick={() => {
+                  setKind(entry.kind); setIdentifier(''); setRegion(''); setPassword(''); setConfirmPassword(''); setCode(''); setValidation(null); setNotice(null); expandMethods(false)
+                  root.current?.querySelector<HTMLInputElement>('input[name="identifier"]')?.focus()
+                }}>{l.identity.useKind(l.identity[entry.kind])}</button>)}
+            </div>}
+          </div>}
           {providers}
         </>
       )}
-      {s.step === 'method' && (
+      {s.completionPending && (
+        <div>
+          {button(l.identity.retry, () => consume(actions.retryCompletion()))}
+          <button
+            type="button"
+            onClick={() => leave(actions.cancel)}
+            style={linkStyle(a)}
+          >
+            {l.auth.back}
+          </button>
+        </div>
+      )}
+      {s.step === 'method' && !s.completionPending && (
         <>
           <div
             style={{
@@ -244,13 +361,26 @@ export function AuthFlowForm({
               marginBottom: 20,
             }}
           >
-            <span style={{ fontSize: 14, overflowWrap: 'anywhere' }}>{l.auth.signingInAs(s.identifier)}</span>
-            <button type="button" onClick={() => leave(actions.back)} style={linkStyle(a)}>
+            <span style={{ fontSize: 14, overflowWrap: 'anywhere' }}>
+              {l.auth.signingInAs(s.identifier)}
+            </span>
+            <button
+              type="button"
+              onClick={() => leave(actions.back)}
+              style={linkStyle(a)}
+            >
               {l.auth.change}
             </button>
           </div>
           {s.methods.length > 1 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 8,
+                marginBottom: 20,
+              }}
+            >
               {s.methods.map((method) => (
                 <button
                   key={method}
@@ -260,7 +390,8 @@ export function AuthFlowForm({
                   style={{
                     ...buttonStyle(a, 'ghost'),
                     width: 'auto',
-                    borderColor: s.method === method ? a.focusColor : a.borderColor,
+                    borderColor:
+                      s.method === method ? a.focusColor : a.borderColor,
                   }}
                 >
                   {l.auth.credentialMethod(method)}
@@ -271,17 +402,36 @@ export function AuthFlowForm({
           {!s.method && <p role="status">{l.auth.noMethodForIdentifier}</p>}
           {s.method === 'password' && (
             <>
-              <form onSubmit={formSubmit(() => consume(actions.submitPassword(password)))}>
-                {field('password', l.auth.password, 'password', password, setPassword, {
-                  autoComplete: 'current-password',
-                  placeholder: l.auth.passwordPlaceholder,
-                })}
-                {button(busy ? l.auth.signInBusy : branding?.loginButtonText ?? l.auth.signIn)}
+              <form
+                onSubmit={formSubmit(() =>
+                  consume(actions.submitPassword(password)),
+                )}
+              >
+                {field(
+                  'password',
+                  l.auth.password,
+                  'password',
+                  password,
+                  setPassword,
+                  {
+                    autoComplete: 'current-password',
+                    placeholder: l.auth.passwordPlaceholder,
+                  },
+                )}
+                {button(
+                  busy
+                    ? l.auth.signInBusy
+                    : (branding?.loginButtonText ?? l.auth.signIn),
+                )}
               </form>
               {(onForgotPassword || forgotPasswordUrl) && (
                 <p style={{ margin: '12px 0 0' }}>
                   {onForgotPassword ? (
-                    <button type="button" onClick={onForgotPassword} style={linkStyle(a)}>
+                    <button
+                      type="button"
+                      onClick={onForgotPassword}
+                      style={linkStyle(a)}
+                    >
                       {l.auth.forgotPassword}
                     </button>
                   ) : (
@@ -294,8 +444,13 @@ export function AuthFlowForm({
             </>
           )}
           {(s.method === 'email_otp' || s.method === 'sms') && (
-            <form onSubmit={formSubmit(() => consume(actions.verifyCode(code)))}>
-              <label htmlFor={`${prefix}-readonly-identifier`} style={labelStyle(a)}>
+            <form
+              onSubmit={formSubmit(() => consume(actions.verifyCode(code)))}
+            >
+              <label
+                htmlFor={`${prefix}-readonly-identifier`}
+                style={labelStyle(a)}
+              >
                 {s.method === 'sms' ? l.auth.phone : l.auth.email}
               </label>
               <input
@@ -303,7 +458,11 @@ export function AuthFlowForm({
                 type={s.method === 'sms' ? 'tel' : 'email'}
                 value={s.identifier}
                 readOnly
-                placeholder={s.method === 'sms' ? l.auth.phonePlaceholder : l.auth.emailPlaceholder}
+                placeholder={
+                  s.method === 'sms'
+                    ? l.auth.phonePlaceholder
+                    : l.auth.emailPlaceholder
+                }
                 style={{ ...inputStyle(a), marginBottom: 16 }}
               />
               {button(
@@ -317,19 +476,40 @@ export function AuthFlowForm({
               )}
               {s.codeSent && (
                 <div style={{ marginTop: 16 }}>
-                  {field('code', l.auth.verificationCode, 'text', code, setCode, {
-                    autoComplete: 'one-time-code',
-                    inputMode: 'numeric',
-                    maxLength: 6,
-                    placeholder: l.auth.verificationCodePlaceholder,
-                  })}
-                  {button(busy ? l.auth.verifying : branding?.loginButtonText ?? l.auth.signIn, undefined, busy || code.length < 4)}
+                  {field(
+                    'code',
+                    l.auth.verificationCode,
+                    'text',
+                    code,
+                    setCode,
+                    {
+                      autoComplete: 'one-time-code',
+                      inputMode: 'numeric',
+                      maxLength: 6,
+                      placeholder: l.auth.verificationCodePlaceholder,
+                    },
+                  )}
+                  {button(
+                    busy
+                      ? l.auth.verifying
+                      : (branding?.loginButtonText ?? l.auth.signIn),
+                    undefined,
+                    busy || code.length < 4,
+                  )}
                 </div>
               )}
             </form>
           )}
           {s.method === 'magic_link' && (
-            <form onSubmit={formSubmit(() => consume(actions.sendMagicLink()))}>
+            <form
+              onSubmit={formSubmit(() =>
+                consume(
+                  magicCallback
+                    ? actions.completeMagicLink(window.location.href)
+                    : actions.sendMagicLink(),
+                ),
+              )}
+            >
               <label htmlFor={`${prefix}-magic-email`} style={labelStyle(a)}>
                 {l.auth.email}
               </label>
@@ -343,18 +523,22 @@ export function AuthFlowForm({
               />
               {s.magicLinkSent && (
                 <>
-                  <h3 style={{ fontSize: 18, margin: '16px 0 12px' }}>{l.signUp.checkEmail}</h3>
+                  <h3 style={{ fontSize: 18, margin: '16px 0 12px' }}>
+                    {l.signUp.checkEmail}
+                  </h3>
                   <p role="status">{l.auth.magicLinkSent(s.identifier)}</p>
                 </>
               )}
               {button(
-                s.retryAfterSeconds
-                  ? l.auth.resendIn(s.retryAfterSeconds)
-                  : busy
-                    ? l.auth.sendingMagicLink
-                    : l.auth.sendMagicLink,
+                magicCallback
+                  ? l.auth.signIn
+                  : s.retryAfterSeconds
+                    ? l.auth.resendIn(s.retryAfterSeconds)
+                    : busy
+                      ? l.auth.sendingMagicLink
+                      : l.auth.sendMagicLink,
                 undefined,
-                busy || s.retryAfterSeconds > 0,
+                busy || (!magicCallback && s.retryAfterSeconds > 0),
               )}
             </form>
           )}
@@ -362,15 +546,55 @@ export function AuthFlowForm({
           {providers}
         </>
       )}
-      {s.step === 'mfa' && (
-        <form onSubmit={formSubmit(() => consume(actions.verifyMfa(code)))}>
-          <p style={{ fontSize: 14, color: a.mutedTextColor }}>{l.auth.mfaDescription}</p>
-          {field('totp', l.auth.authenticatorCode, 'text', code, setCode, {
-            autoComplete: 'one-time-code',
-            inputMode: 'numeric',
-            maxLength: 6,
-          })}
-          {button(busy ? l.auth.verifying : l.auth.verify, undefined, busy || code.length !== 6)}
+      {s.step === 'mfa' && !s.completionPending && (
+        <form
+          onSubmit={formSubmit(() =>
+            consume(actions.verifyMfa(code, mfaMethod)),
+          )}
+        >
+          <p style={{ fontSize: 14, color: a.mutedTextColor }}>
+            {l.auth.mfaDescription}
+          </p>
+          <select
+            aria-label={l.connectedAccounts.credential}
+            value={mfaMethod}
+            onChange={(event) => {
+              if (
+                event.target.value === 'TOTP' ||
+                event.target.value === 'RECOVERY_CODE'
+              ) {
+                setMfaMethod(event.target.value)
+                setCode('')
+              }
+            }}
+            style={{ ...inputStyle(a), marginBottom: 16 }}
+          >
+            {s.methods.map((method) => (
+              <option key={method} value={method}>
+                {l.connectedAccounts.credentialType(method)}
+              </option>
+            ))}
+          </select>
+          {field(
+            'mfa',
+            mfaMethod === 'TOTP'
+              ? l.auth.authenticatorCode
+              : l.connectedAccounts.credentialType('RECOVERY_CODE'),
+            mfaMethod === 'TOTP' ? 'text' : 'password',
+            code,
+            setCode,
+            {
+              autoComplete: 'one-time-code',
+              inputMode: mfaMethod === 'TOTP' ? 'numeric' : 'text',
+              maxLength: mfaMethod === 'TOTP' ? 6 : 128,
+            },
+          )}
+          {button(
+            busy ? l.auth.verifying : l.auth.verify,
+            undefined,
+            busy ||
+              (mfaMethod === 'TOTP' ? code.length !== 6 : code.length < 4),
+          )}
           <button
             type="button"
             onClick={() => leave(actions.back)}
@@ -389,7 +613,9 @@ export function AuthFlowForm({
                 : l.signUp.invitationRequired}
             </p>
           )}
-          {s.capabilities?.methods.some((x) => x.type === 'PASSWORD' && x.availableForSignup) && (
+          {s.capabilities?.methods.some(
+            (x) => x.type === 'PASSWORD' && x.availableForSignup,
+          ) && (
             <form
               onSubmit={formSubmit(() => {
                 if (password !== confirmPassword) {
@@ -398,8 +624,7 @@ export function AuthFlowForm({
                 }
                 consume(
                   actions.signUp({
-                    email: identifier,
-                    username,
+                    identifier: { kind: registrationKind, value: identifier },
                     password,
                     ...(acceptsAccessCode && accessCode.trim()
                       ? {
@@ -413,60 +638,134 @@ export function AuthFlowForm({
                 )
               })}
             >
-              {field('username', l.signUp.username, 'text', username, setUsername, {
-                autoComplete: 'username',
-                required: false,
-                placeholder: l.signUp.usernamePlaceholder,
-              })}
-              {field('email', l.signUp.email, 'email', identifier, setIdentifier, {
-                autoComplete: 'email',
-                placeholder: l.signUp.emailPlaceholder,
-              })}
+              <label htmlFor={`${prefix}-signup-kind`} style={labelStyle(a)}>
+                {l.identity.kind}
+              </label>
+              <select
+                id={`${prefix}-signup-kind`}
+                value={registrationKind}
+                onChange={(e) =>
+                  setRegistrationKind(
+                    e.target.value === 'USERNAME' ? 'USERNAME' : 'EMAIL',
+                  )
+                }
+                style={inputStyle(a)}
+              >
+                <option value="EMAIL">{l.identity.EMAIL}</option>
+                <option value="USERNAME">{l.identity.USERNAME}</option>
+              </select>
+              {field(
+                'identifier',
+                l.identity[registrationKind],
+                registrationKind === 'EMAIL' ? 'email' : 'text',
+                identifier,
+                setIdentifier,
+                {
+                  autoComplete: 'username',
+                  placeholder:
+                    registrationKind === 'EMAIL'
+                      ? l.signUp.emailPlaceholder
+                      : l.signUp.usernamePlaceholder,
+                },
+              )}
               {acceptsAccessCode &&
-                field('access-code', requiresAccessCode ? l.signUp.accessCodeRequired : l.signUp.accessCodeOptional, 'text', accessCode, setAccessCode, {
-                  required: requiresAccessCode,
-                  autoComplete: 'one-time-code',
-                  placeholder: l.signUp.accessCodePlaceholder,
-                })}
-              {field('new-password', l.signUp.password, 'password', password, setPassword, {
-                autoComplete: 'new-password',
-                minLength: s.policy?.minPasswordLength,
-                placeholder: l.signUp.password,
-              })}
-              {s.policy && <p style={{ fontSize: 12, color: a.mutedTextColor, margin: '-8px 0 16px' }}>
-                {l.signUp.passwordRequirements(s.policy.minPasswordLength, s.policy)}
-              </p>}
+                field(
+                  'access-code',
+                  requiresAccessCode
+                    ? l.signUp.accessCodeRequired
+                    : l.signUp.accessCodeOptional,
+                  'text',
+                  accessCode,
+                  setAccessCode,
+                  {
+                    required: requiresAccessCode,
+                    autoComplete: 'one-time-code',
+                    placeholder: l.signUp.accessCodePlaceholder,
+                  },
+                )}
+              {field(
+                'new-password',
+                l.signUp.password,
+                'password',
+                password,
+                setPassword,
+                {
+                  autoComplete: 'new-password',
+                  minLength: s.policy?.minPasswordLength,
+                  placeholder: l.signUp.password,
+                },
+              )}
+              {s.policy && (
+                <p
+                  style={{
+                    fontSize: 12,
+                    color: a.mutedTextColor,
+                    margin: '-8px 0 16px',
+                  }}
+                >
+                  {l.signUp.passwordRequirements(
+                    s.policy.minPasswordLength,
+                    s.policy,
+                  )}
+                </p>
+              )}
               {field(
                 'confirm-password',
                 l.signUp.confirmPassword,
                 'password',
                 confirmPassword,
                 setConfirmPassword,
-                { autoComplete: 'new-password', placeholder: l.signUp.confirmPasswordPlaceholder },
+                {
+                  autoComplete: 'new-password',
+                  placeholder: l.signUp.confirmPasswordPlaceholder,
+                },
               )}
-              {button(busy ? l.signUp.creatingAccount : branding?.signupButtonText ?? l.signUp.createAccount)}
+              {button(
+                busy
+                  ? l.signUp.creatingAccount
+                  : (branding?.signupButtonText ?? l.signUp.createAccount),
+              )}
             </form>
           )}
           {providers}
-
         </>
       )}
       {showIntentSwitch &&
         ['identifier', 'method', 'sign-up', 'unavailable'].includes(s.step) &&
-        (s.intent === 'sign-up' || (
-          allowSignUp &&
-          s.capabilities?.signupEnabled &&
-          s.capabilities.selfRegistrationEnabled &&
-          s.policy && s.policy.signupMode !== 'DISABLED' &&
-          (s.capabilities.methods.some((method) => method.type === 'PASSWORD' && method.availableForSignup) ||
-            s.capabilities.idpProviders.some((provider) => provider.availableForSignup))
-        )) && (
+        (s.intent === 'sign-up' ||
+          (allowSignUp &&
+            s.capabilities?.signupEnabled &&
+            s.capabilities.selfRegistrationEnabled &&
+            s.policy &&
+            s.policy.signupMode !== 'DISABLED' &&
+            (s.capabilities.methods.some(
+              (method) =>
+                method.type === 'PASSWORD' && method.availableForSignup,
+            ) ||
+              s.capabilities.idpProviders.some(
+                (provider) => provider.availableForSignup,
+              )))) && (
           <p style={{ margin: '24px 0 0', textAlign: 'center', fontSize: 14 }}>
-            <span>{s.intent === 'sign-in' ? l.auth.noAccount : l.auth.haveAccount}</span>{' '}
+            <span>
+              {s.intent === 'sign-in' ? l.auth.noAccount : l.auth.haveAccount}
+            </span>{' '}
             <button
               type="button"
-              onClick={() => leave(() => actions.setIntent(s.intent === 'sign-in' ? 'sign-up' : 'sign-in'))}
-              style={{ ...linkStyle(a), border: 0, background: 'transparent', padding: 0, font: 'inherit', cursor: 'pointer' }}
+              onClick={() =>
+                leave(() =>
+                  actions.setIntent(
+                    s.intent === 'sign-in' ? 'sign-up' : 'sign-in',
+                  ),
+                )
+              }
+              style={{
+                ...linkStyle(a),
+                border: 0,
+                background: 'transparent',
+                padding: 0,
+                font: 'inherit',
+                cursor: 'pointer',
+              }}
             >
               {s.intent === 'sign-in' ? l.auth.signUp : l.auth.signIn}
             </button>
@@ -474,31 +773,82 @@ export function AuthFlowForm({
         )}
       {s.step === 'verification' && (
         <>
-          <h3 style={{ fontSize: 18, margin: '0 0 12px' }}>
-            {s.result.verificationMode === 'REQUIRED' ? l.signUp.checkEmail : l.signUp.accountCreated}
-          </h3>
-          <p role="status" style={{ lineHeight: 1.6 }}>
-            {s.result.verificationMode === 'OFF'
-              ? l.signUp.accountCreatedDetail(s.result.user.email)
-              : s.result.verificationMode === 'OPTIONAL'
-                ? l.signUp.verificationOptional(s.result.user.email)
-                : l.signUp.verificationRequired(s.result.user.email)}
-          </p>
-          {resend}
-          {s.result.verificationMode !== 'REQUIRED' && (
-            <button
-              type="button"
-              onClick={() => leave(() => actions.setIntent('sign-in'))}
-              style={{ ...linkStyle(a), marginTop: 16 }}
-            >
-              {l.auth.signIn}
-            </button>
+          {s.registrationCancelUnconfirmed && (
+            <p role="alert">{l.identity.cancelUnconfirmed}</p>
           )}
+          {s.registrationCancelUnconfirmed && textButton(l.identity.reopen, () =>
+            consume(actions.resumeRegistration(s.registration.registrationId)),
+          )}
+          <p role="status">
+            {s.registration.status === 'COMPLETED'
+              ? l.identity.registrationComplete
+              : registrationExpired ? l.identity.EXPIRED : s.registration.status === 'PENDING_VERIFICATION'
+                ? l.identity.registrationPending
+                : l.identity.restart}
+          </p>
+          {s.registration.status === 'PENDING_VERIFICATION' && !registrationExpired && (
+            <>
+              {s.verificationEmail && <p style={{ color: a.mutedTextColor, overflowWrap: 'anywhere' }}>{s.verificationEmail}</p>}
+              <form
+                onSubmit={formSubmit(() =>
+                  consume(actions.completeRegistration(code)),
+                )}
+              >
+                {field(
+                  'registration-code',
+                  l.auth.verificationCode,
+                  'text',
+                  code,
+                  setCode,
+                  {
+                    autoComplete: 'one-time-code',
+                    inputMode: 'numeric',
+                    maxLength: 6,
+                    disabled: busy || s.registrationCancelUnconfirmed,
+                  },
+                )}
+                {button(
+                  l.identity.verifyRegistration,
+                  undefined,
+                  busy || s.registrationCancelUnconfirmed ||
+                    (mfaMethod === 'TOTP'
+                      ? code.length !== 6
+                      : code.length < 4),
+                )}
+              </form>
+              {resend}
+              <div style={{ textAlign: 'center' }}>{textButton(l.identity.cancelRegistration, () =>
+                consume(actions.cancelRegistration()),
+                busy, true,
+              )}</div>
+            </>
+          )}
+          {(s.registration.status !== 'PENDING_VERIFICATION' || registrationExpired) && !s.registrationCancelUnconfirmed && <button
+            type="button"
+            onClick={() =>
+              leave(() =>
+                actions.setIntent(
+                  s.registration.status === 'COMPLETED' ? 'sign-in' : 'sign-up',
+                ),
+              )
+            }
+            style={linkStyle(a)}
+          >
+            {s.registration.status === 'COMPLETED'
+              ? l.auth.signIn
+              : l.identity.restartRegistration}
+          </button>}
         </>
       )}
-      {s.step === 'success' && <p role="status">{l.auth.signedInAs(s.user.email ?? '')}</p>}
+      {s.step === 'success' && (
+        <p role="status">{l.auth.signedInAs(s.user.email ?? '')}</p>
+      )}
       {error && (
-        <p id={`${prefix}-error`} role="alert" style={{ ...errorStyle(a), lineHeight: 1.5 }}>
+        <p
+          id={`${prefix}-error`}
+          role="alert"
+          style={{ ...errorStyle(a), lineHeight: 1.5 }}
+        >
           {error}
         </p>
       )}

@@ -1,3 +1,5 @@
+import { identityEnglish, identityZhCN } from './identity-localization'
+import type { IdentityLocalization } from './identity-localization'
 import type { AccountCenterLocalization } from './components/accountCenterConfig'
 import { accountCenterEnglish } from './components/accountCenterConfig'
 
@@ -22,6 +24,7 @@ type ErrorCode =
   | 'FORBIDDEN'
 
 export interface IamLocalization {
+  identity: IdentityLocalization
   accountCenter: AccountCenterLocalization
   auth: {
     signIn: string
@@ -223,6 +226,7 @@ type DeepPartial<T> = T extends (...args: never[]) => unknown
     : T
 
 export const iamLocalizationEnglish: IamLocalization = {
+  identity: identityEnglish,
   accountCenter: { ...accountCenterEnglish, profileStatus: (status) => formatProfileStatus(status, 'en') },
   auth: {
     signIn: 'Sign in', signedInAs: (email) => `Signed in as ${email}`, loadingOptions: 'Loading sign-in options...',
@@ -272,6 +276,7 @@ export const iamLocalizationEnglish: IamLocalization = {
 }
 
 export const iamLocalizationZhCN: IamLocalization = {
+  identity: identityZhCN,
   accountCenter: {
     title: '账户中心', close: '关闭账户中心', sectionsAria: '账户栏目', menu: '账户', back: '菜单', profileSection: '个人资料', passwordSection: '密码', sessionsSection: '会话', permissionsSection: '权限', retry: '重试', retrying: '正在重试',
     profileAria: '账户资料', profileDescription: '身份与账户信息', accountFallback: '账户', profileLoading: '正在加载个人资料', emailVerified: '邮箱已验证', emailNotVerified: '邮箱未验证', profileSaved: '资料已保存', displayName: '显示名称', username: '用户名', avatarUrl: '头像地址', saveProfile: '保存资料', savingProfile: '正在保存资料', securityOverview: '安全概览', securityLoading: '正在加载安全信息', configured: '已配置', notConfigured: '未配置', multiFactorAuthentication: '多因素认证', enabled: '已启用', notEnabled: '未启用', activeSessions: '活跃会话', securityUnavailable: '无法获取安全详情', profileEmptyTitle: '个人资料不可用', profileEmptyDetail: '无法加载账户详情',

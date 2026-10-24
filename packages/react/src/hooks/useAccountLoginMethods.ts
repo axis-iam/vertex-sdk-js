@@ -8,6 +8,7 @@ export interface UseAccountLoginMethodsOptions {
 }
 
 export interface UseAccountLoginMethodsResult {
+  loginMethodVersion: number | null
   methods: AccountLoginMethod[]
   isLoading: boolean
   error: Error | null
@@ -17,6 +18,7 @@ export interface UseAccountLoginMethodsResult {
 export function useAccountLoginMethods(options: UseAccountLoginMethodsOptions = {}): UseAccountLoginMethodsResult {
   const { client, isAuthenticated, isLoaded } = useIamContext()
   const { enabled = true } = options
+  const [loginMethodVersion, setVersion] = useState<number | null>(null)
   const [methods, setMethods] = useState<AccountLoginMethod[]>([])
   const [isLoading, setIsLoading] = useState(enabled)
   const [error, setError] = useState<Error | null>(null)
@@ -30,20 +32,20 @@ export function useAccountLoginMethods(options: UseAccountLoginMethodsOptions = 
       setMethods([])
       setError(next)
       setIsLoading(false)
-      return []
+      throw next
     }
 
     setIsLoading(true)
     setError(null)
     try {
       const next = await client.listAccountLoginMethods()
-      setMethods(next)
-      return next
+      setMethods(next.methods); setVersion(next.loginMethodVersion)
+      return next.methods
     } catch (err) {
       const next = err instanceof Error ? err : new Error('Login methods are unavailable')
       setMethods([])
       setError(next)
-      return []
+      throw next
     } finally {
       setIsLoading(false)
     }
@@ -77,7 +79,7 @@ export function useAccountLoginMethods(options: UseAccountLoginMethodsOptions = 
       setError(null)
       try {
         const next = await client.listAccountLoginMethods()
-        if (!cancelled) setMethods(next)
+        if (!cancelled) { setMethods(next.methods); setVersion(next.loginMethodVersion) }
       } catch (err) {
         if (!cancelled) {
           setMethods([])
@@ -93,6 +95,7 @@ export function useAccountLoginMethods(options: UseAccountLoginMethodsOptions = 
   }, [client, enabled, isAuthenticated, isLoaded])
 
   return {
+    loginMethodVersion,
     methods,
     isLoading,
     error,

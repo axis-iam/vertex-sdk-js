@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IamProvider } from '../provider/IamProvider'
 import { testProviderProps } from '../test-utils'
 import { AuthDialog, SignInButton, SignUpButton } from './AuthDialog'
+import { webcrypto } from 'node:crypto'
 
 const oidc = {
   issuer: 'https://auth.test.com',
@@ -18,9 +19,16 @@ function response(data: unknown, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => data }
 }
 
-function setupFetch({ signupMode = 'OPEN' }: { signupMode?: 'OPEN' | 'INVITE_REQUIRED' } = {}) {
+function setupFetch({
+  signupMode = 'OPEN',
+}: { signupMode?: 'OPEN' | 'INVITE_REQUIRED' } = {}) {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url
     if (url.includes('openid-configuration')) return response(oidc)
     if (url.includes('/auth-methods'))
       return response({
@@ -32,7 +40,6 @@ function setupFetch({ signupMode = 'OPEN' }: { signupMode?: 'OPEN' | 'INVITE_REQ
         socialLoginEnabled: false,
         signupEnabled: true,
         selfRegistrationEnabled: true,
-        emailVerificationMode: 'OFF',
         idpAutoProvisioningEnabled: false,
         loginInitiationUri: null,
         postVerificationRedirectUri: null,
@@ -46,6 +53,8 @@ function setupFetch({ signupMode = 'OPEN' }: { signupMode?: 'OPEN' | 'INVITE_REQ
             unavailableReason: null,
           },
         ],
+        identifierMethods: [{ kind: 'EMAIL', methods: ['PASSWORD'] }, { kind: 'PHONE', methods: ['PASSWORD'] }, { kind: 'USERNAME', methods: ['PASSWORD'] }],
+        defaultIdentifierKind: 'EMAIL',
         idpProviders: [],
         resend: { emailVerificationCooldownSeconds: 60 },
       })
@@ -69,7 +78,6 @@ function setupFetch({ signupMode = 'OPEN' }: { signupMode?: 'OPEN' | 'INVITE_REQ
         maxLoginAttempts: 5,
         lockoutDurationMinutes: 15,
         progressiveLockout: false,
-        emailVerificationMode: 'OFF',
         idpAutoProvisioningEnabled: false,
         signupMode,
         allowedRegistrationGrantTypes: ['ACCESS_CODE'],
@@ -82,7 +90,9 @@ function setupFetch({ signupMode = 'OPEN' }: { signupMode?: 'OPEN' | 'INVITE_REQ
 }
 
 function renderWithProvider(ui: React.ReactElement, props = {}) {
-  return render(createElement(IamProvider, { ...testProviderProps(), ...props }, ui))
+  return render(
+    createElement(IamProvider, { ...testProviderProps(), ...props }, ui),
+  )
 }
 
 describe('AuthDialog', () => {
@@ -90,7 +100,99 @@ describe('AuthDialog', () => {
     setupFetch()
     sessionStorage.clear()
   })
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => {
+    window.history.replaceState(null, '', '/')
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('restores Provider continuation inside Dialog without premature success', async () => {
+    const secret = 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc'
+    const expiresAt = new Date(Date.now() + 600000).toISOString()
+    const redirectUri = new URL('/callback', window.location.origin).href
+    sessionStorage.setItem('axis_iam_pending_authorization', JSON.stringify({
+      version: 1, issuer: oidc.issuer, clientId: 'test-app', redirectUri,
+      entryMode: 'CUSTOM', flowOwner: secret, state: secret, verifier: secret,
+      transactionId: 'dialog-provider', controlSecret: secret, expiresAt,
+    }))
+    const base = globalThis.fetch
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/dialog-provider')) {
+        expect(new Headers(init?.headers).get('Authentication-Transaction')).toBe(secret)
+        return new Response(JSON.stringify({transactionId: 'dialog-provider', state: 'MFA_REQUIRED', nextAction: 'mfa', expiresAt}))
+      }
+      return base(input, init)
+    })
+    window.history.replaceState(null, '', '/callback?' + new URLSearchParams({kind: 'AUTH_CONTINUATION', auth_transaction_id: 'dialog-provider', state: secret}))
+    const onSuccess = vi.fn()
+    renderWithProvider(createElement(AuthDialog, {open: true, onSuccess}))
+    fireEvent.click(await screen.findByRole('button', {name: 'Continue'}))
+    expect(await screen.findByLabelText('Authenticator code')).toBeTruthy()
+    expect(onSuccess).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem('axis_iam_pending_authorization')).toBeNull()
+    expect(window.location.search).toBe('')
+    expect(document.body.innerHTML).not.toContain(secret)
+  })
+
+  it('keeps Dialog open when controlled transaction cancellation is refused', async () => {
+    vi.stubGlobal('crypto', webcrypto)
+    const base = globalThis.fetch,
+      expiresAt = new Date(Date.now() + 600000).toISOString()
+    vi.stubGlobal(
+      'fetch',
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.endsWith('/auth/transactions'))
+          return new Response(
+            JSON.stringify({
+              transactionId: 'dialog-tx',
+              controlSecret: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc',
+              expiresAt,
+              nextAction: 'authenticate',
+            }),
+          )
+        if (url.endsWith('/authenticate'))
+          return new Response(
+            JSON.stringify({
+              transactionId: 'dialog-tx',
+              expiresAt,
+              state: 'MFA_REQUIRED',
+              nextAction: 'mfa',
+            }),
+          )
+        if (url.endsWith('/cancel'))
+          return new Response(JSON.stringify({ error: 'CANCEL_DENIED' }), {
+            status: 409,
+          })
+        return base(input, init)
+      },
+    )
+    const onOpenChange = vi.fn(),
+      onError = vi.fn()
+    renderWithProvider(
+      createElement(AuthDialog, {
+        open: true,
+        onOpenChange,
+        signInProps: { onError },
+      }),
+    )
+    const identifier = await screen.findByPlaceholderText(
+      'you@example.com',
+    )
+    fireEvent.change(identifier, { target: { value: 'user@example.invalid' } })
+    fireEvent.submit(identifier.closest('form')!)
+    const password = await screen.findByLabelText('Password')
+    fireEvent.change(password, { target: { value: 'secret' } })
+    fireEvent.submit(password.closest('form')!)
+    await screen.findByLabelText('Authenticator code')
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Close authentication dialog' }),
+    )
+    await waitFor(() => expect(onError).toHaveBeenCalledOnce())
+    expect(onError.mock.calls[0][0]).toMatchObject({ code: 'CANCEL_DENIED' })
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(onOpenChange).not.toHaveBeenCalled()
+  })
 
   it('restores an external controlled opener after backdrop close in StrictMode', async () => {
     function Harness() {
@@ -98,7 +200,11 @@ describe('AuthDialog', () => {
       return createElement(
         'div',
         null,
-        createElement('button', { type: 'button', onClick: () => setOpen(true) }, 'Open authentication'),
+        createElement(
+          'button',
+          { type: 'button', onClick: () => setOpen(true) },
+          'Open authentication',
+        ),
         createElement(AuthDialog, { open, onOpenChange: setOpen }),
       )
     }
@@ -108,7 +214,9 @@ describe('AuthDialog', () => {
     opener.focus()
     fireEvent.click(opener)
     await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy())
-    const defaultAllowed = fireEvent.mouseDown(screen.getByRole('dialog').parentElement!)
+    const defaultAllowed = fireEvent.mouseDown(
+      screen.getByRole('dialog').parentElement!,
+    )
     if (defaultAllowed) {
       document.body.tabIndex = -1
       document.body.focus()
@@ -124,7 +232,11 @@ describe('AuthDialog', () => {
       return createElement(
         'div',
         null,
-        createElement('button', { type: 'button', onClick: () => setOpen(true) }, 'Open authentication'),
+        createElement(
+          'button',
+          { type: 'button', onClick: () => setOpen(true) },
+          'Open authentication',
+        ),
         createElement(AuthDialog, { open, onOpenChange: setOpen }),
       )
     }
@@ -145,7 +257,11 @@ describe('AuthDialog', () => {
       return createElement(
         'div',
         null,
-        createElement('button', { type: 'button', onClick: () => setOpen(true) }, 'Open authentication'),
+        createElement(
+          'button',
+          { type: 'button', onClick: () => setOpen(true) },
+          'Open authentication',
+        ),
         createElement(AuthDialog, { open, onOpenChange: setOpen }),
       )
     }
@@ -154,7 +270,9 @@ describe('AuthDialog', () => {
     const opener = screen.getByRole('button', { name: 'Open authentication' })
     opener.focus()
     fireEvent.click(opener)
-    const close = await screen.findByRole('button', { name: 'Close authentication dialog' })
+    const close = await screen.findByRole('button', {
+      name: 'Close authentication dialog',
+    })
     expect(document.activeElement).toBe(close)
     fireEvent.click(close)
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
@@ -171,7 +289,11 @@ describe('AuthDialog', () => {
         'div',
         null,
         showOpener &&
-          createElement('button', { type: 'button', onClick: () => setOpen(true) }, 'Open authentication'),
+          createElement(
+            'button',
+            { type: 'button', onClick: () => setOpen(true) },
+            'Open authentication',
+          ),
         createElement(AuthDialog, { open, onOpenChange: setOpen }),
       )
     }
@@ -181,7 +303,9 @@ describe('AuthDialog', () => {
     const focus = vi.spyOn(opener, 'focus')
     opener.focus()
     fireEvent.click(opener)
-    const close = await screen.findByRole('button', { name: 'Close authentication dialog' })
+    const close = await screen.findByRole('button', {
+      name: 'Close authentication dialog',
+    })
     act(disconnectOpener)
     fireEvent.click(close)
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
@@ -198,7 +322,9 @@ describe('AuthDialog', () => {
     const unrelated = screen.getByRole('button', { name: 'Unrelated action' })
     unrelated.focus()
     renderWithProvider(createElement(StrictMode, null, createElement(Harness)))
-    const close = await screen.findByRole('button', { name: 'Close authentication dialog' })
+    const close = await screen.findByRole('button', {
+      name: 'Close authentication dialog',
+    })
     expect(document.activeElement).toBe(close)
     fireEvent.click(close)
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
@@ -215,7 +341,10 @@ describe('AuthDialog', () => {
           onOpenChange: () => undefined,
           initialView: 'sign-up',
           signUpProps: {
-            registrationGrant: { type: 'ACCESS_CODE', registrationAccessCode: 'short-lived-proof' },
+            registrationGrant: {
+              type: 'ACCESS_CODE',
+              registrationAccessCode: 'short-lived-proof',
+            },
           },
         }),
       ),
@@ -240,7 +369,9 @@ describe('AuthDialog', () => {
     trigger.focus()
     fireEvent.click(trigger)
     await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy())
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close authentication dialog' }))
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: 'Close authentication dialog' }),
+    )
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(document.activeElement).toBe(trigger)
@@ -249,18 +380,28 @@ describe('AuthDialog', () => {
   it('uses the nested SignUpButton as an explicit sign-up trigger', async () => {
     function Harness() {
       const [open, setOpen] = useState(false)
-      return createElement(AuthDialog, { open, onOpenChange: setOpen }, createElement(SignUpButton, null))
+      return createElement(
+        AuthDialog,
+        { open, onOpenChange: setOpen },
+        createElement(SignUpButton, null),
+      )
     }
     renderWithProvider(createElement(Harness))
     fireEvent.click(screen.getByRole('button', { name: /Sign up/ }))
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Create account' })).toBeTruthy())
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { name: 'Create account' }),
+      ).toBeTruthy(),
+    )
     expect(screen.getByPlaceholderText('you@example.com')).toBeTruthy()
   })
 
   it('uses the latest controlled initial view when the host opens in the same event', async () => {
     function Harness() {
       const [open, setOpen] = useState(false)
-      const [initialView, setInitialView] = useState<'sign-in' | 'sign-up'>('sign-in')
+      const [initialView, setInitialView] = useState<'sign-in' | 'sign-up'>(
+        'sign-in',
+      )
       return createElement(
         'div',
         null,
@@ -287,15 +428,27 @@ describe('AuthDialog', () => {
 
     renderWithProvider(createElement(Harness))
     fireEvent.click(screen.getByRole('button', { name: /Sign up/ }))
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Create account' })).toBeTruthy())
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { name: 'Create account' }),
+      ).toBeTruthy(),
+    )
     expect(screen.getByPlaceholderText('you@example.com')).toBeTruthy()
-    expect(screen.queryByPlaceholderText('you@example.com or +86 13800138000')).toBeNull()
+    expect(
+      screen.queryByPlaceholderText('you@example.com'),
+    ).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Close authentication dialog' }))
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Close authentication dialog' }),
+    )
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     fireEvent.click(screen.getByRole('button', { name: 'Open sign in' }))
-    await waitFor(() => expect(screen.getByRole('heading', { name: /Sign in/ })).toBeTruthy())
-    expect(screen.getByPlaceholderText('you@example.com or +86 13800138000')).toBeTruthy()
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Sign in/ })).toBeTruthy(),
+    )
+    expect(
+      screen.getByPlaceholderText('you@example.com'),
+    ).toBeTruthy()
     expect(screen.queryByPlaceholderText('you@example.com')).toBeNull()
   })
 
@@ -309,7 +462,9 @@ describe('AuthDialog', () => {
       }),
     )
     await waitFor(() =>
-      expect(screen.getByPlaceholderText('you@example.com or +86 13800138000')).toBeTruthy(),
+      expect(
+        screen.getByPlaceholderText('you@example.com'),
+      ).toBeTruthy(),
     )
     expect(screen.queryByRole('tab')).toBeNull()
     expect(screen.queryByPlaceholderText('you@example.com')).toBeNull()
@@ -328,7 +483,9 @@ describe('AuthDialog', () => {
     renderWithProvider(createElement(Harness))
     fireEvent.click(screen.getByTestId('sign-up-trigger'))
     await waitFor(() =>
-      expect(screen.getByPlaceholderText('you@example.com or +86 13800138000')).toBeTruthy(),
+      expect(
+        screen.getByPlaceholderText('you@example.com'),
+      ).toBeTruthy(),
     )
     expect(screen.queryByRole('tab')).toBeNull()
     expect(screen.queryByPlaceholderText('you@example.com')).toBeNull()
@@ -342,51 +499,82 @@ describe('AuthDialog', () => {
       return createElement(
         'div',
         null,
-        createElement('button', { type: 'button', onClick: () => setAllowSignUp(false) }, 'Disable sign up'),
-        createElement('button', { type: 'button', onClick: () => setAllowSignUp(true) }, 'Enable sign up'),
-        createElement(AuthDialog, { open: true, onOpenChange: () => undefined, allowSignUp }),
+        createElement(
+          'button',
+          { type: 'button', onClick: () => setAllowSignUp(false) },
+          'Disable sign up',
+        ),
+        createElement(
+          'button',
+          { type: 'button', onClick: () => setAllowSignUp(true) },
+          'Enable sign up',
+        ),
+        createElement(AuthDialog, {
+          open: true,
+          onOpenChange: () => undefined,
+          allowSignUp,
+        }),
       )
     }
 
     renderWithProvider(createElement(Harness))
     fireEvent.click(await screen.findByRole('button', { name: /Sign up/ }))
-    const initialSignUpEmail = await screen.findByPlaceholderText('you@example.com')
-    fireEvent.change(initialSignUpEmail, { target: { value: 'discarded@example.com' } })
+    const initialSignUpEmail =
+      await screen.findByPlaceholderText('you@example.com')
+    fireEvent.change(initialSignUpEmail, {
+      target: { value: 'discarded@example.com' },
+    })
     const policyRequests = fetchMock.mock.calls.filter(([input]) =>
       String(input).includes('/auth-policy'),
     ).length
 
     fireEvent.click(screen.getByRole('button', { name: 'Disable sign up' }))
     await waitFor(() =>
-      expect(screen.getByPlaceholderText('you@example.com or +86 13800138000')).toBeTruthy(),
+      expect(
+        screen.getByPlaceholderText('you@example.com'),
+      ).toBeTruthy(),
     )
     expect(screen.queryByRole('button', { name: /Sign up/ })).toBeNull()
     expect(screen.queryByPlaceholderText('you@example.com')).toBeNull()
     expect(document.querySelector('[data-auth-view="sign-up"]')).toBeNull()
     expect(document.querySelector('[data-auth-view="sign-in"]')).toBeTruthy()
-    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/auth-policy'))).toHaveLength(
-      policyRequests,
-    )
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).includes('/auth-policy'),
+      ),
+    ).toHaveLength(policyRequests)
 
     fireEvent.click(screen.getByRole('button', { name: 'Enable sign up' }))
-    await waitFor(() => expect(screen.getByRole('button', { name: /Sign up/ })).toBeTruthy())
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Sign up/ })).toBeTruthy(),
+    )
     expect(document.querySelector('[data-auth-view="sign-up"]')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Sign up/ }))
-    const remountedSignUpEmail = (await screen.findByPlaceholderText('you@example.com')) as HTMLInputElement
+    const remountedSignUpEmail = (await screen.findByPlaceholderText(
+      'you@example.com',
+    )) as HTMLInputElement
     expect(remountedSignUpEmail.value).toBe('')
-    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/auth-policy'))).toHaveLength(
-      policyRequests,
-    )
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).includes('/auth-policy'),
+      ),
+    ).toHaveLength(policyRequests)
   })
 
   it('discards sensitive form values and prior method steps across intent changes', async () => {
     setupFetch({ signupMode: 'INVITE_REQUIRED' })
-    renderWithProvider(createElement(AuthDialog, { open: true, onOpenChange: () => undefined }))
+    renderWithProvider(
+      createElement(AuthDialog, { open: true, onOpenChange: () => undefined }),
+    )
 
-    const identifier = await screen.findByPlaceholderText('you@example.com or +86 13800138000')
+    const identifier = await screen.findByPlaceholderText(
+      'you@example.com',
+    )
     fireEvent.change(identifier, { target: { value: 'sign-in@example.com' } })
     fireEvent.submit(identifier.closest('form')!)
-    await waitFor(() => expect(screen.getByPlaceholderText('Enter your password')).toBeTruthy())
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText('Enter your password')).toBeTruthy(),
+    )
 
     fireEvent.click(screen.getByRole('button', { name: /Sign up/ }))
     const email = await screen.findByPlaceholderText('you@example.com')
@@ -402,15 +590,25 @@ describe('AuthDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
     await waitFor(() =>
-      expect(screen.getByPlaceholderText('you@example.com or +86 13800138000')).toBeTruthy(),
+      expect(
+        screen.getByPlaceholderText('you@example.com'),
+      ).toBeTruthy(),
     )
     expect(screen.queryByText('Signing in as sign-in@example.com')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Sign up/ }))
     await waitFor(() =>
-      expect((screen.getByPlaceholderText('you@example.com') as HTMLInputElement).value).toBe(''),
+      expect(
+        (screen.getByPlaceholderText('you@example.com') as HTMLInputElement)
+          .value,
+      ).toBe(''),
     )
-    expect((screen.getByPlaceholderText('Enter access code') as HTMLInputElement).value).toBe('')
-    expect((screen.getByLabelText('Password') as HTMLInputElement).value).toBe('')
+    expect(
+      (screen.getByPlaceholderText('Enter access code') as HTMLInputElement)
+        .value,
+    ).toBe('')
+    expect((screen.getByLabelText('Password') as HTMLInputElement).value).toBe(
+      '',
+    )
     expect(document.querySelectorAll('[data-auth-view]')).toHaveLength(1)
     expect(screen.queryByRole('tablist')).toBeNull()
   })
@@ -419,7 +617,9 @@ describe('AuthDialog', () => {
     const fetchMock = setupFetch()
     function Harness() {
       const [open, setOpen] = useState(false)
-      const [nextTrigger, setNextTrigger] = useState<'sign-in' | 'sign-up'>('sign-up')
+      const [nextTrigger, setNextTrigger] = useState<'sign-in' | 'sign-up'>(
+        'sign-up',
+      )
       return createElement(
         'div',
         null,
@@ -439,41 +639,62 @@ describe('AuthDialog', () => {
     }
     renderWithProvider(createElement(Harness))
     fireEvent.click(screen.getByTestId('entry'))
-    await waitFor(() => expect(screen.getByPlaceholderText('you@example.com')).toBeTruthy())
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText('you@example.com')).toBeTruthy(),
+    )
     const policyCalls = fetchMock.mock.calls.filter(([input]) =>
       String(input).includes('/auth-policy'),
     ).length
-    fireEvent.click(screen.getByRole('button', { name: 'Close authentication dialog' }))
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Close authentication dialog' }),
+    )
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     fireEvent.click(screen.getByRole('button', { name: 'Use sign in trigger' }))
     fireEvent.click(screen.getByTestId('entry'))
-    await waitFor(() => expect(screen.getByRole('heading', { name: /Sign in/ })).toBeTruthy())
-    expect(screen.getByPlaceholderText('you@example.com or +86 13800138000')).toBeTruthy()
-    expect(screen.queryByPlaceholderText('you@example.com')).toBeNull()
-    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/auth-policy'))).toHaveLength(
-      policyCalls,
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Sign in/ })).toBeTruthy(),
     )
+    expect(
+      screen.getByPlaceholderText('you@example.com'),
+    ).toBeTruthy()
+    expect(screen.queryByPlaceholderText('you@example.com')).toBeNull()
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).includes('/auth-policy'),
+      ),
+    ).toHaveLength(policyCalls)
   })
 
   it('has one complete Chinese footer in each direction', async () => {
-    renderWithProvider(createElement(AuthDialog, { open: true, onOpenChange: () => undefined }), { locale: 'zh-CN' })
+    renderWithProvider(
+      createElement(AuthDialog, { open: true, onOpenChange: () => undefined }),
+      { locale: 'zh-CN' },
+    )
     const up = await screen.findByRole('button', { name: '还没有账户？注册' })
     expect(screen.getAllByRole('button', { name: /注册/ })).toHaveLength(1)
     fireEvent.click(up)
     const down = await screen.findByRole('button', { name: '已有账户？登录' })
     expect(screen.getAllByRole('button', { name: /登录/ })).toHaveLength(1)
     fireEvent.click(down)
-    expect(await screen.findByRole('button', { name: '还没有账户？注册' })).toBeTruthy()
+    expect(
+      await screen.findByRole('button', { name: '还没有账户？注册' }),
+    ).toBeTruthy()
   })
 
   it('uses one dialog title and a compact auth-engine presentation instead of a nested auth card', async () => {
-    renderWithProvider(createElement(AuthDialog, { open: true, onOpenChange: () => undefined }))
+    renderWithProvider(
+      createElement(AuthDialog, { open: true, onOpenChange: () => undefined }),
+    )
     const dialog = screen.getByRole('dialog')
     await waitFor(() =>
-      expect(screen.getByPlaceholderText('you@example.com or +86 13800138000')).toBeTruthy(),
+      expect(
+        screen.getByPlaceholderText('you@example.com'),
+      ).toBeTruthy(),
     )
     expect(dialog.querySelectorAll('h2')).toHaveLength(1)
-    expect(dialog.querySelectorAll('[data-auth-dialog-panels] h2')).toHaveLength(0)
+    expect(
+      dialog.querySelectorAll('[data-auth-dialog-panels] h2'),
+    ).toHaveLength(0)
     const activeEngine = dialog.querySelector<HTMLElement>(
       '[data-auth-dialog-panels] > div:not([hidden]) > div',
     )
@@ -490,26 +711,46 @@ describe('AuthDialog', () => {
         open: true,
         onOpenChange,
         signUpProps: {
-          registrationGrant: { type: 'ACCESS_CODE', registrationAccessCode: 'short-lived-proof' },
+          registrationGrant: {
+            type: 'ACCESS_CODE',
+            registrationAccessCode: 'short-lived-proof',
+          },
         },
       }),
     )
-    await waitFor(() => expect(screen.getByRole('button', { name: /Sign up/ })).toBeTruthy())
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Sign up/ })).toBeTruthy(),
+    )
     fireEvent.click(screen.getByRole('button', { name: /Sign up/ }))
-    await waitFor(() => expect(screen.getByPlaceholderText('you@example.com')).toBeTruthy())
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText('you@example.com')).toBeTruthy(),
+    )
     expect(screen.queryByText('short-lived-proof')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
-    await waitFor(() => expect(screen.getByRole('heading', { name: /Sign in/ })).toBeTruthy())
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Sign in/ })).toBeTruthy(),
+    )
     fireEvent.click(screen.getByRole('button', { name: /Sign up/ }))
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Create account' })).toBeTruthy())
-    const close = screen.getByRole('button', { name: 'Close authentication dialog' })
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { name: 'Create account' }),
+      ).toBeTruthy(),
+    )
+    const close = screen.getByRole('button', {
+      name: 'Close authentication dialog',
+    })
     close.focus()
-    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab', shiftKey: true })
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: /Sign in/ }))
+    fireEvent.keyDown(screen.getByRole('dialog'), {
+      key: 'Tab',
+      shiftKey: true,
+    })
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: /Sign in/ }),
+    )
     fireEvent.mouseDown(screen.getByRole('dialog').parentElement!, {
       target: screen.getByRole('dialog').parentElement!,
     })
-    expect(onOpenChange).toHaveBeenCalledWith(false)
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
   })
 
   it('inherits locale, host labels, and theme changes without closing or remounting the active form', async () => {
@@ -518,7 +759,11 @@ describe('AuthDialog', () => {
       return createElement(
         'div',
         null,
-        createElement('button', { type: 'button', onClick: () => setScheme('dark') }, 'theme'),
+        createElement(
+          'button',
+          { type: 'button', onClick: () => setScheme('dark') },
+          'theme',
+        ),
         createElement(
           IamProvider,
           { ...testProviderProps(), locale: 'zh-CN', colorScheme: scheme },
@@ -531,15 +776,24 @@ describe('AuthDialog', () => {
       )
     }
     render(createElement(Harness))
-    await waitFor(() => expect(screen.getByRole('button', { name: '还没有账户？注册' })).toBeTruthy())
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: '还没有账户？注册' }),
+      ).toBeTruthy(),
+    )
     fireEvent.click(screen.getByRole('button', { name: '还没有账户？注册' }))
     const email = await screen.findByPlaceholderText('you@example.com')
     fireEvent.change(email, { target: { value: 'kept@example.com' } })
     fireEvent.click(screen.getByText('theme'))
-    await waitFor(() => expect(screen.getByRole('dialog').getAttribute('data-color-scheme')).toBe('dark'))
-    expect((screen.getByPlaceholderText('you@example.com') as HTMLInputElement).value).toBe(
-      'kept@example.com',
+    await waitFor(() =>
+      expect(screen.getByRole('dialog').getAttribute('data-color-scheme')).toBe(
+        'dark',
+      ),
     )
+    expect(
+      (screen.getByPlaceholderText('you@example.com') as HTMLInputElement)
+        .value,
+    ).toBe('kept@example.com')
     expect(screen.getByRole('dialog')).toBeTruthy()
     expect(screen.getByText('Host label')).toBeTruthy()
   })
@@ -586,7 +840,11 @@ describe('AuthDialog', () => {
     expect(screen.queryByRole('tab')).toBeNull()
     expect(document.querySelector('[data-auth-view="sign-up"]')).toBeNull()
     expect(document.querySelector('[data-auth-view="sign-in"]')).toBeTruthy()
-    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/auth-policy'))).toHaveLength(1)
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).includes('/auth-policy'),
+      ),
+    ).toHaveLength(1)
   })
 
   it('keeps a distinct redirect signup pane only for a non-blank supported grant', async () => {
@@ -597,7 +855,12 @@ describe('AuthDialog', () => {
         onOpenChange: () => undefined,
         mode: 'redirect',
         initialView: 'sign-up',
-        signUpProps: { registrationGrant: { type: 'ACCESS_CODE', registrationAccessCode: '  ' } },
+        signUpProps: {
+          registrationGrant: {
+            type: 'ACCESS_CODE',
+            registrationAccessCode: '  ',
+          },
+        },
       }),
     )
     expect(screen.queryByRole('tab')).toBeNull()
@@ -612,11 +875,18 @@ describe('AuthDialog', () => {
           onOpenChange: () => undefined,
           mode: 'redirect',
           initialView: 'sign-up',
-          signUpProps: { registrationGrant: { type: 'ACCESS_CODE', registrationAccessCode: proof } },
+          signUpProps: {
+            registrationGrant: {
+              type: 'ACCESS_CODE',
+              registrationAccessCode: proof,
+            },
+          },
         }),
       ),
     )
-    await waitFor(() => expect(screen.getByRole('button', { name: /Sign up/ })).toBeTruthy())
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Sign up/ })).toBeTruthy(),
+    )
     fireEvent.click(screen.getByRole('button', { name: /Sign up/ }))
     expect(screen.getByRole('heading', { name: 'Create account' })).toBeTruthy()
     expect(document.documentElement.textContent).not.toContain(proof)
@@ -630,7 +900,12 @@ describe('AuthDialog', () => {
         onOpenChange: () => undefined,
         mode: 'redirect',
         initialView: 'sign-up',
-        signUpProps: { registrationGrant: { type: 'ORG_INVITATION', organizationInvitationToken: proof } },
+        signUpProps: {
+          registrationGrant: {
+            type: 'ORG_INVITATION',
+            organizationInvitationToken: proof,
+          },
+        },
       }),
     )
     expect(screen.queryByRole('tab')).toBeNull()

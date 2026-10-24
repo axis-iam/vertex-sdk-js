@@ -64,6 +64,10 @@ export function useBranding(intent: BrandingIntent = 'login'): UseBrandingResult
     setResult({ ...identity, branding: null, isLoading: true, error: null })
     void (async () => {
       try {
+        if (client.mode === 'server_session') {
+          if (active) setResult({ ...identity, branding: null, isLoading: false, error: null })
+          return
+        }
         const config = await client.discover()
         if (!active) return
         const url = new URL(`api/v1/apps/${encodeURIComponent(client.clientId)}/branding`, `${config.issuer.replace(/\/$/, '')}/`)

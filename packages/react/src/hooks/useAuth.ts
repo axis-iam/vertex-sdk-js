@@ -17,6 +17,7 @@ import { useIamContext } from '../provider/IamProvider'
 export function useAuth() {
   const {
     user,
+    sessionView,
     isLoaded,
     isAuthenticated,
     initializationError,
@@ -35,6 +36,7 @@ export function useAuth() {
   return {
     /** Current user (null if not authenticated) */
     user,
+    sessionView,
     /** SDK has finished initializing */
     isLoaded,
     /** Whether user is authenticated */

@@ -1,12 +1,10 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import type { IamUser } from '../../core/types'
 import {
   type CredentialMethod,
   getAvailableCredentialMethods,
   initialSignInFlowState,
   nextMethodForIdentifier,
-  normalizeDirectAuthTokenResponse,
-  storeTokensFromResponse,
   signInFlowReducer,
 } from './sign-in-flow'
 
@@ -16,7 +14,6 @@ const user: IamUser = {
   roles: [],
   permissions: [],
   isImpersonating: false,
-  raw: { sub: 'user-1' },
 }
 
 describe('signInFlowReducer', () => {
@@ -50,7 +47,7 @@ describe('signInFlowReducer', () => {
     expect(afterSms).toBe(emailState)
 
     const phoneState = signInFlowReducer(initialSignInFlowState, { type: 'continueIdentifier', value: '+8613800138000' })
-    const afterPassword = signInFlowReducer(phoneState, { type: 'selectMethod', method: 'password' })
+    const afterPassword = signInFlowReducer(phoneState, { type: 'selectMethod', method: 'magic_link' })
 
     expect(afterPassword).toBe(phoneState)
   })
@@ -104,8 +101,8 @@ describe('credential method helpers', () => {
 
     expect(nextMethodForIdentifier('email', methods, 'email_otp')).toBe('email_otp')
     expect(nextMethodForIdentifier('email', methods, 'sms')).toBe('password')
-    expect(nextMethodForIdentifier('phone', methods, 'password')).toBe('sms')
-    expect(nextMethodForIdentifier('phone', ['password'], null)).toBeNull()
+    expect(nextMethodForIdentifier('phone', methods, 'password')).toBe('password')
+    expect(nextMethodForIdentifier('phone', ['password'], null)).toBe('password')
   })
 
   it('filters credential methods by identifier kind from auth-methods discovery', () => {
@@ -118,7 +115,6 @@ describe('credential method helpers', () => {
       socialLoginEnabled: false,
       signupEnabled: true,
       selfRegistrationEnabled: true,
-      emailVerificationMode: 'OFF',
       idpAutoProvisioningEnabled: false,
       loginInitiationUri: null,
       postVerificationRedirectUri: null,
@@ -133,54 +129,6 @@ describe('credential method helpers', () => {
     } as const
 
     expect(getAvailableCredentialMethods(authMethods, 'email').map((method) => method.id)).toEqual(['password', 'email_otp', 'magic_link'])
-    expect(getAvailableCredentialMethods(authMethods, 'phone').map((method) => method.id)).toEqual(['sms'])
-  })
-})
-
-describe('normalizeDirectAuthTokenResponse', () => {
-  it('stores every Direct token response with DIRECT_AUTH provenance', () => {
-    const store = vi.fn()
-    const setPermissions = vi.fn()
-    storeTokensFromResponse({ tokenManager: { store }, setPermissions } as never, {
-      access_token: 'access-token', refresh_token: 'refresh-token', token_type: 'Bearer', expires_in: 3600,
-    })
-    expect(store).toHaveBeenCalledWith(
-      expect.objectContaining({ refresh_token: 'refresh-token' }),
-      'DIRECT_AUTH',
-      'DIRECT_AUTH',
-    )
-  })
-
-  it('normalizes valid token responses and permissions', () => {
-    expect(normalizeDirectAuthTokenResponse({
-      access_token: 'access-token',
-      refresh_token: 'refresh-token',
-      id_token: 'id-token',
-      token_type: 'Bearer',
-      expires_in: 3600,
-      permissions: ['orders:read'],
-    })).toEqual({
-      tokens: {
-        access_token: 'access-token',
-        refresh_token: 'refresh-token',
-        id_token: 'id-token',
-        token_type: 'Bearer',
-        expires_in: 3600,
-      },
-      permissions: ['orders:read'],
-    })
-  })
-
-  it('rejects invalid token responses', () => {
-    expect(() => normalizeDirectAuthTokenResponse({ access_token: 'access-token' })).toThrow('Invalid Direct Auth token response')
-    expect(() => normalizeDirectAuthTokenResponse(null)).toThrow('Invalid Direct Auth token response')
-  })
-
-  it('rejects MFA challenges because embedded MFA is unsupported', () => {
-    expect(() => normalizeDirectAuthTokenResponse({
-      mfa_required: true,
-      mfa_token: 'mfa-token',
-      methods: ['totp'],
-    })).toThrow('A token response cannot contain an MFA challenge')
+    expect(getAvailableCredentialMethods(authMethods, 'phone').map((method) => method.id)).toEqual(['sms', 'password'])
   })
 })

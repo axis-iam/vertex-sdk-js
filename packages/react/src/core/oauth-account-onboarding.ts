@@ -10,7 +10,6 @@ import type {
   AccountSession,
   AccountUpdateProfileInput,
   ChangePasswordInput,
-  LogoutAccountOptions,
   OIDCConfiguration,
   OrganizationSwitchResponse,
   PublicOrganizationInvitationAcceptResponse,
@@ -89,17 +88,6 @@ export class OAuthAccountOnboardingClient {
     const config = await this.discover()
     await requestJson<void>(`${config.issuer}/api/v1/auth/sessions`, {
       method: 'DELETE',
-      bearerToken: token,
-    })
-  }
-
-  async logoutAccount(options: LogoutAccountOptions = {}): Promise<void> {
-    const token = this.requireCurrentAccessToken()
-    const config = await this.discover()
-    const json = options.refreshToken ? { refresh_token: options.refreshToken } : undefined
-    await requestJson<void>(`${config.issuer}/api/v1/auth/logout`, {
-      method: 'POST',
-      json,
       bearerToken: token,
     })
   }

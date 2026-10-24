@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { AccountSession, LogoutAccountOptions } from '../core/types'
+import type { AccountSession } from '../core/types'
 import { IamApiError } from '../core/types'
 import { useIamContext } from '../provider/IamProvider'
 
@@ -17,7 +17,7 @@ export interface UseAccountSessionsResult {
   refetch: () => Promise<AccountSession[]>
   revokeSession: (sessionId: string) => Promise<void>
   revokeOtherSessions: () => Promise<void>
-  logoutAccount: (options?: LogoutAccountOptions) => Promise<void>
+  logoutAccount: () => Promise<void>
 }
 
 export function useAccountSessions(options: UseAccountSessionsOptions = {}): UseAccountSessionsResult {
@@ -105,7 +105,7 @@ export function useAccountSessions(options: UseAccountSessionsOptions = {}): Use
     }
   }, [client, requireAuthenticated])
 
-  const logoutAccount = useCallback(async (logoutOptions?: LogoutAccountOptions) => {
+  const logoutAccount = useCallback(async () => {
     const authError = requireAuthenticated()
     if (authError) {
       setError(authError)
@@ -115,7 +115,7 @@ export function useAccountSessions(options: UseAccountSessionsOptions = {}): Use
     setIsLoggingOut(true)
     setError(null)
     try {
-      await client.logoutAccount(logoutOptions)
+      await client.logoutAccount()
     } catch (err) {
       const next = err instanceof Error ? err : new Error('Account logout could not be completed')
       setError(next)

@@ -123,7 +123,7 @@ window.entries = {
     return true
   },
   async customPassword(identifier, password) {
-    flow.actions.continueWithIdentifier(identifier)
+    flow.actions.continueWithIdentifier({ kind: 'EMAIL', value: identifier })
     await flow.actions.submitPassword(password)
     await wait(25)
     return {
@@ -135,7 +135,7 @@ window.entries = {
     }
   },
   async customIdentify(identifier) {
-    flow.actions.continueWithIdentifier(identifier)
+    flow.actions.continueWithIdentifier({ kind: 'EMAIL', value: identifier })
     await wait(25)
   },
   async action(name, ...args) {
@@ -181,14 +181,14 @@ window.entries = {
     return this.state()
   },
   async domSignup(email, password) {
-    await until(() => document.querySelector('input[name="email"]'), 'signup form')
-    fill('input[name="email"]', email)
+    await until(() => document.querySelector('input[name="identifier"]'), 'signup form')
+    fill('input[name="identifier"]', email)
     fill('input[name="new-password"]', password)
     fill('input[name="confirm-password"]', password)
-    submit('input[name="email"]')
+    submit('input[name="identifier"]')
     await until(
       () => document.querySelector('[role="status"]') || document.querySelector('[role="alert"]'),
-      'signup completion',
+      'signup operation created',
     )
     check(!document.querySelector('[role="alert"]'), 'signup rejected')
     check(!auth.isAuthenticated, 'signup authenticated unexpectedly')

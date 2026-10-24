@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { TokenManager } from './token-manager'
 import { IamApiError, IamConfigurationError, IamNetworkError, IamTokenRefreshError } from './types'
-import type { TokenSet, IamUser } from './types'
+import { makeTestUser } from '../test-utils'
+import type { AuthorizationState } from './token-manager'
+import type { TokenSet } from './types'
 
 // Helper: create a minimal JWT with given payload
 function makeJwt(payload: Record<string, unknown>): string {
@@ -25,6 +27,7 @@ function makeTokenSet(overrides: Partial<TokenSet> = {}): TokenSet {
 
 function storeTokens(manager: TokenManager, tokens: TokenSet): void {
   manager.store(tokens, 'OAUTH_AUTHORIZATION_CODE', tokens.refresh_token ? 'OAUTH_TOKEN_ENDPOINT' : null)
+  manager.applyViews({ user: makeTestUser(), roles: [], permissions: [] })
 }
 
 describe('TokenManager', () => {
@@ -34,6 +37,7 @@ describe('TokenManager', () => {
     sessionStorage.clear()
     vi.useFakeTimers()
     tm = new TokenManager()
+    tm.setPermissionsRefreshHandler(async () => ({ user: makeTestUser(), roles: [], permissions: [] }))
   })
 
   afterEach(() => {
@@ -53,16 +57,9 @@ describe('TokenManager', () => {
     it('requires explicit refresh provenance only when a refresh token exists', () => {
       expect(() => tm.store(makeTokenSet(), 'OAUTH_AUTHORIZATION_CODE', null)).toThrow('explicit refresh provenance')
       const tokens = makeTokenSet({ refresh_token: undefined })
-      expect(() => tm.store(tokens, 'DIRECT_AUTH', 'DIRECT_AUTH')).toThrow('requires a refresh token')
+      expect(() => tm.store(tokens, 'OAUTH_AUTHORIZATION_CODE', 'OAUTH_TOKEN_ENDPOINT')).toThrow('requires a refresh token')
       expect(() => tm.store(tokens, 'OAUTH_AUTHORIZATION_CODE', null)).not.toThrow()
-      expect(() => tm.store(tokens, 'DIRECT_AUTH', null)).not.toThrow()
-    })
-
-    it('rejects contradictory authentication and refresh provenance', () => {
-      expect(() => tm.store(makeTokenSet(), 'DIRECT_AUTH', 'OAUTH_TOKEN_ENDPOINT'))
-        .toThrow('Direct Auth tokens cannot use OAuth refresh provenance')
-      expect(() => tm.store(makeTokenSet(), 'OAUTH_AUTHORIZATION_CODE', 'DIRECT_AUTH'))
-        .toThrow('OAuth tokens cannot use Direct Auth refresh provenance')
+      expect(() => tm.store(tokens, 'OAUTH_AUTHORIZATION_CODE', null)).not.toThrow()
     })
 
     it('stores and retrieves access token', () => {
@@ -103,37 +100,20 @@ describe('TokenManager', () => {
     it('returns false with expired token', () => {
       const exp = Math.floor(Date.now() / 1000) - 60
       const tokens = makeTokenSet({
-        access_token: makeJwt({ sub: 'u', exp }),
+        access_token: makeJwt({ sub: 'u', exp }), expires_in: 1,
       })
       storeTokens(tm, tokens)
+      vi.advanceTimersByTime(1001)
       expect(tm.isAuthenticated()).toBe(false)
     })
   })
 
-  describe('decodePayload', () => {
-    it('decodes access token payload', () => {
-      storeTokens(tm, makeTokenSet())
-      const payload = tm.decodePayload()
-      expect(payload?.sub).toBe('user-1')
-      expect(payload?.email).toBe('a@b.com')
-    })
-
-    it('returns null when no tokens', () => {
-      expect(tm.decodePayload()).toBeNull()
-    })
-
-    it('returns null for malformed token', () => {
-      storeTokens(tm, makeTokenSet({ access_token: 'not-a-jwt' }))
-      expect(tm.decodePayload()).toBeNull()
-    })
-  })
-
   describe('getUser', () => {
-    it('extracts user from access token', () => {
+    it('loads user from the current-user API view', () => {
       storeTokens(tm, makeTokenSet())
       const user = tm.getUser()
       expect(user?.id).toBe('user-1')
-      expect(user?.email).toBe('a@b.com')
+      expect(user?.email).toBe('test@example.com')
       expect(user?.permissions).toEqual([])
     })
 
@@ -186,9 +166,9 @@ describe('TokenManager', () => {
       const handler = vi.fn()
       tm.setTokensChangedHandler(handler)
       storeTokens(tm, makeTokenSet())
-      expect(handler).toHaveBeenCalledTimes(1)
-      const user: IamUser = handler.mock.calls[0][0]
-      expect(user.id).toBe('user-1')
+      expect(handler).toHaveBeenCalledTimes(2)
+      expect(handler.mock.calls[0][0]).toBeNull()
+      expect(handler.mock.calls[1][0].id).toBe('user-1')
     })
 
     it('calls handler with null on clear', () => {
@@ -202,7 +182,7 @@ describe('TokenManager', () => {
   })
 
   describe('auto-refresh scheduling', () => {
-    it('does not refresh or clear an explicit Direct Auth session at zero delay for a 60-second token', async () => {
+    it('does not refresh or clear an explicit OAuth session at zero delay for a 60-second token', async () => {
       const direct = new TokenManager({ storage: 'sessionStorage' })
       const refreshHandler = vi.fn().mockRejectedValue(new Error('Direct refresh rejected'))
       direct.setRefreshHandler(refreshHandler)
@@ -210,8 +190,8 @@ describe('TokenManager', () => {
 
       direct.store(
         makeTokenSet({ access_token: makeJwt({ sub: 'u', exp }), expires_in: 60 }),
-        'DIRECT_AUTH',
-        'DIRECT_AUTH',
+        'OAUTH_AUTHORIZATION_CODE',
+        'OAUTH_AUTHORIZATION_CODE',
       )
 
       expect(sessionStorage.getItem('axis_iam_session')).not.toBeNull()
@@ -220,10 +200,10 @@ describe('TokenManager', () => {
 
       expect(refreshHandler).not.toHaveBeenCalled()
       expect(sessionStorage.getItem('axis_iam_session')).not.toBeNull()
-      expect(new TokenManager({ storage: 'sessionStorage' }).isAuthenticated()).toBe(true)
+      expect(new TokenManager({ storage: 'sessionStorage' }).isAuthenticated()).toBe(false)
     })
 
-    it('refreshes a 60-second Direct Auth session after 30 seconds and persists rotated authorization', async () => {
+    it('refreshes a 60-second OAuth session after 30 seconds and persists rotated authorization', async () => {
       const direct = new TokenManager({ storage: 'sessionStorage' })
       const exp = Math.floor(Date.now() / 1000) + 60
       const refreshed = makeTokenSet({
@@ -231,10 +211,10 @@ describe('TokenManager', () => {
         refresh_token: 'rotated-refresh-token',
       })
       const refreshHandler = vi.fn().mockResolvedValue(refreshed)
-      const authorizationHandler = vi.fn().mockResolvedValue({ roles: ['member'], permissions: ['orders:read'] })
+      const authorizationHandler = vi.fn().mockResolvedValue({ user: makeTestUser(), roles: ['member'], permissions: ['orders:read'] })
       direct.setRefreshHandler(refreshHandler)
       direct.setPermissionsRefreshHandler(authorizationHandler)
-      direct.store(makeTokenSet({ access_token: makeJwt({ sub: 'u', exp }), expires_in: 60 }), 'DIRECT_AUTH', 'DIRECT_AUTH')
+      direct.store(makeTokenSet({ access_token: makeJwt({ sub: 'u', exp }), expires_in: 60 }), 'OAUTH_AUTHORIZATION_CODE', 'OAUTH_TOKEN_ENDPOINT')
 
       await vi.advanceTimersByTimeAsync(29_999)
       expect(refreshHandler).not.toHaveBeenCalled()
@@ -245,24 +225,24 @@ describe('TokenManager', () => {
       expect(refreshHandler).toHaveBeenCalledTimes(1)
       expect(authorizationHandler).toHaveBeenCalledTimes(1)
       expect(direct.getRefreshToken()).toBe('rotated-refresh-token')
-      expect(direct.getAuthenticationProvenance()).toBe('DIRECT_AUTH')
-      expect(direct.getRefreshProvenance()).toBe('DIRECT_AUTH')
+      expect(direct.getAuthenticationProvenance()).toBe('OAUTH_AUTHORIZATION_CODE')
+      expect(direct.getRefreshProvenance()).toBe('OAUTH_TOKEN_ENDPOINT')
       expect(direct.getRoles()).toEqual(['member'])
       expect(direct.getPermissions()).toEqual(['orders:read'])
       expect(JSON.parse(sessionStorage.getItem('axis_iam_session')!)).toMatchObject({
         tokens: { refresh_token: 'rotated-refresh-token' },
-        authenticationProvenance: 'DIRECT_AUTH',
-        refreshProvenance: 'DIRECT_AUTH',
-        permissions: ['orders:read'],
+        authenticationProvenance: 'OAUTH_AUTHORIZATION_CODE',
+        refreshProvenance: 'OAUTH_TOKEN_ENDPOINT',
+        owner: { id: 'user-1', sessionId: 's1' },
       })
     })
 
-    it('clears a 60-second Direct Auth session only after its deferred refresh fails', async () => {
+    it('clears a 60-second OAuth session only after its deferred refresh fails', async () => {
       const direct = new TokenManager({ storage: 'sessionStorage' })
       const refreshHandler = vi.fn().mockRejectedValue(new Error('Direct refresh rejected'))
       direct.setRefreshHandler(refreshHandler)
       const exp = Math.floor(Date.now() / 1000) + 60
-      direct.store(makeTokenSet({ access_token: makeJwt({ sub: 'u', exp }), expires_in: 60 }), 'DIRECT_AUTH', 'DIRECT_AUTH')
+      direct.store(makeTokenSet({ access_token: makeJwt({ sub: 'u', exp }), expires_in: 60 }), 'OAUTH_AUTHORIZATION_CODE', 'OAUTH_TOKEN_ENDPOINT')
 
       await vi.advanceTimersByTimeAsync(29_999)
       expect(refreshHandler).not.toHaveBeenCalled()
@@ -276,7 +256,7 @@ describe('TokenManager', () => {
 
     it.each([
       ['OAuth', 'OAUTH_AUTHORIZATION_CODE', 'OAUTH_TOKEN_ENDPOINT'],
-      ['Direct Auth', 'DIRECT_AUTH', 'DIRECT_AUTH'],
+      ['OAuth', 'OAUTH_AUTHORIZATION_CODE', 'OAUTH_TOKEN_ENDPOINT'],
     ] as const)('retains the 60-second lead for 15-minute %s tokens', async (
       _name,
       authenticationProvenance,
@@ -324,7 +304,7 @@ describe('TokenManager', () => {
       expect(tm.isAuthenticated()).toBe(false)
     })
 
-    it('keeps authentication but preserves an observable error when permission refresh fails', async () => {
+    it('denies authentication and preserves an observable error when view refresh fails', async () => {
       const refreshHandler = vi.fn().mockResolvedValue(makeTokenSet({ refresh_token: 'rotated' }))
       const permissionHandler = vi.fn().mockRejectedValue(new Error('permission service unavailable'))
       tm.setRefreshHandler(refreshHandler)
@@ -333,7 +313,7 @@ describe('TokenManager', () => {
       storeTokens(tm, makeTokenSet({ access_token: makeJwt({ sub: 'u', exp }), expires_in: 120 }))
 
       await vi.advanceTimersByTimeAsync(60_000)
-      expect(tm.isAuthenticated()).toBe(true)
+      expect(tm.isAuthenticated()).toBe(false)
       expect(tm.getPermissions()).toEqual([])
       expect(tm.getLastPermissionError()?.message).toBe('permission service unavailable')
     })
@@ -366,14 +346,13 @@ describe('TokenManager', () => {
     it('schedules a restored session after the refresh handler is registered', async () => {
       const exp = Math.floor(Date.now() / 1000) + 120
       sessionStorage.setItem('axis_iam_session', JSON.stringify({
-        version: 4, expiresAt: Date.now() + 120_000,
+        version: 6, owner: null, expiresAt: Date.now() + 120_000,
         tokens: makeTokenSet({ access_token: makeJwt({ sub: 'u', exp }), expires_in: 120 }),
-        roles: ['current-role'],
-        permissions: ['orders:read'],
-        authenticationProvenance: 'DIRECT_AUTH',
-        refreshProvenance: 'DIRECT_AUTH',
+        authenticationProvenance: 'OAUTH_AUTHORIZATION_CODE',
+        refreshProvenance: 'OAUTH_TOKEN_ENDPOINT',
       }))
       const restored = new TokenManager({ storage: 'sessionStorage' })
+      restored.setPermissionsRefreshHandler(async () => ({user:makeTestUser(),roles:[],permissions:[]}))
       const refreshHandler = vi.fn().mockResolvedValue(makeTokenSet({ refresh_token: 'rotated' }))
       restored.setRefreshHandler(refreshHandler)
 
@@ -381,7 +360,7 @@ describe('TokenManager', () => {
 
       expect(refreshHandler).toHaveBeenCalledTimes(1)
       expect(restored.getRefreshToken()).toBe('rotated')
-      expect(restored.getRefreshProvenance()).toBe('DIRECT_AUTH')
+      expect(restored.getRefreshProvenance()).toBe('OAUTH_TOKEN_ENDPOINT')
     })
 
     it('atomically replaces roles and permissions after automatic refresh', async () => {
@@ -390,7 +369,7 @@ describe('TokenManager', () => {
         access_token: makeJwt({ sub: 'u', roles: ['stale-refreshed-role'], exp: exp + 3600 }),
         refresh_token: 'rotated',
       }))
-      const authorizationHandler = vi.fn().mockResolvedValue({ roles: ['current-role'], permissions: ['orders:write'] })
+      const authorizationHandler = vi.fn().mockResolvedValue({ user: makeTestUser(), roles: ['current-role'], permissions: ['orders:write'] })
       tm.setRefreshHandler(refreshHandler)
       tm.setPermissionsRefreshHandler(authorizationHandler)
       storeTokens(tm, makeTokenSet({ access_token: makeJwt({ sub: 'u', roles: ['old-role'], exp }), expires_in: 120 }))
@@ -416,7 +395,7 @@ describe('TokenManager', () => {
     })
 
     it('notifies expiry and denies authority while permissions are pending', async () => {
-      let complete!: (state: { roles: string[]; permissions: string[] }) => void
+      let complete!: (state: AuthorizationState) => void
       tm.setRefreshHandler(async () => makeTokenSet({ refresh_token: 'rotated', expires_in: 1 }))
       tm.setPermissionsRefreshHandler(() => new Promise(resolve => { complete = resolve }))
       storeTokens(tm, makeTokenSet())
@@ -426,8 +405,8 @@ describe('TokenManager', () => {
       await vi.advanceTimersByTimeAsync(1000)
       expect(changed).toHaveBeenLastCalledWith(null)
       expect(tm.getPermissions()).toEqual([])
-      complete({ roles: ['member'], permissions: ['orders:read'] })
-      await pending
+      complete({ user: makeTestUser(), roles: ['member'], permissions: ['orders:read'] })
+      await expect(pending).rejects.toMatchObject({ code: 'SESSION_INVALIDATED' })
       expect(tm.getPermissions()).toEqual([])
       tm.dispose()
     })
@@ -490,7 +469,7 @@ describe('TokenManager', () => {
       let resolve!: (tokens: TokenSet) => void
       const handler = vi.fn(() => new Promise<TokenSet>(done => { resolve = done }))
       tm.setRefreshHandler(handler)
-      tm.setPermissionsRefreshHandler(async () => ({ roles: ['member'], permissions: ['orders:read'] }))
+      tm.setPermissionsRefreshHandler(async () => ({ user: makeTestUser(), roles: ['member'], permissions: ['orders:read'] }))
       storeTokens(tm, makeTokenSet({ expires_in: 60 }))
       await vi.advanceTimersByTimeAsync(30_000)
       const first = tm.refresh()
@@ -519,7 +498,7 @@ describe('TokenManager', () => {
     })
 
     it('does not apply old permissions to a new login', async () => {
-      let resolve!: (state: { roles: string[]; permissions: string[] }) => void
+      let resolve!: (state: AuthorizationState) => void
       tm.setRefreshHandler(async () => makeTokenSet({ refresh_token: 'rotated' }))
       tm.setPermissionsRefreshHandler(() => new Promise(done => { resolve = done }))
       storeTokens(tm, makeTokenSet())
@@ -528,7 +507,7 @@ describe('TokenManager', () => {
       await vi.advanceTimersByTimeAsync(0)
       storeTokens(tm, makeTokenSet({ refresh_token: 'new-login' }))
       tm.setAuthorization(['new-role'], ['new:permission'])
-      resolve({ roles: ['old-role'], permissions: ['old:permission'] })
+      resolve({ user: makeTestUser(), roles: ['old-role'], permissions: ['old:permission'] })
       await rejected
       expect(tm.getRoles()).toEqual(['new-role'])
       expect(tm.getPermissions()).toEqual(['new:permission'])
@@ -589,6 +568,7 @@ describe('TokenManager', () => {
       await vi.advanceTimersByTimeAsync(90_000)
       const restored = new TokenManager({ storage: 'sessionStorage' })
       const handler = vi.fn(async () => makeTokenSet({ refresh_token: 'rotated' }))
+      restored.setPermissionsRefreshHandler(async () => ({user:makeTestUser(),roles:[],permissions:[]}))
       restored.setRefreshHandler(handler)
       await vi.advanceTimersByTimeAsync(14_999)
       expect(handler).not.toHaveBeenCalled()
@@ -662,14 +642,11 @@ describe('TokenManager', () => {
       expect(tm2.getPermissions()).toEqual(['orders:read'])
       expect(handler).not.toHaveBeenCalled()
 
-      expect(() => tm2.setAuthorization(['admin'], ['orders:write']))
-        .toThrow('Token session storage write failed')
-      expect(tm2.getRoles()).toEqual(['member'])
-      expect(tm2.getPermissions()).toEqual(['orders:read'])
-      expect(handler).not.toHaveBeenCalled()
+      // Authorization is a view in memory and is never written to token storage.
+      expect(JSON.parse(sessionStorage.getItem('axis_iam_session')!)).not.toHaveProperty('permissions')
     })
 
-    it('persists tokens and permissions to sessionStorage when explicitly enabled', () => {
+    it('persists tokens and owner but never authorization views when explicitly enabled', () => {
       const tm2 = new TokenManager({ storage: 'sessionStorage' })
       storeTokens(tm2, makeTokenSet())
       tm2.setPermissions(['orders:read'])
@@ -678,10 +655,8 @@ describe('TokenManager', () => {
       expect(stored).not.toBeNull()
       const parsed = JSON.parse(stored!)
       expect(parsed).toMatchObject({
-        version: 4, expiresAt: Date.now() + 3600_000,
+        version: 6, owner: { id: 'user-1', sessionId: 's1' }, expiresAt: Date.now() + 3600_000,
         tokens: { token_type: 'Bearer' },
-        roles: [],
-        permissions: ['orders:read'],
         authenticationProvenance: 'OAUTH_AUTHORIZATION_CODE',
         refreshProvenance: 'OAUTH_TOKEN_ENDPOINT',
       })
@@ -689,30 +664,29 @@ describe('TokenManager', () => {
       expect(sessionStorage.getItem('iam_permissions')).toBeNull()
     })
 
-    it('loads current roles and permissions from sessionStorage when explicitly enabled', () => {
+    it('restores tokens but requires fresh API views before authority', () => {
       const tokens = makeTokenSet()
       sessionStorage.setItem('axis_iam_session', JSON.stringify({
-        version: 4, expiresAt: Date.now() + 3600_000,
+        version: 6, owner: null, expiresAt: Date.now() + 3600_000,
         tokens,
-        roles: ['current-role'],
-        permissions: ['orders:read'],
-        authenticationProvenance: 'DIRECT_AUTH',
-        refreshProvenance: 'DIRECT_AUTH',
+        authenticationProvenance: 'OAUTH_AUTHORIZATION_CODE',
+        refreshProvenance: 'OAUTH_TOKEN_ENDPOINT',
       }))
       const tm2 = new TokenManager({ storage: 'sessionStorage' })
       expect(tm2.getAccessToken()).toBe(tokens.access_token)
-      expect(tm2.getRoles()).toEqual(['current-role'])
-      expect(tm2.getPermissions()).toEqual(['orders:read'])
-      expect(tm2.getRefreshProvenance()).toBe('DIRECT_AUTH')
+      expect(tm2.getRoles()).toEqual([])
+      expect(tm2.getPermissions()).toEqual([])
+      expect(tm2.isAuthenticated()).toBe(false)
+      expect(tm2.getRefreshProvenance()).toBe('OAUTH_TOKEN_ENDPOINT')
     })
 
     it.each([
       '{',
-      JSON.stringify({ version: 1, tokens: makeTokenSet(), permissions: [], refreshProvenance: 'DIRECT_AUTH' }),
-      JSON.stringify({ version: 2, tokens: makeTokenSet(), permissions: [], refreshProvenance: 'DIRECT_AUTH' }),
+      JSON.stringify({ version: 1, tokens: makeTokenSet(), permissions: [], refreshProvenance: 'OAUTH_TOKEN_ENDPOINT' }),
+      JSON.stringify({ version: 2, tokens: makeTokenSet(), permissions: [], refreshProvenance: 'OAUTH_TOKEN_ENDPOINT' }),
       JSON.stringify({ version: 2, tokens: makeTokenSet(), roles: [], permissions: [], refreshProvenance: null }),
-      JSON.stringify({ version: 4, expiresAt: Date.now() + 3600_000, tokens: makeTokenSet(), roles: [], permissions: [], authenticationProvenance: 'UNKNOWN', refreshProvenance: 'OAUTH_TOKEN_ENDPOINT' }),
-      JSON.stringify({ version: 4, expiresAt: Date.now() + 3600_000, tokens: makeTokenSet(), roles: [], permissions: [], authenticationProvenance: 'OAUTH_AUTHORIZATION_CODE', refreshProvenance: 'UNKNOWN' }),
+      JSON.stringify({ version: 6, owner: null, expiresAt: Date.now() + 3600_000, tokens: makeTokenSet(), roles: [], permissions: [], authenticationProvenance: 'UNKNOWN', refreshProvenance: 'OAUTH_TOKEN_ENDPOINT' }),
+      JSON.stringify({ version: 6, owner: null, expiresAt: Date.now() + 3600_000, tokens: makeTokenSet(), roles: [], permissions: [], authenticationProvenance: 'OAUTH_AUTHORIZATION_CODE', refreshProvenance: 'UNKNOWN' }),
     ])('rejects and clears malformed, unknown-version, or invalid-provenance sessions', raw => {
       sessionStorage.setItem('axis_iam_session', raw)
       let thrown: unknown

@@ -94,15 +94,15 @@ function jwt() {
 }
 
 sessionStorage.setItem('axis_iam_session', JSON.stringify({
-  version: 3,
-  roles: ['workspace-admin', 'billing-reviewer-with-a-deliberately-long-role-name'],
+  version: 6,
+  expiresAt: Date.now() + 3600_000,
+  owner: null,
   tokens: {
     access_token: jwt(),
     refresh_token: 'visual-smoke-refresh-value',
     token_type: 'Bearer',
     expires_in: 3600,
   },
-  permissions: ['orders:read'],
   authenticationProvenance: 'OAUTH_AUTHORIZATION_CODE',
   refreshProvenance: 'OAUTH_TOKEN_ENDPOINT',
 }))
@@ -130,18 +130,20 @@ window.fetch = async (input, init) => {
   if (url.includes('/api/v1/apps/visual-smoke-public-client/auth-methods')) {
     return response({
       clientId: 'visual-smoke-public-client', passwordLoginEnabled: true, emailMagicLinkEnabled: false, emailOtpEnabled: true, smsOtpEnabled: false,
-      socialLoginEnabled: true, signupEnabled: true, selfRegistrationEnabled: true, emailVerificationMode: 'OFF', idpAutoProvisioningEnabled: false,
+      socialLoginEnabled: true, signupEnabled: true, selfRegistrationEnabled: true, idpAutoProvisioningEnabled: false,
       loginInitiationUri: null, postVerificationRedirectUri: null,
       methods: [
         { type: 'PASSWORD', enabled: true, configured: true, availableForLogin: true, availableForSignup: true, unavailableReason: null },
         { type: 'EMAIL_OTP', enabled: true, configured: true, availableForLogin: true, availableForSignup: true, unavailableReason: null },
       ],
+      identifierMethods: [{ kind: 'EMAIL', methods: ['PASSWORD', 'EMAIL_OTP'] }, { kind: 'PHONE', methods: ['PASSWORD'] }, { kind: 'USERNAME', methods: ['PASSWORD'] }],
+      defaultIdentifierKind: 'EMAIL',
       idpProviders: [{ id: 'idp-github', providerType: 'GITHUB', displayName: 'GitHub', enabled: true, configured: true, clickable: true, availableForLogin: true, availableForSignup: true, unavailableReason: null, authorizationUrl: `${issuer}/provider` }],
       resend: { emailVerificationCooldownSeconds: 60 },
     })
   }
   if (url.includes('/api/v1/apps/visual-smoke-public-client/auth-policy')) {
-    return response({ passwordLoginEnabled: true, passwordlessEnabled: false, minPasswordLength: 8, requireUppercase: false, requireLowercase: false, requireDigit: false, requireSpecialChar: false, breachedPasswordCheck: false, totpEnabled: false, webauthnEnabled: false, mfaEnforcement: 'OPTIONAL', stepUpEnabled: false, stepUpTriggers: [], deviceTrustDays: 0, maxTrustedDevices: 0, maxLoginAttempts: 5, lockoutDurationMinutes: 15, progressiveLockout: false, emailVerificationMode: 'OFF', idpAutoProvisioningEnabled: false, signupMode: 'OPEN', allowedRegistrationGrantTypes: ['ACCESS_CODE'] })
+    return response({ passwordLoginEnabled: true, passwordlessEnabled: false, minPasswordLength: 8, requireUppercase: false, requireLowercase: false, requireDigit: false, requireSpecialChar: false, breachedPasswordCheck: false, totpEnabled: false, webauthnEnabled: false, mfaEnforcement: 'OPTIONAL', stepUpEnabled: false, stepUpTriggers: [], deviceTrustDays: 0, maxTrustedDevices: 0, maxLoginAttempts: 5, lockoutDurationMinutes: 15, progressiveLockout: false, idpAutoProvisioningEnabled: false, signupMode: 'OPEN', allowedRegistrationGrantTypes: ['ACCESS_CODE'] })
   }
   if (url.endsWith('/api/v1/auth/organization-invitations/visual-invitation')) {
     return response({
@@ -151,16 +153,22 @@ window.fetch = async (input, init) => {
     })
   }
   if (url.endsWith('/api/v1/auth/me/login-methods') && method !== 'DELETE') {
-    return response([{
-      methodId: 'credential:PASSWORD', kind: 'CREDENTIAL', credentialType: 'PASSWORD', identityProviderId: null,
-      providerKey: null, providerType: null, protocol: null, displayName: 'Password', linkedAt: null,
-      providerUserId: null, unlinkable: false,
-    }])
+    return response({ loginMethodVersion: 1, methods: [{
+      methodId: 'credential:PASSWORD', kind: 'PASSWORD', roles: ['FIRST_FACTOR'], status: 'AVAILABLE',
+      capabilities: {}, unavailableReasons: [],
+    }] })
+  }
+  if (url.endsWith('/api/v1/auth/me/identifiers')) {
+    return response({ loginMethodVersion: 1, items: [{
+      id: 'email-visual', kind: 'EMAIL', displayValue: activeProfile.email,
+      status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: true,
+    }] })
   }
   if (url.includes('/api/v1/auth/me/linkable-identity-providers')) {
     return response([{
       id: 'idp-github', providerType: 'GITHUB', protocol: 'OAUTH2', displayName: 'GitHub', enabled: true,
       linked: false, linkedAt: null, supportsAccountLinking: true,
+      canLink: true, canReauthenticate: false, unavailableReasons: [],
     }])
   }
 
@@ -207,6 +215,7 @@ window.fetch = async (input, init) => {
       roles: ['workspace-admin'],
     })
   }
+  if (url.endsWith('/api/v1/auth/me')) return response({ id: activeProfile.userId, email: activeProfile.email, username: null, status:'ACTIVE', emailVerified:true, metadata:{}, authenticationContext:{subjectType:'USER',applicationId:activeProfile.applicationId,clientId:'visual-smoke-public-client',sessionId:'session-current',workspaceId:null,workspaceSelectionRequired:true,organizationId:null,organizationSlug:null,organizationRole:null,authTime:null,authenticationMethods:[],assuranceLevel:null,impersonation:null} })
   if (url.includes('/api/v1/auth/me/permissions')) {
     return response({
       applicationId: activeProfile.applicationId,
@@ -248,7 +257,7 @@ function App() {
             <ResetPassword token="visual-reset-token" />
             <OrganizationInvitationAccept token="visual-invitation" />
           </IamProvider>
-          <ConnectedAccounts confirmDisconnect={false} redirect={false} />
+          <ConnectedAccounts redirectUri="/callback" />
         </main>
       </IamProvider>
     )

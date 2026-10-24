@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { useAuthFlow } from '@axis-iam/vertex-react'
 import type { AuthFlowState, UseAuthFlowOptions } from '@axis-iam/vertex-react'
 import { SessionInvalidatedError } from '@axis-iam/vertex'
+import type { LoginIdentifier } from '@axis-iam/vertex'
 
-/** Render inside IamProvider. Direct Auth is an explicit application choice. */
+/** Render inside IamProvider. Primary authentication uses a controlled transaction. */
 export function CustomAuth(options: UseAuthFlowOptions) {
   const { state, actions } = useAuthFlow(options)
   const mounted = useRef(true)
@@ -16,16 +17,27 @@ export function CustomAuth(options: UseAuthFlowOptions) {
     }
   }, [])
   const [identifier, setIdentifier] = useState('')
+  const [selectedKind, setSelectedKind] = useState<LoginIdentifier['kind'] | null>(null)
+  const [alternativesOpen, setAlternativesOpen] = useState(false)
+  const identifierInput = useRef<HTMLInputElement>(null)
+  const alternativesTrigger = useRef<HTMLButtonElement>(null)
+  const kinds = state.capabilities?.identifierMethods ?? []
+  const kind = selectedKind && kinds.some(entry => entry.kind === selectedKind)
+    ? selectedKind : state.capabilities?.defaultIdentifierKind ?? null
   const [secret, setSecret] = useState('')
   const [confirm, setConfirm] = useState('')
+  const [mfaMethod, setMfaMethod] = useState<'TOTP' | 'RECOVERY_CODE'>('TOTP')
+  const magicCallback = typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.hash.slice(1)).get('kind') === 'AUTH_PROOF'
   // Changing the step remounts the secret input and clears the host-owned value.
   const [revision, setRevision] = useState(0)
-  const leave = (action: () => void) => {
+  const leave = (action: () => void | Promise<void>) => {
     attempt.current++
     setRevision((value) => value + 1)
     setSecret('')
     setConfirm('')
-    action()
+    const result = action()
+    if (result) consume(result)
   }
   const consume = (promise: Promise<unknown>) => {
     setSecret('')
@@ -36,28 +48,32 @@ export function CustomAuth(options: UseAuthFlowOptions) {
     })
   }
   if (state.step === 'loading') return <p role="status">Loading authentication options…</p>
-  if (state.step === 'unavailable') return <p role="status">Authentication is unavailable.</p>
+  if (state.step === 'unavailable') return <section><p role="status">Authentication is unavailable.</p><button onClick={() => consume(actions.retryOptions())}>Retry</button></section>
   const submit = () => {
-    if (state.step === 'identifier') leave(() => actions.continueWithIdentifier(identifier))
+    if (state.step === 'identifier' && kind) leave(() => actions.continueWithIdentifier({ kind, value: identifier }))
     else if (state.step === 'method' && state.method === 'password') consume(actions.submitPassword(secret))
     else if (state.step === 'method' && state.codeSent) consume(actions.verifyCode(secret))
-    else if (state.step === 'mfa') consume(actions.verifyMfa(secret))
+    else if (state.step === 'mfa') consume(actions.verifyMfa(secret,mfaMethod))
     else if (state.step === 'sign-up' && secret === confirm)
-      consume(actions.signUp({ email: identifier, password: secret }))
+      consume(actions.signUp({ identifier: { kind: 'EMAIL', value: identifier }, password: secret }))
   }
   return (
     <section aria-label="Custom authentication">
       <h2>{state.intent === 'sign-up' ? 'Create account' : 'Sign in'}</h2>
+      {state.step==='identifier' && typeof window!=='undefined' && (new URLSearchParams(window.location.search).has('kind') || new URLSearchParams(window.location.search).has('code')) && <button onClick={()=>consume(actions.resumeProviderCallback(window.location.href))}>Continue provider sign-in</button>}
+      {state.completionPending && <button onClick={() => consume(actions.retryCompletion())}>Retry completion</button>}
       <form
         onSubmit={(event) => {
           event.preventDefault()
           submit()
         }}
       >
-        {(state.step === 'identifier' || state.step === 'sign-up') && (
+        {((state.step === 'identifier' && kind) || state.step === 'sign-up') && (
           <label>
-            Email or phone
+            {state.step === 'sign-up' || kind === 'EMAIL' ? 'Email' : kind === 'PHONE' ? 'Phone number' : 'Username'}
             <input
+              ref={identifierInput}
+              type={state.step === 'sign-up' || kind === 'EMAIL' ? 'email' : kind === 'PHONE' ? 'tel' : 'text'}
               autoComplete="username"
               value={identifier}
               onChange={(event) => setIdentifier(event.target.value)}
@@ -65,16 +81,27 @@ export function CustomAuth(options: UseAuthFlowOptions) {
             />
           </label>
         )}
+        {state.step === 'mfa' && (
+          <select aria-label="MFA method" value={mfaMethod} onChange={event=>{
+            if(event.target.value==='TOTP'||event.target.value==='RECOVERY_CODE'){
+              setMfaMethod(event.target.value)
+              setSecret('')
+            }
+          }}>
+            <option value="TOTP">Authenticator</option>
+            <option value="RECOVERY_CODE">Recovery code</option>
+          </select>
+        )}
         {needsSecret(state) && (
           <label key={`${state.step}:${revision}`}>
             {state.step === 'mfa'
-              ? 'Authenticator code'
+              ? mfaMethod==='TOTP'?'Authenticator code':'Recovery code'
               : state.step === 'method' && state.method !== 'password'
                 ? 'Verification code'
                 : 'Password'}
             <input
               type={
-                state.step === 'sign-up' || (state.step === 'method' && state.method === 'password')
+                state.step === 'sign-up' || (state.step === 'mfa' && mfaMethod==='RECOVERY_CODE') || (state.step === 'method' && state.method === 'password')
                   ? 'password'
                   : 'text'
               }
@@ -135,26 +162,51 @@ export function CustomAuth(options: UseAuthFlowOptions) {
         {state.step === 'method' && state.method === 'magic_link' && (
           <button
             type="button"
-            disabled={state.pending !== null || state.retryAfterSeconds > 0}
-            onClick={() => consume(actions.sendMagicLink())}
+            disabled={state.pending !== null || (!magicCallback && state.retryAfterSeconds > 0)}
+            onClick={() => consume(magicCallback ? actions.completeMagicLink(window.location.href) : actions.sendMagicLink())}
           >
-            Send sign-in link
+            {magicCallback?'Complete sign-in link':'Send sign-in link'}
           </button>
         )}
-        {(state.step === 'identifier' || needsSecret(state)) && (
+        {((state.step === 'identifier' && kind) || needsSecret(state)) && (
           <button disabled={state.pending !== null || (state.step === 'sign-up' && secret !== confirm)}>
             {state.pending ? 'Working…' : 'Continue'}
           </button>
         )}
       </form>
+      {state.step === 'identifier' && kind && kinds.length > 1 && <>
+        <button ref={alternativesTrigger} aria-expanded={alternativesOpen} onClick={() => setAlternativesOpen(open => !open)}>
+          Use another sign-in method
+        </button>
+        {alternativesOpen && <div onKeyDown={event => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            setAlternativesOpen(false)
+            alternativesTrigger.current?.focus()
+          }
+        }}>
+          {kinds.filter(entry => entry.kind !== kind).map(entry => <button key={entry.kind} onClick={() => {
+            setSelectedKind(entry.kind)
+            setIdentifier('')
+            setSecret('')
+            setConfirm('')
+            setAlternativesOpen(false)
+            identifierInput.current?.focus()
+          }}>
+            Sign in with {entry.kind === 'EMAIL' ? 'email' : entry.kind === 'PHONE' ? 'phone number' : 'username'}
+          </button>)}
+        </div>}
+      </>}
       {state.step === 'verification' && (
         <p role="status">
-          Account created.{' '}
-          {state.result.verificationMode === 'REQUIRED'
-            ? 'Verify your email before signing in.'
-            : 'You can now sign in.'}
+          {state.registration.status === 'COMPLETED' ? 'Registration completed. Sign in to continue.' : 'Verify your email to create your account.'}
         </p>
       )}
+      {state.step === 'verification' && state.registration.status === 'PENDING_VERIFICATION' && <>
+        <label>Registration code<input value={secret} onChange={e => setSecret(e.target.value)} autoComplete="one-time-code" /></label>
+        <button onClick={() => consume(actions.completeRegistration(secret))}>Complete registration</button>
+        <button onClick={() => consume(actions.cancelRegistration())}>Cancel registration</button>
+      </>}
       {state.verificationEmail && (
         <button
           disabled={state.pending !== null || state.retryAfterSeconds > 0}

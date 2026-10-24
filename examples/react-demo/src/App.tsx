@@ -8,7 +8,6 @@ import {
   PermissionGate,
   useIdentityProviders,
   useProviderLogin,
-  useAccountLinkCallback,
 } from '@axis-iam/vertex-react'
 import { hasPermission } from '@axis-iam/vertex'
 import { useEffect, useRef, useState } from 'react'
@@ -183,28 +182,9 @@ function CustomProviderSignIn() {
 }
 
 function AccountLinkCallbackView() {
-  const { status, error, result } = useAccountLinkCallback({
-    onSuccess: () => {
-      window.setTimeout(() => {
-        window.location.assign('/')
-      }, 600)
-    },
-  })
-
-  if (status === 'success') {
-    return <p>Connected {result?.method.displayName ?? 'account'}.</p>
-  }
-
-  if (status === 'error') {
-    return <p role="alert">{errorMessage(error ?? new Error('Account linking could not be completed.'))}</p>
-  }
-
-  return <p>Completing account connection...</p>
+  return <p>Provider confirmation returned. Close this window and refresh the operation in Account Center.</p>
 }
 
-// ---------------------------------------------------------------------------
-// 2. Inner app — rendered inside IamProvider
-// ---------------------------------------------------------------------------
 function Dashboard() {
   const { isAuthenticated, isLoaded, user, logout, handleRedirectCallback, getAccessToken } = useAuth()
   const canCreatePost = usePermission(Permissions.POSTS_CREATE)

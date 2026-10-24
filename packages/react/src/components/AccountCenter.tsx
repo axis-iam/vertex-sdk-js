@@ -1,3 +1,5 @@
+import { ConnectedAccounts } from './ConnectedAccounts'
+import { useIdentityOperations } from '../hooks/useIdentityOperations'
 import { useEffect, useId, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent } from 'react'
 import { AccountPermissionsPanel } from './AccountPermissionsPanel'
@@ -14,10 +16,11 @@ import type { Appearance } from './styles'
 import { mergeAppearances } from './styles'
 import { useIamUi } from '../provider/IamUiProvider'
 
-export type AccountCenterSection = 'profile' | 'password' | 'sessions' | 'permissions'
+export type AccountCenterSection = 'profile' | 'methods' | 'password' | 'sessions' | 'permissions'
 export type AccountCenterLabels = Partial<Record<AccountCenterSection | 'title' | 'close' | 'menu' | 'back', string>>
 
 export interface AccountCenterProps {
+  identityRedirectUri?: string
   open: boolean
   onOpenChange: (open: boolean) => void
   initialSection?: AccountCenterSection
@@ -35,10 +38,16 @@ export interface AccountCenterProps {
   permissionsProps?: Omit<AccountPermissionsPanelProps, 'appearance' | 'colorScheme' | 'darkAppearance' | 'localization' | 'organizationId'>
 }
 
-const sections: AccountCenterSection[] = ['profile', 'password', 'sessions', 'permissions']
+const sections: AccountCenterSection[] = ['profile', 'methods', 'password', 'sessions', 'permissions']
 export function AccountCenter(props: AccountCenterProps) {
   const { open, onOpenChange, initialSection = 'profile', organizationId = null, appearance, colorScheme, darkAppearance, localization, className, style, labels, profileProps, passwordProps, sessionsProps, permissionsProps } = props
   const ui = useIamUi()
+  const operations = useIdentityOperations()
+  const requestClose = async () => {
+    if (operations.state.pending || operations.state.uncertainCreate) return
+    operations.actions.cancelProviderWindow()
+    onOpenChange(false)
+  }
   const effectiveAppearance = mergeAppearances(ui.appearance, appearance)
   const effectiveColorScheme = colorScheme ?? ui.colorScheme
   const effectiveDarkAppearance = mergeAppearances(ui.darkAppearance, darkAppearance)
@@ -65,11 +74,12 @@ export function AccountCenter(props: AccountCenterProps) {
   const embedded = (value?: string) => ['axis-ac-e', value].filter(Boolean).join(' ')
   const shared = { appearance: effectiveAppearance, colorScheme: effectiveColorScheme, darkAppearance: effectiveDarkAppearance, localization: l }
   const panel = section === 'profile' ? <AccountProfilePanel {...profileProps} {...shared} className={embedded(profileProps?.className)} />
+    : section === 'methods' ? <ConnectedAccounts embedded appearance={effectiveAppearance} colorScheme={effectiveColorScheme} darkAppearance={effectiveDarkAppearance} redirectUri={props.identityRedirectUri} />
     : section === 'password' ? <PasswordChangeForm {...passwordProps} {...shared} className={embedded(passwordProps?.className)} />
       : section === 'sessions' ? <AccountSessionsPanel {...sessionsProps} {...shared} className={embedded(sessionsProps?.className)} />
         : <AccountPermissionsPanel {...permissionsProps} {...shared} className={embedded(permissionsProps?.className)} organizationId={organizationId} />
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'Escape') { event.preventDefault(); onOpenChange(false); return }
+    if (event.key === 'Escape') { event.preventDefault(); void requestClose(); return }
     if (event.key !== 'Tab') return
     const items = Array.from(dialog.current?.querySelectorAll<HTMLElement>('button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])') ?? []).filter((item) => !item.hasAttribute('disabled') && item.offsetParent !== null)
     const first = items[0]; const last = items[items.length - 1]
@@ -78,13 +88,13 @@ export function AccountCenter(props: AccountCenterProps) {
     if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
   }
 
-  return <div className="axis-ac-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onOpenChange(false) }}>
+  return <div className="axis-ac-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) void requestClose() }}>
     <div ref={dialog} className={['axis-ac-dialog', menu && 'axis-ac-menu', className].filter(Boolean).join(' ')} style={{
       ...accountCenterVariables(a), colorScheme: resolvedColorScheme, ...style,
     } as CSSProperties} data-color-scheme={resolvedColorScheme} role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={onKeyDown}>
       <style>{css}</style>
-      <header className="axis-ac-head"><button className="axis-ac-back" type="button" onClick={() => setMenu(true)}>{l.back}</button><h2 id={titleId}>{l.title}</h2><button ref={close} className="axis-ac-close" type="button" aria-label={l.close} onClick={() => onOpenChange(false)}>x</button></header>
-      <div className="axis-ac-layout"><nav className="axis-ac-nav" aria-label={l.sectionsAria}><span>{l.menu}</span>{sections.map((item) => <button key={item} type="button" aria-current={section === item ? 'page' : undefined} onClick={() => changeSection(item)}>{l[`${item}Section`]}</button>)}</nav><main className="axis-ac-content" aria-live="polite">{panel}</main></div>
+      <header className="axis-ac-head"><button className="axis-ac-back" type="button" onClick={() => setMenu(true)}>{l.back}</button><h2 id={titleId}>{l.title}</h2><button ref={close} className="axis-ac-close" type="button" aria-label={l.close} onClick={() => void requestClose()}>x</button></header>
+      <div className="axis-ac-layout"><nav className="axis-ac-nav" aria-label={l.sectionsAria}><span>{l.menu}</span>{sections.map((item) => <button key={item} type="button" aria-current={section === item ? 'page' : undefined} onClick={() => changeSection(item)}>{item === 'methods' ? ui.localization.identity.title : l[`${item}Section`]}</button>)}</nav><main className="axis-ac-content" aria-live="polite">{panel}</main></div>
     </div>
   </div>
 }

@@ -1,44 +1,47 @@
 import type { RedirectCallbackOptions } from './types'
 import { generatePKCEPair } from './pkce'
 
-const VERIFIER_KEY = 'iam_pkce_verifier'
-const STATE_KEY = 'iam_oauth_state'
-
-export async function prepareAuthorizationCodeContext(assertCurrent?: () => void): Promise<{ codeChallenge: string; state: string }> {
+import {
+  PendingAuthorizationStore,
+  authorizationRandom,
+} from '@axis-iam/vertex'
+import type { PendingAuthorization } from '@axis-iam/vertex'
+type HostedBinding = Pick<
+  PendingAuthorization,
+  'issuer' | 'clientId' | 'redirectUri'
+>
+export async function prepareAuthorizationCodeContext(
+  binding: HostedBinding,
+  assertCurrent?: () => void,
+  openid = false,
+): Promise<{ codeChallenge: string; state: string; nonce?: string }> {
   const { codeVerifier, codeChallenge } = await generatePKCEPair()
   assertCurrent?.()
-  const state = crypto.randomUUID()
-
-  try {
-    sessionStorage.setItem(VERIFIER_KEY, codeVerifier)
-    sessionStorage.setItem(STATE_KEY, state)
-  } catch {
-    // Browser-only storage may be unavailable during SSR.
-  }
-
-  return { codeChallenge, state }
+  const state = authorizationRandom()
+  const nonce = openid ? authorizationRandom() : undefined
+  PendingAuthorizationStore.save({
+    ...binding,
+    version: 1,
+    entryMode: 'HOSTED',
+    flowOwner: authorizationRandom(),
+    state,
+    ...(nonce ? { nonce } : {}),
+    verifier: codeVerifier,
+    expiresAt: new Date(Date.now() + 600_000).toISOString(),
+  })
+  return { codeChallenge, state, ...(nonce ? { nonce } : {}) }
 }
-
-export function consumeAuthorizationCodeVerifier(state: string): string {
-  let storedState: string | null = null
-  let codeVerifier: string | null = null
-  try {
-    storedState = sessionStorage.getItem(STATE_KEY)
-    codeVerifier = sessionStorage.getItem(VERIFIER_KEY)
-    sessionStorage.removeItem(STATE_KEY)
-    sessionStorage.removeItem(VERIFIER_KEY)
-  } catch {
-    // SSR
-  }
-
-  if (!storedState || storedState !== state) {
-    throw new Error('OAuth state mismatch — possible CSRF attack')
-  }
-  if (!codeVerifier) {
-    throw new Error('Missing PKCE code_verifier — authorization flow was not started properly')
-  }
-
-  return codeVerifier
+export function consumeAuthorizationCodeContext(
+  state: string,
+  binding: HostedBinding,
+): PendingAuthorization {
+  const pending = PendingAuthorizationStore.read({
+    ...binding,
+    entryMode: 'HOSTED',
+  })
+  if (pending.state !== state) throw new Error('OAuth state mismatch')
+  PendingAuthorizationStore.remove(pending.flowOwner)
+  return pending
 }
 
 export function resolveCallbackUrl(
@@ -57,8 +60,15 @@ export function resolveCallbackUrl(
   return null
 }
 
-export function cleanCallbackUrl(callbackUrl: URL, cleanUrl: string | false | undefined): void {
-  if (cleanUrl === false || typeof window === 'undefined' || !window.history?.replaceState) {
+export function cleanCallbackUrl(
+  callbackUrl: URL,
+  cleanUrl: string | false | undefined,
+): void {
+  if (
+    cleanUrl === false ||
+    typeof window === 'undefined' ||
+    !window.history?.replaceState
+  ) {
     return
   }
 
@@ -72,5 +82,7 @@ function scrubCallbackParams(url: URL): string {
   clean.searchParams.delete('state')
   clean.searchParams.delete('error')
   clean.searchParams.delete('error_description')
+  clean.searchParams.delete('kind')
+  clean.searchParams.delete('auth_transaction_id')
   return `${clean.pathname}${clean.search}${clean.hash}`
 }

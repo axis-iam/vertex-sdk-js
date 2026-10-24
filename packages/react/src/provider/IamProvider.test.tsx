@@ -3,7 +3,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { createElement, StrictMode, type ReactNode } from 'react'
 import { IamProvider, useIamContext } from './IamProvider'
 import { useAuth } from '../hooks/useAuth'
-import { makeTestJwt, setupMockFetch, storeTestTokens, testProviderProps } from '../test-utils'
+import { makeTestJwt, makeTestUser, setupMockFetch, storeTestTokens, testProviderProps } from '../test-utils'
 
 function defaultMemoryProps() {
   const { tokenStorage: _tokenStorage, ...props } = testProviderProps()
@@ -67,6 +67,7 @@ describe('IamProvider token storage policy', () => {
     storeTestTokens(jwt, ['persisted:stale'], ['persisted-stale-role'])
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url.endsWith('/api/v1/auth/me')) return {ok:true,json:async()=>makeTestUser()}
       if (url.includes('/api/v1/auth/me/permissions')) {
         return { ok: true, json: async () => ({ applicationId: 'app-test', organizationId: null, roles: ['current-role'], permissions: ['orders:read'] }) }
       }
@@ -84,9 +85,8 @@ describe('IamProvider token storage policy', () => {
     await waitFor(() => expect(result.current.isLoaded).toBe(true))
     expect(result.current.user).toMatchObject({ roles: ['current-role'], permissions: ['orders:read'] })
     expect(JSON.parse(sessionStorage.getItem('axis_iam_session') ?? '{}')).toMatchObject({
-      version: 4, expiresAt: expect.any(Number),
-      roles: ['current-role'],
-      permissions: ['orders:read'],
+      version: 5, expiresAt: expect.any(Number),
+      owner: {id:'user-1',applicationId:'app-test',clientId:'test-app',sessionId:'s1'},
     })
   })
 
@@ -144,5 +144,34 @@ describe('Provider pending refresh ownership', () => {
     expect(sessionStorage.getItem('axis_iam_session')).toBeNull()
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+
+describe('required safe views in mounted Provider', () => {
+  beforeEach(() => { sessionStorage.clear();setupMockFetch();storeTestTokens('fixture-only-token') })
+  afterEach(() => { vi.restoreAllMocks();vi.unstubAllGlobals();sessionStorage.clear() })
+  it('keeps useAuth loading until both views complete', async () => {
+    const base=globalThis.fetch
+    let release!: (response: Response) => void
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => String(input).endsWith('/me') ? new Promise<Response>(done=>{release=done}) : base(input,init))
+    const h=renderHook(()=>useAuth(),{wrapper:wrapper()})
+    await waitFor(()=>expect(release).toBeDefined())
+    expect(h.result.current.isAuthenticated).toBe(false)
+    expect(h.result.current.user).toBeNull()
+    expect(h.result.current.sessionView.status).toBe('loading')
+    await act(async()=>release(new Response(JSON.stringify(makeTestUser()))))
+    await waitFor(()=>expect(h.result.current.isAuthenticated).toBe(true))
+    expect(h.result.current.sessionView.status).toBe('ready')
+  })
+  it.each([401,403,503])('exposes a startup HTTP %s failure without successful authentication', async status => {
+    const base=globalThis.fetch
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => String(input).endsWith('/me') ? new Response('{}',{status}) : base(input,init))
+    const h=renderHook(()=>useAuth(),{wrapper:wrapper()})
+    await waitFor(()=>expect(h.result.current.isLoaded).toBe(true))
+    expect(h.result.current.isAuthenticated).toBe(false)
+    expect(h.result.current.user).toBeNull()
+    expect(h.result.current.initializationError).toMatchObject({status})
+    expect(h.result.current.sessionView.status).toBe(status===401?'anonymous':'error')
   })
 })

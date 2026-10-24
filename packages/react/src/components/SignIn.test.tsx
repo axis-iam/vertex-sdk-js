@@ -1,9 +1,10 @@
+import { createHash, webcrypto } from 'node:crypto'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { IamProvider } from '../provider/IamProvider'
 import { SignIn } from './SignIn'
-import { storeTestTokens, makeTestJwt, testProviderProps } from '../test-utils'
+import { storeTestTokens, makeTestJwt, makeTestUser, testProviderProps } from '../test-utils'
 import type {
   AuthMethodIdpProviderResponse,
   IdentityProviderOption,
@@ -93,10 +94,11 @@ const defaultAuthMethods: PublicAuthMethodsResponse = {
   socialLoginEnabled: true,
   signupEnabled: true,
   selfRegistrationEnabled: true,
-  emailVerificationMode: 'OFF',
   idpAutoProvisioningEnabled: false,
   loginInitiationUri: null,
   postVerificationRedirectUri: null,
+  identifierMethods: [{ kind: 'EMAIL', methods: ['PASSWORD'] }, { kind: 'PHONE', methods: ['PASSWORD'] }, { kind: 'USERNAME', methods: ['PASSWORD'] }],
+  defaultIdentifierKind: 'EMAIL',
   methods: [
     {
       type: 'PASSWORD',
@@ -127,6 +129,8 @@ type MockResponse = {
 /** URL-aware fetch mock for embedded login tests */
 function setupFetchMock(
   overrides: {
+    mfa?: boolean
+    tokenResponse?: Record<string,unknown>
     authPolicy?: Partial<PublicAuthPolicyResponse>
     loginResponse?: MockResponse
     authMethods?: PublicAuthMethodsResponse | MockResponse
@@ -135,6 +139,10 @@ function setupFetchMock(
     branding?: { logoUrl?: string; primaryColor?: string; backgroundColor?: string }
   } = {},
 ) {
+  let created: Record<string,string>
+  const expiresAt=new Date(Date.now()+600000).toISOString()
+  const view=(state:'MFA_REQUIRED'|'AUTHENTICATED'='AUTHENTICATED')=>({transactionId:'transaction-1',expiresAt,state,nextAction:state==='MFA_REQUIRED'?'mfa':'complete'})
+  const json=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status})
   const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
     if (url.includes('/auth-policy'))
@@ -143,7 +151,6 @@ function setupFetchMock(
         json: async () => ({
           signupMode: 'OPEN',
           allowedRegistrationGrantTypes: [],
-          emailVerificationMode: 'OFF',
           idpAutoProvisioningEnabled: false,
           minPasswordLength: 8,
           requireUppercase: false,
@@ -177,18 +184,21 @@ function setupFetchMock(
       const providers = overrides.identityProviders ?? []
       return Array.isArray(providers) ? { ok: true, json: async () => providers } : providers
     }
-    if (url.includes('/api/v1/auth/login')) {
-      return (
-        overrides.loginResponse ?? {
-          ok: false,
-          status: 500,
-          json: async () => ({ message: 'No login mock' }),
-        }
-      )
+    if(url.endsWith('/auth/transactions')){created=JSON.parse(String(init?.body));return json({transactionId:'transaction-1',controlSecret:'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc',expiresAt,nextAction:'authenticate'})}
+    if(url.endsWith('/transactions/transaction-1/authorize')) return json({authorizationUrl:'https://accounts.example.test/o/oauth2/v2/auth',expiresAt})
+    if(url.endsWith('/authenticate')){
+      if(overrides.loginResponse && !overrides.loginResponse.ok)return json(await overrides.loginResponse.json!(),overrides.loginResponse.status)
+      return json(view(overrides.mfa?'MFA_REQUIRED':'AUTHENTICATED'))
     }
+    if(url.endsWith('/mfa'))return json(view())
+    if(url.endsWith('/challenges'))return json({transactionId:'transaction-1',expiresAt,challengeExpiresAt:new Date(Date.now()+120000).toISOString(),cooldownSeconds:30,nextAction:'authenticate'})
+    if(url.endsWith('/cancel'))return json({...view(),state:'CANCELLED',nextAction:'none'})
+    if(url.endsWith('/complete'))return json({kind:'authorization_code',code:'one-code',state:created.state,expiresIn:120})
+    if(url.endsWith('/token'))return json(overrides.tokenResponse??(overrides.loginResponse?.ok?await overrides.loginResponse.json!():{access_token:makeTestJwt(),token_type:'Bearer',refresh_token:'rt',expires_in:3600}))
     if (url.includes('/api/v1/auth/email/verification/send')) {
       return { ok: true, json: async () => ({ message: 'Verification email sent' }) }
     }
+    if (url.endsWith('/api/v1/auth/me')) return {ok:true,json:async()=>makeTestUser()}
     if (url.includes('/api/v1/auth/me/permissions')) {
       return {
         ok: true,
@@ -228,6 +238,12 @@ function authMethodsWith(options: {
     emailMagicLinkEnabled: options.magicLink ?? false,
     emailOtpEnabled: options.emailOtp ?? false,
     socialLoginEnabled: options.socialLoginEnabled ?? true,
+    identifierMethods: ([
+      { kind: 'EMAIL', methods: methods.filter(m => m.availableForLogin && ['PASSWORD', 'EMAIL_OTP', 'EMAIL_MAGIC_LINK'].includes(m.type)).map(m => m.type as 'PASSWORD' | 'EMAIL_OTP' | 'EMAIL_MAGIC_LINK') },
+      { kind: 'PHONE', methods: methods.filter(m => m.availableForLogin && ['PASSWORD', 'SMS_OTP'].includes(m.type)).map(m => m.type as 'PASSWORD' | 'SMS_OTP') },
+      { kind: 'USERNAME', methods: methods.filter(m => m.availableForLogin && m.type === 'PASSWORD').map(() => 'PASSWORD' as const) },
+    ] as PublicAuthMethodsResponse['identifierMethods']).filter(entry => entry.methods.length > 0),
+    defaultIdentifierKind: options.password || options.magicLink || options.emailOtp ? 'EMAIL' : options.sms ? 'PHONE' : null,
     methods,
     idpProviders: options.providers ?? [],
     resend: {
@@ -250,8 +266,13 @@ function methodAvailability(
   }
 }
 
-async function continueWithIdentifier(value: string) {
-  const input = screen.getByPlaceholderText('you@example.com or +86 13800138000')
+async function continueWithIdentifier(value: string, kind: 'EMAIL' | 'PHONE' | 'USERNAME' = 'EMAIL') {
+  const label = { EMAIL: 'Email', PHONE: 'Phone number', USERNAME: 'Username' }[kind]
+  if (!screen.queryByLabelText(label)) {
+    fireEvent.click(screen.getByRole('button', { name: /Use another sign-in method|Sign in with/ }))
+    fireEvent.click(screen.getByRole('button', { name: `Sign in with ${label.toLowerCase()}` }))
+  }
+  const input = screen.getByLabelText(label)
   fireEvent.change(input, { target: { value } })
   await act(async () => {
     fireEvent.submit(input.closest('form')!)
@@ -261,11 +282,14 @@ async function continueWithIdentifier(value: string) {
 
 describe('SignIn', () => {
   beforeEach(() => {
+    vi.stubGlobal('crypto',{getRandomValues:webcrypto.getRandomValues.bind(webcrypto),subtle:{digest:async (_algorithm:string,data:Uint8Array)=>createHash('sha256').update(data).digest()}})
     sessionStorage.clear()
     vi.useFakeTimers()
   })
 
   afterEach(() => {
+    window.history.replaceState(null,'','/')
+    vi.unstubAllGlobals()
     vi.useRealTimers()
     vi.restoreAllMocks()
   })
@@ -304,6 +328,17 @@ describe('SignIn', () => {
   })
 
   describe('embedded mode', () => {
+    it('keeps registration kind explicit when switching from phone sign-in', async () => {
+      setupFetchMock()
+      renderWithProvider(createElement(SignIn, { mode: 'embedded' }))
+      await act(async () => vi.advanceTimersByTimeAsync(10))
+      fireEvent.click(screen.getByRole('button', { name: 'Use another sign-in method' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Sign in with phone number' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Sign up', exact: true }))
+      expect((screen.getByLabelText('Identifier type') as HTMLSelectElement).value).toBe('EMAIL')
+      expect((screen.getByLabelText('Email') as HTMLInputElement).type).toBe('email')
+      expect(screen.queryByLabelText('Phone number')).toBeNull()
+    })
     it.each(['en', 'zh-CN'] as const)('owns one bidirectional registration footer in %s', async (locale) => {
       setupFetchMock()
       renderWithProvider(createElement(SignIn, { mode: 'embedded' }), { locale })
@@ -313,10 +348,10 @@ describe('SignIn', () => {
       expect(screen.getAllByRole('button', { name: up })).toHaveLength(1)
       expect(screen.getByText(locale === 'en' ? "Don't have an account?" : '还没有账户？')).toBeTruthy()
       fireEvent.click(screen.getByRole('button', { name: up }))
-      expect(screen.getByLabelText(locale === 'en' ? 'Username (optional)' : '用户名（可选）')).toBeTruthy()
+      expect(screen.getByLabelText(locale === 'en' ? 'Identifier type' : '标识类型')).toBeTruthy()
       expect(screen.getAllByRole('button', { name: down })).toHaveLength(1)
       fireEvent.click(screen.getByRole('button', { name: down }))
-      expect(screen.getByPlaceholderText(locale === 'en' ? 'you@example.com or +86 13800138000' : 'you@example.com 或 +86 13800138000')).toBeTruthy()
+      expect(screen.getByPlaceholderText(locale === 'en' ? 'you@example.com' : 'you@example.com 或 +86 13800138000')).toBeTruthy()
       expect(screen.getAllByRole('button', { name: up })).toHaveLength(1)
     })
 
@@ -342,10 +377,10 @@ describe('SignIn', () => {
       const view = renderWithProvider(createElement(SignIn, { mode: 'embedded' }))
       await act(async () => vi.advanceTimersByTimeAsync(10))
       fireEvent.click(screen.getByRole('button', { name: 'Sign up' }))
-      expect(screen.getByPlaceholderText('Choose a username')).toBeTruthy()
+      expect(screen.getByLabelText('Confirm password')).toBeTruthy()
       view.rerender(createElement(IamProvider, testProviderProps(), createElement(SignIn, { mode: 'embedded', allowSignUp: false })))
       await act(async () => vi.advanceTimersByTimeAsync(10))
-      expect(screen.queryByPlaceholderText('Choose a username')).toBeNull()
+      expect(screen.queryByLabelText('Confirm password')).toBeNull()
       expect(screen.queryByRole('button', { name: 'Sign up' })).toBeNull()
     })
 
@@ -356,7 +391,7 @@ describe('SignIn', () => {
         await vi.advanceTimersByTimeAsync(10)
       })
 
-      expect(screen.getByPlaceholderText('you@example.com or +86 13800138000')).toBeTruthy()
+      expect(screen.getByPlaceholderText('you@example.com')).toBeTruthy()
       expect(screen.queryByPlaceholderText('Enter your password')).toBeNull()
 
       await continueWithIdentifier('user@test.com')
@@ -432,14 +467,14 @@ describe('SignIn', () => {
       const loginRequest = fetchMock.mock.calls.find((call) => {
         const url =
           typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
-        return url.includes('/api/v1/auth/login')
+        return url.includes('/api/v1/auth/transactions/transaction-1/authenticate')
       })
       expect(loginRequest?.[1]?.method).toBe('POST')
       const body = JSON.parse(loginRequest?.[1]?.body as string) as Record<string, string>
       expect(body).toMatchObject({
-        identifier: 'user@test.com',
+        identifier: { kind: 'EMAIL', value: 'user@test.com' },
         password: 'correct-pass',
-        client_id: 'test-app',
+        method: 'PASSWORD',
       })
       expect(JSON.stringify(body)).not.toContain('clientSecret')
       expect(JSON.stringify(body)).not.toContain('client_secret')
@@ -449,26 +484,7 @@ describe('SignIn', () => {
 
     it('continues a real-schema MFA challenge with camelCase proof and keeps it private', async () => {
       const onSuccess = vi.fn()
-      const base = setupFetchMock({
-        loginResponse: {
-          ok: true,
-          json: async () => ({ mfa_required: true, mfa_token: 'private-mfa-proof', mfa_methods: ['totp'] }),
-        },
-      })
-      const implementation = base.getMockImplementation()!
-      base.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-        if (String(input).endsWith('/mfa/verify'))
-          return {
-            ok: true,
-            json: async () => ({
-              access_token: makeTestJwt(),
-              refresh_token: 'rt',
-              token_type: 'Bearer',
-              expires_in: 3600,
-            }),
-          }
-        return implementation(input, init)
-      })
+      const base = setupFetchMock({mfa:true})
       renderWithProvider(createElement(SignIn, { mode: 'embedded', onSuccess }), { tokenStorage: 'memory' })
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10)
@@ -487,8 +503,8 @@ describe('SignIn', () => {
         fireEvent.submit(screen.getByLabelText('Authenticator code').closest('form')!)
         await vi.advanceTimersByTimeAsync(10)
       })
-      const call = base.mock.calls.find((call) => String(call[0]).endsWith('/mfa/verify'))
-      expect(JSON.parse(call?.[1]?.body as string)).toEqual({ mfaToken: 'private-mfa-proof', code: '123456' })
+      const call = base.mock.calls.find((call) => String(call[0]).endsWith('/transactions/transaction-1/mfa'))
+      expect(JSON.parse(call?.[1]?.body as string)).toEqual({ method: 'TOTP', code: '123456' })
       expect(onSuccess).toHaveBeenCalledTimes(1)
       expect(sessionStorage.getItem('axis_iam_session')).toBeNull()
     })
@@ -501,7 +517,7 @@ describe('SignIn', () => {
       const base = setupFetchMock()
       const implementation = base.getMockImplementation()!
       base.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) =>
-        String(input).endsWith('/auth/login') ? delayed : implementation(input, init),
+        String(input).endsWith('/authenticate') ? delayed : implementation(input, init),
       )
       const onError = vi.fn()
       renderWithProvider(createElement(SignIn, { mode: 'embedded', onError }))
@@ -555,12 +571,12 @@ describe('SignIn', () => {
       })
 
       expect(screen.getByText('Verify your email before signing in.')).toBeTruthy()
-      expect(screen.getByText('Resend verification email')).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Resend', exact: true })).toBeTruthy()
       expect(onError).toHaveBeenCalledTimes(1)
       expect(sessionStorage.getItem('iam_tokens')).toBeNull()
 
       await act(async () => {
-        fireEvent.click(screen.getByText('Resend verification email'))
+        fireEvent.click(screen.getByRole('button', { name: 'Resend', exact: true }))
         await vi.advanceTimersByTimeAsync(100)
       })
 
@@ -592,7 +608,7 @@ describe('SignIn', () => {
 
       expect(screen.getByText('Enter a valid email address or phone number.')).toBeTruthy()
       expect(screen.queryByPlaceholderText('Enter your password')).toBeNull()
-      expect(screen.queryByText('Resend verification email')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Resend', exact: true })).toBeNull()
     })
 
     it('calls onForgotPassword when configured', async () => {
@@ -657,6 +673,7 @@ describe('SignIn', () => {
       })
 
       expect(screen.getByAltText('应用标志')).toBeTruthy()
+      fireEvent.change(screen.getByLabelText('标识类型'), { target: { value: 'PHONE' } })
       const identifier = screen.getByPlaceholderText('you@example.com 或 +86 13800138000')
       fireEvent.change(identifier, { target: { value: '+8613800138000' } })
       await act(async () => {
@@ -707,47 +724,22 @@ describe('SignIn', () => {
       expect(buttons).not.toContain('SMS code')
     })
 
-    it('shows only SMS action for a phone-like identifier', async () => {
+    it('offers SMS and password for an explicitly selected phone identifier', async () => {
       renderEmbeddedWithAuthMethods(authMethodsWith({ password: true, sms: true }))
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10)
       })
 
-      await continueWithIdentifier('+8613800138000')
+      await continueWithIdentifier('+8613800138000', 'PHONE')
 
       expect(screen.getByText('Phone number')).toBeTruthy()
-      expect(screen.queryByText('Password')).toBeNull()
+      expect(screen.getByRole('button', { name: 'Password', exact: true })).toBeTruthy()
       expect(screen.getByPlaceholderText('+86 13800138000')).toBeTruthy()
       expect(screen.getByText('Send code')).toBeTruthy()
     })
 
     it('sends SMS code with client_id and no application context header', async () => {
-      const fetchMock = setupFetchMock()
-      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-        if (url.includes('/auth-policy'))
-          return {
-            ok: true,
-            json: async () => ({
-              signupMode: 'OPEN',
-              allowedRegistrationGrantTypes: [],
-              emailVerificationMode: 'OFF',
-              idpAutoProvisioningEnabled: false,
-              minPasswordLength: 8,
-              requireUppercase: false,
-              requireLowercase: false,
-              requireDigit: false,
-              requireSpecialChar: false,
-          breachedPasswordCheck: false,
-            }),
-          }
-        if (url.includes('openid-configuration')) return { ok: true, json: async () => mockOidcConfig }
-        if (url.includes('/branding')) return { ok: false, status: 404 }
-        if (url.includes('/api/v1/apps/test-app/auth-methods'))
-          return { ok: true, json: async () => authMethodsWith({ sms: true }) }
-        if (url.includes('/api/v1/auth/sms/send')) return { ok: true, json: async () => ({ sent: true }) }
-        return { ok: false, status: 404 }
-      })
+      const fetchMock = setupFetchMock({authMethods:authMethodsWith({sms:true})})
 
       const props = { ...testProviderProps(), authMethods: ['password'] as string[] }
       render(createElement(IamProvider, props, createElement(SignIn, { mode: 'embedded' })))
@@ -755,7 +747,7 @@ describe('SignIn', () => {
         await vi.advanceTimersByTimeAsync(10)
       })
 
-      await continueWithIdentifier('+8613800138000')
+      await continueWithIdentifier('+8613800138000', 'PHONE')
       await act(async () => {
         fireEvent.click(screen.getByText('Send code'))
         await vi.advanceTimersByTimeAsync(100)
@@ -765,14 +757,14 @@ describe('SignIn', () => {
       const smsRequest = fetchMock.mock.calls.find((call) => {
         const url =
           typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
-        return url.includes('/api/v1/auth/sms/send')
+        return url.includes('/api/v1/auth/transactions/transaction-1/challenges')
       })
       expect(smsRequest?.[1]).toMatchObject({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ phone: '+8613800138000', client_id: 'test-app' }),
+        body: JSON.stringify({ method:'SMS_OTP',identifier:{kind:'PHONE',value:'+8613800138000'} }),
       })
       expect(smsRequest?.[1]?.headers).not.toHaveProperty('X-Application-Id')
     })
@@ -780,44 +772,7 @@ describe('SignIn', () => {
     it('verifies SMS code with client_id and stores snake_case tokens when sessionStorage is opted in', async () => {
       const onSuccess = vi.fn()
       const jwt = makeTestJwt()
-      const fetchMock = setupFetchMock()
-      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-        if (url.includes('/auth-policy'))
-          return {
-            ok: true,
-            json: async () => ({
-              signupMode: 'OPEN',
-              allowedRegistrationGrantTypes: [],
-              emailVerificationMode: 'OFF',
-              idpAutoProvisioningEnabled: false,
-              minPasswordLength: 8,
-              requireUppercase: false,
-              requireLowercase: false,
-              requireDigit: false,
-              requireSpecialChar: false,
-          breachedPasswordCheck: false,
-            }),
-          }
-        if (url.includes('openid-configuration')) return { ok: true, json: async () => mockOidcConfig }
-        if (url.includes('/branding')) return { ok: false, status: 404 }
-        if (url.includes('/api/v1/apps/test-app/auth-methods'))
-          return { ok: true, json: async () => authMethodsWith({ sms: true }) }
-        if (url.includes('/api/v1/auth/sms/send')) return { ok: true, json: async () => ({ sent: true }) }
-        if (url.includes('/api/v1/auth/sms/verify')) {
-          return {
-            ok: true,
-            json: async () => ({
-              access_token: jwt,
-              refresh_token: 'sms-rt',
-              token_type: 'Bearer',
-              expires_in: 3600,
-              permissions: ['orders:read'],
-            }),
-          }
-        }
-        return { ok: false, status: 404 }
-      })
+      const fetchMock = setupFetchMock({authMethods:authMethodsWith({sms:true}),tokenResponse:{access_token:jwt,refresh_token:'sms-rt',token_type:'Bearer',expires_in:3600}})
 
       const props = {
         ...testProviderProps(),
@@ -829,7 +784,7 @@ describe('SignIn', () => {
         await vi.advanceTimersByTimeAsync(10)
       })
 
-      await continueWithIdentifier('+8613800138000')
+      await continueWithIdentifier('+8613800138000', 'PHONE')
       await act(async () => {
         fireEvent.click(screen.getByText('Send code'))
         await vi.advanceTimersByTimeAsync(100)
@@ -843,27 +798,91 @@ describe('SignIn', () => {
       const verifyRequest = fetchMock.mock.calls.find((call) => {
         const url =
           typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
-        return url.includes('/api/v1/auth/sms/verify')
+        return url.includes('/api/v1/auth/transactions/transaction-1/authenticate')
       })
       expect(verifyRequest?.[1]).toMatchObject({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ phone: '+8613800138000', code: '123456', client_id: 'test-app' }),
+        body: JSON.stringify({ method:'SMS_OTP',identifier:{kind:'PHONE',value:'+8613800138000'},proof:'123456' }),
       })
       expect(verifyRequest?.[1]?.headers).not.toHaveProperty('X-Application-Id')
       expect(JSON.parse(sessionStorage.getItem('axis_iam_session') ?? '{}')).toMatchObject({
-        version: 4,
+        version: 6,
         expiresAt: expect.any(Number),
         tokens: { access_token: jwt, refresh_token: 'sms-rt', token_type: 'Bearer', expires_in: 3600 },
-        authenticationProvenance: 'DIRECT_AUTH',
-        refreshProvenance: 'DIRECT_AUTH',
+        authenticationProvenance: 'OAUTH_AUTHORIZATION_CODE',
+        refreshProvenance: 'OAUTH_TOKEN_ENDPOINT',
       })
       const expiresAt = JSON.parse(sessionStorage.getItem('axis_iam_session')!).expiresAt as number
       expect(expiresAt).toBeGreaterThan(Date.now() + 3599_000)
       expect(expiresAt).toBeLessThanOrEqual(Date.now() + 3600_000)
       expect(onSuccess).toHaveBeenCalledTimes(1)
+    })
+
+    it('restores original-tab Magic fragment through rendered MFA recovery and scrubs the proof', async () => {
+      const fetchMock = setupFetchMock({authMethods:authMethodsWith({magicLink:true}),mfa:true})
+      const onSuccess = vi.fn()
+      const first = renderWithProvider(createElement(SignIn,{mode:'embedded'}))
+      await act(async()=>{await vi.advanceTimersByTimeAsync(10)})
+      await continueWithIdentifier('user@test.com')
+      await act(async()=>{
+        fireEvent.submit(screen.getByPlaceholderText('you@example.com').closest('form')!)
+        await vi.advanceTimersByTimeAsync(20)
+      })
+      const create = fetchMock.mock.calls.find(call=>String(call[0]).endsWith('/auth/transactions'))!
+      const binding = JSON.parse(String(create[1]?.body))
+      const fragment = new URLSearchParams({kind:'AUTH_PROOF',auth_transaction_id:'transaction-1',method:'EMAIL_MAGIC_LINK',state:binding.state,proof:'magic-private-proof'})
+      first.unmount()
+      expect(sessionStorage.getItem('axis_iam_pending_authorization')).not.toBeNull()
+      window.history.replaceState(null,'',`${binding.redirect_uri}#${fragment}`)
+      renderWithProvider(createElement(SignIn,{mode:'embedded',onSuccess}))
+      await act(async()=>{await vi.advanceTimersByTimeAsync(10)})
+      await continueWithIdentifier('user@test.com')
+      await act(async()=>{
+        fireEvent.submit(screen.getByPlaceholderText('you@example.com').closest('form')!)
+        await vi.advanceTimersByTimeAsync(20)
+      })
+      expect(window.location.hash).toBe('')
+      expect(sessionStorage.getItem('axis_iam_pending_authorization')).toBeNull()
+      expect(onSuccess).not.toHaveBeenCalled()
+      fireEvent.change(screen.getByRole('combobox',{name:'Credential'}),{target:{value:'RECOVERY_CODE'}})
+      const recovery = screen.getByLabelText('Recovery code')
+      expect(recovery.getAttribute('type')).toBe('password')
+      fireEvent.change(recovery,{target:{value:'recovery-private-proof'}})
+      await act(async()=>{
+        fireEvent.submit(recovery.closest('form')!)
+        await vi.advanceTimersByTimeAsync(20)
+      })
+      expect(onSuccess).toHaveBeenCalledOnce()
+      const mfa = fetchMock.mock.calls.find(call=>String(call[0]).endsWith('/mfa'))!
+      expect(JSON.parse(String(mfa[1]?.body))).toEqual({method:'RECOVERY_CODE',code:'recovery-private-proof'})
+      expect(document.body.innerHTML).not.toMatch(/magic-private-proof|recovery-private-proof|controlSecret/)
+    })
+
+    it('renders a returned Provider continuation through original control and recovery MFA',async()=>{
+      const onSuccess=vi.fn(),fetchMock=setupFetchMock({mfa:true})
+      const expiresAt=new Date(Date.now()+600000).toISOString(),secret='BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc'
+      sessionStorage.setItem('axis_iam_pending_authorization',JSON.stringify({version:1,issuer:ISSUER,clientId:'test-app',redirectUri:new URL('/callback',window.location.origin).href,entryMode:'CUSTOM',flowOwner:secret,state:secret,verifier:secret,transactionId:'transaction-1',controlSecret:secret,expiresAt}))
+      const base=fetchMock.getMockImplementation()!
+      fetchMock.mockImplementation(async(input:RequestInfo|URL,init?:RequestInit)=>{
+        if(String(input).endsWith('/transaction-1'))return new Response(JSON.stringify({transactionId:'transaction-1',expiresAt,state:'MFA_REQUIRED',nextAction:'mfa'}))
+        if(String(input).endsWith('/complete'))return new Response(JSON.stringify({kind:'authorization_code',code:'provider-mfa',state:secret,expiresIn:120}))
+        return base(input,init)
+      })
+      window.history.replaceState(null,'','/callback?'+new URLSearchParams({kind:'AUTH_CONTINUATION',auth_transaction_id:'transaction-1',state:secret}))
+      renderWithProvider(createElement(SignIn,{mode:'embedded',onSuccess}))
+      await act(async()=>{await vi.advanceTimersByTimeAsync(10)})
+      expect(screen.queryByPlaceholderText('you@example.com')).toBeNull()
+      await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'Continue'}));await vi.advanceTimersByTimeAsync(20)})
+      expect(screen.getByLabelText('Authenticator code')).toBeTruthy()
+      expect(window.location.search).toBe('')
+      expect(sessionStorage.getItem('axis_iam_pending_authorization')).toBeNull()
+      expect(onSuccess).not.toHaveBeenCalled()
+      fireEvent.change(screen.getByLabelText('Authenticator code'),{target:{value:'123456'}})
+      await act(async()=>{fireEvent.submit(screen.getByLabelText('Authenticator code').closest('form')!);await vi.advanceTimersByTimeAsync(20)})
+      expect(onSuccess).toHaveBeenCalledOnce()
     })
 
     it('renders magic link form', async () => {
@@ -879,32 +898,7 @@ describe('SignIn', () => {
     })
 
     it('sends magic link with client_id and no application context header', async () => {
-      const fetchMock = setupFetchMock()
-      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-        if (url.includes('/auth-policy'))
-          return {
-            ok: true,
-            json: async () => ({
-              signupMode: 'OPEN',
-              allowedRegistrationGrantTypes: [],
-              emailVerificationMode: 'OFF',
-              idpAutoProvisioningEnabled: false,
-              minPasswordLength: 8,
-              requireUppercase: false,
-              requireLowercase: false,
-              requireDigit: false,
-              requireSpecialChar: false,
-          breachedPasswordCheck: false,
-            }),
-          }
-        if (url.includes('openid-configuration')) return { ok: true, json: async () => mockOidcConfig }
-        if (url.includes('/branding')) return { ok: false, status: 404 }
-        if (url.includes('/api/v1/apps/test-app/auth-methods'))
-          return { ok: true, json: async () => authMethodsWith({ magicLink: true }) }
-        if (url.includes('/magic-link')) return { ok: true, json: async () => ({}) }
-        return { ok: false, status: 404 }
-      })
+      const fetchMock = setupFetchMock({authMethods:authMethodsWith({magicLink:true})})
 
       const props = { ...testProviderProps(), authMethods: ['password'] as string[] }
       render(createElement(IamProvider, props, createElement(SignIn, { mode: 'embedded' })))
@@ -923,14 +917,14 @@ describe('SignIn', () => {
       const magicLinkRequest = fetchMock.mock.calls.find((call) => {
         const url =
           typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
-        return url.includes('/api/v1/auth/passwordless/magic-link')
+        return url.includes('/api/v1/auth/transactions/transaction-1/challenges')
       })
       expect(magicLinkRequest?.[1]).toMatchObject({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ email: 'user@test.com', client_id: 'test-app' }),
+        body: JSON.stringify({ method:'EMAIL_MAGIC_LINK',identifier:{kind:'EMAIL',value:'user@test.com'} }),
       })
       expect(magicLinkRequest?.[1]?.headers).not.toHaveProperty('X-Application-Id')
     })
@@ -975,23 +969,18 @@ describe('SignIn', () => {
       fireEvent.click(googleButton)
 
       await waitFor(() => {
-        expect(fetchMock.mock.calls.some((call) => call[0] === googleAuthProvider.authorizationUrl)).toBe(
+        expect(fetchMock.mock.calls.some((call) => String(call[0]).endsWith('/transactions/transaction-1/authorize'))).toBe(
           true,
         )
       })
       const providerRequest = fetchMock.mock.calls.find(
-        (call) => call[0] === googleAuthProvider.authorizationUrl,
+        (call) => String(call[0]).endsWith('/transactions/transaction-1/authorize'),
       )
       expect(providerRequest?.[1]?.method).toBe('POST')
 
       const body = JSON.parse(providerRequest?.[1]?.body as string) as Record<string, string>
-      expect(body).toMatchObject({
-        completionMode: 'AUTHORIZATION_CODE',
-        scope: 'openid profile email offline_access',
-        codeChallengeMethod: 'S256',
-      })
-      expect(body.state).toBeTruthy()
-      expect(body.codeChallenge).toBeTruthy()
+      expect(body).toEqual({providerId:'idp-google'})
+      expect(JSON.parse(sessionStorage.getItem('axis_iam_pending_authorization')!).entryMode).toBe('CUSTOM')
       expect(JSON.stringify(body)).not.toContain('clientSecret')
       expect(JSON.stringify(body)).not.toContain('client_secret')
       expect(window.location.href).toBe('https://accounts.example.test/o/oauth2/v2/auth')
@@ -1129,46 +1118,7 @@ describe('SignIn', () => {
     it('sends and verifies email OTP with client_id and stores tokens when sessionStorage is opted in', async () => {
       const onSuccess = vi.fn()
       const jwt = makeTestJwt()
-      const fetchMock = setupFetchMock()
-      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-        if (url.includes('/auth-policy'))
-          return {
-            ok: true,
-            json: async () => ({
-              signupMode: 'OPEN',
-              allowedRegistrationGrantTypes: [],
-              emailVerificationMode: 'OFF',
-              idpAutoProvisioningEnabled: false,
-              minPasswordLength: 8,
-              requireUppercase: false,
-              requireLowercase: false,
-              requireDigit: false,
-              requireSpecialChar: false,
-          breachedPasswordCheck: false,
-            }),
-          }
-        if (url.includes('openid-configuration')) return { ok: true, json: async () => mockOidcConfig }
-        if (url.includes('/branding')) return { ok: false, status: 404 }
-        if (url.includes('/api/v1/apps/test-app/auth-methods'))
-          return { ok: true, json: async () => authMethodsWith({ emailOtp: true }) }
-        if (url.endsWith('/api/v1/auth/passwordless/email-otp'))
-          return { ok: true, json: async () => ({ sent: true }) }
-        if (url.endsWith('/api/v1/auth/passwordless/email-otp/verify')) {
-          return {
-            ok: true,
-            json: async () => ({
-              access_token: jwt,
-              refresh_token: 'email-otp-rt',
-              id_token: 'id-token',
-              token_type: 'Bearer',
-              expires_in: 3600,
-              permissions: ['orders:read'],
-            }),
-          }
-        }
-        return { ok: false, status: 404 }
-      })
+      const fetchMock = setupFetchMock({authMethods:authMethodsWith({emailOtp:true}),tokenResponse:{access_token:jwt,refresh_token:'email-otp-rt',id_token:'id-token',token_type:'Bearer',expires_in:3600}})
 
       const props = {
         ...testProviderProps(),
@@ -1194,32 +1144,32 @@ describe('SignIn', () => {
       const sendRequest = fetchMock.mock.calls.find((call) => {
         const url =
           typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
-        return url.endsWith('/api/v1/auth/passwordless/email-otp')
+        return url.endsWith('/api/v1/auth/transactions/transaction-1/challenges')
       })
       expect(sendRequest?.[1]).toMatchObject({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ email: 'user@test.com', client_id: 'test-app' }),
+        body: JSON.stringify({ method:'EMAIL_OTP',identifier:{kind:'EMAIL',value:'user@test.com'} }),
       })
       expect(sendRequest?.[1]?.headers).not.toHaveProperty('X-Application-Id')
 
       const verifyRequest = fetchMock.mock.calls.find((call) => {
         const url =
           typeof call[0] === 'string' ? call[0] : call[0] instanceof URL ? call[0].toString() : call[0].url
-        return url.endsWith('/api/v1/auth/passwordless/email-otp/verify')
+        return url.endsWith('/api/v1/auth/transactions/transaction-1/authenticate')
       })
       expect(verifyRequest?.[1]).toMatchObject({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ email: 'user@test.com', code: '123456', client_id: 'test-app' }),
+        body: JSON.stringify({ method:'EMAIL_OTP',identifier:{kind:'EMAIL',value:'user@test.com'},proof:'123456' }),
       })
       expect(verifyRequest?.[1]?.headers).not.toHaveProperty('X-Application-Id')
       expect(JSON.parse(sessionStorage.getItem('axis_iam_session') ?? '{}')).toMatchObject({
-        version: 4,
+        version: 6,
         expiresAt: expect.any(Number),
         tokens: {
           access_token: jwt,
@@ -1228,8 +1178,8 @@ describe('SignIn', () => {
           token_type: 'Bearer',
           expires_in: 3600,
         },
-        authenticationProvenance: 'DIRECT_AUTH',
-        refreshProvenance: 'DIRECT_AUTH',
+        authenticationProvenance: 'OAUTH_AUTHORIZATION_CODE',
+        refreshProvenance: 'OAUTH_TOKEN_ENDPOINT',
       })
       const expiresAt = JSON.parse(sessionStorage.getItem('axis_iam_session')!).expiresAt as number
       expect(expiresAt).toBeGreaterThan(Date.now() + 3599_000)

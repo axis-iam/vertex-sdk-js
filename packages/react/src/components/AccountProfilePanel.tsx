@@ -3,6 +3,7 @@ import type { CSSProperties, FormEvent } from 'react'
 import type { AccountUpdateProfileInput } from '../core/types'
 import { useAccountProfile } from '../hooks/useAccountProfile'
 import { useAccountSecurity } from '../hooks/useAccountSecurity'
+import { usePrimaryEmail } from '../hooks/usePrimaryEmail'
 import { AccountCenterSurface, AccountEmpty, AccountError, AccountLoading } from './AccountCenterSurface'
 import { resolveAccountCenterLocalization, useAccountCenterAppearance } from './accountCenterConfig'
 import type { AccountCenterColorScheme, AccountCenterLocalization } from './accountCenterConfig'
@@ -39,11 +40,12 @@ export function AccountProfilePanel({
   const [form, setForm] = useState<AccountUpdateProfileInput>({})
   const [saved, setSaved] = useState(false)
   const [avatarFailed, setAvatarFailed] = useState(false)
+  const [factsRevision, refreshFacts] = useState(0)
+  const primaryEmail = usePrimaryEmail(factsRevision)
 
   useEffect(() => {
     if (!profile) return
     setForm({
-      username: profile.username,
       displayName: profile.displayName,
       avatarUrl: profile.avatarUrl,
     })
@@ -59,10 +61,11 @@ export function AccountProfilePanel({
   }
 
   function retry() {
+    refreshFacts((revision) => revision + 1)
     void Promise.all([refetchProfile(), refetchSecurity()])
   }
 
-  const identity = profile?.displayName || profile?.username || profile?.email || l.accountFallback
+  const identity = profile?.displayName || profile?.username || primaryEmail.email?.displayValue || l.accountFallback
   const initials = getInitials(identity)
 
   return (
@@ -76,9 +79,9 @@ export function AccountProfilePanel({
       style={style}
       componentCss={profileCss}
     >
-      {(error || securityError) && (
+      {(error || securityError || primaryEmail.error) && (
         <AccountError
-          message={l.errorMessage((error ?? securityError)!.message)}
+          message={l.errorMessage((error ?? securityError ?? primaryEmail.error)!.message)}
           localization={l}
           onRetry={retry}
           busy={isLoading || isSecurityLoading}
@@ -99,11 +102,11 @@ export function AccountProfilePanel({
             </div>
             <div className="axis-iam-profile-identity-copy">
               <strong>{identity}</strong>
-              <span>{profile.email}</span>
+              {primaryEmail.email && <span>{primaryEmail.email.displayValue}</span>}
               <div className="axis-iam-profile-statuses">
-                <span data-status={profile.emailVerified ? 'success' : 'warning'}>
-                  {profile.emailVerified ? l.emailVerified : l.emailNotVerified}
-                </span>
+                {primaryEmail.email && <span data-status={primaryEmail.email.verificationState === 'VERIFIED' ? 'success' : primaryEmail.email.verificationState === 'UNVERIFIED' ? 'warning' : undefined}>
+                  {primaryEmail.email.verificationState === 'VERIFIED' ? l.emailVerified : primaryEmail.email.verificationState === 'UNVERIFIED' ? l.emailNotVerified : ui.localization.identity.verificationUnknown}
+                </span>}
                 <span>{l.profileStatus(profile.status)}</span>
               </div>
             </div>
@@ -122,19 +125,6 @@ export function AccountProfilePanel({
                 onChange={(event) => {
                   setSaved(false)
                   setForm((current) => ({ ...current, displayName: event.target.value || null }))
-                }}
-              />
-            </div>
-            <div className="axis-iam-account-field">
-              <label htmlFor="iam-account-username">{l.username}</label>
-              <input
-                className="axis-iam-account-input"
-                id="iam-account-username"
-                value={form.username ?? ''}
-                disabled={!editable || isUpdating}
-                onChange={(event) => {
-                  setSaved(false)
-                  setForm((current) => ({ ...current, username: event.target.value || null }))
                 }}
               />
             </div>

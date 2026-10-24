@@ -4,8 +4,7 @@ import { requestNoContent } from '../core/http-client'
 
 /**
  * Detect and manage impersonation sessions.
- * When an admin impersonates a user, the JWT contains an `act` claim
- * with `sub` (admin ID) and `session_id` (impersonation session).
+ * Reads the authenticated API context and its exact impersonation ID.
  *
  * @example
  * ```tsx
@@ -20,19 +19,22 @@ export function useImpersonation() {
 
   const isImpersonating = useMemo(() => user?.isImpersonating ?? false, [user])
   const actorId = useMemo(() => user?.actorId, [user])
-  const sessionId = useMemo(() => (user?.raw.act as { session_id?: string } | undefined)?.session_id, [user])
+  const sessionId = user?.authenticationContext.impersonation?.impersonationId
 
   async function endImpersonation(): Promise<void> {
     const token = client.getAccessToken()
-    if (!token || !sessionId) return
+    if (!token || !sessionId || !client.isAuthenticated()) throw new Error('No active impersonation session')
 
+    const generation = client.state.generation
     const config = await client.discover()
+    client.state.assertCurrent(generation, token)
     await requestNoContent(`${config.issuer}/platform/v1/impersonate/${encodeURIComponent(sessionId)}/end`, {
       method: 'POST',
       bearerToken: token,
     })
 
-    client.logout()
+    client.state.assertCurrent(generation, token)
+    client.state.clear()
   }
 
   return { isImpersonating, actorId, sessionId, endImpersonation }

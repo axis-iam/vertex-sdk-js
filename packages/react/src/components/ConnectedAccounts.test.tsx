@@ -1,243 +1,557 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { createElement } from 'react'
+import type { ReactElement } from 'react'
+import * as webauthn from '../core/identity-webauthn'
+import { IamUiProvider } from '../provider/IamUiProvider'
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ACCOUNT_LINK_STATE_KEY } from '../core/account-linking'
-import type { AccountLoginMethod, LinkableIdentityProvider, OIDCConfiguration } from '../core/types'
-import { IamProvider } from '../provider/IamProvider'
-import { makeTestJwt, storeTestTokens, testProviderProps } from '../test-utils'
+import { OAuthClient } from '../core/oauth-client'
 import { ConnectedAccounts } from './ConnectedAccounts'
+import { AccountProfilePanel } from './AccountProfilePanel'
+import { AccountCenter } from './AccountCenter'
+import { makeTestJwt } from '../test-utils'
+import { identityEnglish, identityZhCN } from '../identity-localization'
+import { identityOperationStore } from '../core/identity-operation-store'
+import { useIdentityOperations } from '../hooks/useIdentityOperations'
 
-const ISSUER = 'https://auth.test.com'
-const mockOidcConfig: OIDCConfiguration = {
-  issuer: ISSUER,
-  authorization_endpoint: `${ISSUER}/authorize`,
-  token_endpoint: `${ISSUER}/token`,
-  userinfo_endpoint: `${ISSUER}/userinfo`,
-  jwks_uri: `${ISSUER}/oauth2/jwks`,
+vi.mock('../provider/IamProvider', () => ({ useIamContext: () => ({ client, user: client.tokenManager.getUser(), isAuthenticated: true, isLoaded: true }) }))
+const issuer = 'https://auth.test.com'
+let client: OAuthClient
+const fetchMock = vi.fn<typeof fetch>()
+const response = (data: unknown) => new Response(JSON.stringify(data), { status: 200 })
+const operation = (state = 'AWAITING_REAUTH') => ({ id: 'op', type: 'ADD', state, expiresAt: new Date(Date.now()+600000).toISOString(), requiredProofs: [
+  { purpose: 'CURRENT_ACCOUNT', methods: ['PASSWORD'], strength: 'POLICY', satisfied: state !== 'AWAITING_REAUTH' },
+  { purpose: 'TARGET_OWNERSHIP', methods: ['EMAIL_OTP'], strength: 'OWNERSHIP', satisfied: state === 'COMMITTED' },
+] })
+function openAdd(l = identityEnglish) {
+  fireEvent.click(screen.getByRole('button', { name: l.addEmail }))
+  return screen.getByRole('dialog')
 }
-
-const passwordMethod: AccountLoginMethod = {
-  methodId: 'credential:PASSWORD',
-  kind: 'CREDENTIAL',
-  credentialType: 'PASSWORD',
-  identityProviderId: null,
-  providerKey: null,
-  providerType: null,
-  protocol: null,
-  displayName: 'Password',
-  linkedAt: '2026-06-27T10:15:30Z',
-  providerUserId: null,
-  unlinkable: false,
-}
-
-const googleMethod: AccountLoginMethod = {
-  methodId: 'idp:idp-google',
-  kind: 'IDENTITY_PROVIDER',
-  credentialType: null,
-  identityProviderId: 'idp-google',
-  providerKey: 'GOOGLE:idp-google',
-  providerType: 'GOOGLE',
-  protocol: 'OIDC',
-  displayName: 'Google',
-  linkedAt: '2026-06-27T10:20:30Z',
-  providerUserId: 'masked',
-  unlinkable: true,
-}
-
-const githubProvider: LinkableIdentityProvider = {
-  id: 'idp-github',
-  providerType: 'GITHUB',
-  protocol: 'OAUTH2',
-  displayName: 'GitHub',
-  enabled: true,
-  linked: false,
-  linkedAt: null,
-  supportsAccountLinking: true,
-}
-
-const samlProvider: LinkableIdentityProvider = {
-  ...githubProvider,
-  id: 'idp-saml',
-  providerType: 'SAML',
-  protocol: 'SAML',
-  displayName: 'SAML',
-}
-
-function renderWithProvider(ui: React.ReactElement) {
-  return render(createElement(IamProvider, testProviderProps(), ui))
-}
-
-function setupFetch(options: {
-  methods?: AccountLoginMethod[]
-  providers?: LinkableIdentityProvider[]
-  stepUpOn?: 'start' | 'unlink'
-} = {}) {
-  const methods = options.methods ?? [passwordMethod, googleMethod]
-  const providers = options.providers ?? [githubProvider, samlProvider]
-  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-    if (url.includes('/.well-known/openid-configuration')) {
-      return { ok: true, json: async () => mockOidcConfig }
-    }
-    if (url.includes('/api/v1/auth/me/permissions')) {
-      return { ok: true, json: async () => ({ applicationId: 'app-test', organizationId: null, roles: ['admin'], permissions: ['orders:read'] }) }
-    }
-    if (url.endsWith('/api/v1/auth/me/login-methods') && init?.method !== 'DELETE') {
-      return { ok: true, json: async () => methods }
-    }
-    if (url.includes('/api/v1/auth/me/linkable-identity-providers')) {
-      return { ok: true, json: async () => providers }
-    }
-    if (url.includes('/api/v1/auth/me/identity-providers/idp-github/link/authorize')) {
-      if (options.stepUpOn === 'start') {
-        return {
-          ok: false,
-          status: 403,
-          json: async () => ({
-            status: 403,
-            error: 'STEP_UP_REQUIRED',
-            message: 'Step-up authentication required',
-            details: { trigger: 'MFA_CHANGE', methods: ['TOTP'] },
-          }),
-        }
+beforeEach(() => {
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function(this: HTMLDialogElement) { this.open = true } })
+  Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function(this: HTMLDialogElement) { this.open = false } })
+  client = new OAuthClient({ issuerUri: issuer, clientId: 'c', redirectUri: '/callback' })
+  client.tokenManager.store({ access_token: makeTestJwt(), expires_in: 3600, token_type: 'Bearer' }, 'OAUTH_AUTHORIZATION_CODE', null)
+  vi.spyOn(client, 'discover').mockResolvedValue({ issuer, authorization_endpoint: `${issuer}/authorize`, token_endpoint: `${issuer}/token`, userinfo_endpoint: `${issuer}/userinfo`, jwks_uri: `${issuer}/jwks` })
+  fetchMock.mockReset().mockImplementation(async (url, init) => {
+    const path = String(url)
+    if (path.endsWith('/identifiers')) return response({ loginMethodVersion: 3, items: [{ id: 'email-1', kind: 'EMAIL', displayValue: 'a@example.invalid', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: true, managedBy: null }] })
+    if (path.endsWith('/login-methods')) return response({ loginMethodVersion: 3, methods: [{ methodId: 'opaque-provider', kind: 'PROVIDER', roles: ['FIRST_FACTOR'], status: 'AVAILABLE', providerId: 'p1', capabilities: { unlink: true }, unavailableReasons: [] }] })
+    if (path.endsWith('/linkable-identity-providers')) return response([{ id: 'p1', displayName: 'Provider One', providerType: 'OIDC', protocol: 'OIDC', enabled: true, linked: true, linkedAt: null, supportsAccountLinking: true, canLink: false, canReauthenticate: true, unavailableReasons: [] }])
+    if (path.endsWith('/profile')) return response({ userId: 'u1', email: null, username: null, displayName: 'User', emailVerified: false, status: 'ACTIVE', avatarUrl: null })
+    if (path.endsWith('/security')) return response({ emailVerified: false, passwordCredentialPresent: true, mfaEnrolled: false, activeSessionCount: 1 })
+    if (path.endsWith('/reauthenticate')) return response(operation('AWAITING_PROOF'))
+    if (path.endsWith('/complete')) return response(operation('COMMITTED'))
+    if (path.endsWith('/cancel')) return response(operation('CANCELLED'))
+    if (path.includes('/identity-operations')) return response(operation())
+    throw new Error(`Unexpected test route ${path} ${init?.method}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+})
+afterEach(() => { cleanup(); client.dispose(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+describe('AccountCenter real login-method consumer', () => {
+  it.each(['en', 'zh-CN'] as const)('locks edits and dialog close while %s recovers the exact original create', async locale => {
+    const l = locale === 'en' ? identityEnglish : identityZhCN
+    const close = vi.fn()
+    const previous = fetchMock.getMockImplementation()!
+    let lost = true
+    fetchMock.mockImplementation(async (url, init) => {
+      if (String(url).endsWith('/identity-operations') && init?.method === 'POST' && lost) {
+        lost = false
+        throw new TypeError('response lost')
       }
-      const body = JSON.parse(init?.body as string) as { state: string }
-      return {
-        ok: true,
-        json: async () => ({
-          authorizationUrl: 'https://github.example.test/login/oauth/authorize',
-          state: body.state,
-          expiresAt: '2026-06-27T10:25:30Z',
-        }),
-      }
-    }
-    if (url.includes('/api/v1/auth/me/login-methods/idp%3Aidp-google')) {
-      if (options.stepUpOn === 'unlink') {
-        return {
-          ok: false,
-          status: 403,
-          json: async () => ({
-            status: 403,
-            error: 'STEP_UP_REQUIRED',
-            message: 'Step-up authentication required',
-            details: { trigger: 'MFA_CHANGE', methods: ['TOTP'] },
-          }),
-        }
-      }
-      return { ok: true, json: async () => ({}) }
-    }
-    return { ok: false, status: 404, json: async () => ({ message: 'Not found' }) }
+      return previous(url, init)
+    })
+    render(<IamUiProvider locale={locale}><AccountCenter open onOpenChange={close} initialSection="methods" /></IamUiProvider>)
+    await screen.findByText('a@example.invalid')
+    const additions = openAdd(l)
+    const input = within(additions).getByLabelText(l.EMAIL)
+    fireEvent.change(input, { target: { value: 'original@example.invalid' } })
+    fireEvent.click(within(additions).getByRole('button', { name: l.add }))
+    await screen.findByText(l.createUnconfirmed)
+    expect(input.matches(':disabled')).toBe(true)
+    expect(within(additions).getByRole('button', { name: l.add }).matches(':disabled')).toBe(true)
+    // Synthetic events can bypass a native disabled fieldset; recovery must still use the retained request.
+    fireEvent.change(input, { target: { value: 'changed@example.invalid' } })
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(close).not.toHaveBeenCalled()
+    const requests = () => fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith('/identity-operations') && init?.method === 'POST')
+    expect(requests()).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: l.recoverCreate }))
+    await screen.findByRole('heading', { name: l.AWAITING_REAUTH })
+    expect(requests()).toHaveLength(2)
+    expect(requests()[1][1]?.body).toBe(requests()[0][1]?.body)
+    expect(JSON.parse(String(requests()[1][1]?.body))).toEqual({ type: 'ADD', expectedLoginMethodVersion: 3,
+      payload: { identifier: { kind: 'EMAIL', value: 'original@example.invalid' } } })
+    expect(new Headers(requests()[1][1]?.headers).get('Idempotency-Key')).toBe(new Headers(requests()[0][1]?.headers).get('Idempotency-Key'))
+    expect(screen.queryByText(l.createUnconfirmed)).toBeNull()
   })
-  globalThis.fetch = fetchMock as unknown as typeof fetch
-  return fetchMock
+  it('refreshes version facts after a definitive stale rejection and requires a deliberate fresh submission', async () => {
+    const previous = fetchMock.getMockImplementation()!
+    let stale = true
+    let refreshed = false
+    fetchMock.mockImplementation(async (url, init) => {
+      const path = String(url)
+      if (path.endsWith('/identity-operations') && init?.method === 'POST' && stale) {
+        stale = false
+        refreshed = true
+        return new Response(JSON.stringify({ error: 'STALE_LOGIN_METHOD_VERSION' }), { status: 409 })
+      }
+      const result = await previous(url, init)
+      if (refreshed && (path.endsWith('/identifiers') || path.endsWith('/login-methods'))) {
+        return response({ ...await result.json(), loginMethodVersion: 4 })
+      }
+      return result
+    })
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByText('a@example.invalid')
+    openAdd()
+    const additions = () => screen.getByRole('dialog')
+    fireEvent.change(within(additions()).getByLabelText(identityEnglish.EMAIL), { target: { value: 'fresh@example.invalid' } })
+    fireEvent.click(within(additions()).getByRole('button', { name: identityEnglish.add }))
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/identifiers'))).toHaveLength(2))
+    const requests = () => fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith('/identity-operations') && init?.method === 'POST')
+    expect(requests()).toHaveLength(1)
+    expect(identityOperationStore(client).getSnapshot().uncertainCreate).toBeNull()
+    fireEvent.click(within(additions()).getByRole('button', { name: identityEnglish.add }))
+    await screen.findByRole('heading', { name: identityEnglish.AWAITING_REAUTH })
+    expect(JSON.parse(String(requests()[1][1]?.body)).expectedLoginMethodVersion).toBe(4)
+    expect(new Headers(requests()[1][1]?.headers).get('Idempotency-Key')).not.toBe(new Headers(requests()[0][1]?.headers).get('Idempotency-Key'))
+  })
+  it('exposes uncertain request state and recovery to a Custom hook consumer', async () => {
+    const { result } = renderHook(() => useIdentityOperations())
+    const input = { type: 'ADD' as const, expectedLoginMethodVersion: 3,
+      payload: { identifier: { kind: 'EMAIL' as const, value: 'custom@example.invalid' } } }
+    fetchMock.mockRejectedValueOnce(new TypeError('response lost'))
+    await act(async () => { await expect(result.current.actions.create(input, 'custom-key')).rejects.toThrow() })
+    expect(result.current.state.uncertainCreate).toEqual({ request: input, idempotencyKey: 'custom-key' })
+    await act(async () => { await expect(result.current.actions.create({ ...input, expectedLoginMethodVersion: 4 })).rejects.toMatchObject({ code: 'CREATE_UNCONFIRMED' }) })
+    expect(fetchMock).toHaveBeenCalledOnce()
+    await act(async () => { await result.current.actions.retryCreate() })
+    expect(result.current.state).toMatchObject({ uncertainCreate: null, operation: { id: 'op' } })
+    expect(fetchMock.mock.calls[1][1]?.body).toBe(fetchMock.mock.calls[0][1]?.body)
+    expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get('Idempotency-Key')).toBe('custom-key')
+  })
+  it('keeps invalid input editable after a definitive rejection and sends the correction with a fresh key', async () => {
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByText('a@example.invalid')
+    const additions = openAdd()
+    const input = within(additions).getByLabelText(identityEnglish.EMAIL)
+    fireEvent.change(input, { target: { value: 'invalid@example.invalid' } })
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'INVALID_IDENTIFIER' }), { status: 400 }))
+    fireEvent.click(within(additions).getByRole('button', { name: identityEnglish.add }))
+    await screen.findByText('Check the identifier and phone region.')
+    expect(input.matches(':disabled')).toBe(false)
+    expect(screen.queryByText(identityEnglish.createUnconfirmed)).toBeNull()
+    fireEvent.change(input, { target: { value: 'corrected@example.invalid' } })
+    fireEvent.click(within(additions).getByRole('button', { name: identityEnglish.add }))
+    await screen.findByRole('heading', { name: identityEnglish.AWAITING_REAUTH })
+    const requests = fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith('/identity-operations') && init?.method === 'POST')
+    expect(JSON.parse(String(requests[1][1]?.body)).payload.identifier.value).toBe('corrected@example.invalid')
+    expect(new Headers(requests[1][1]?.headers).get('Idempotency-Key')).not.toBe(new Headers(requests[0][1]?.headers).get('Idempotency-Key'))
+  })
+  it('blocks host close during creation and retains uncertain cancellation across a later host close', async () => {
+    const store = identityOperationStore(client)
+    let finish!: (r: Response) => void
+    fetchMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const pending = store.create({ type: 'ADD', expectedLoginMethodVersion: 3, payload: { identifier: { kind: 'EMAIL', value: 'new@example.invalid' } } })
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+    const close = vi.fn()
+    render(<IamUiProvider><AccountCenter open onOpenChange={close} initialSection="methods" /></IamUiProvider>)
+    fireEvent.click(screen.getByRole('button', { name: 'Close account center' }))
+    expect(close).not.toHaveBeenCalled()
+    await act(async () => { finish(response(operation())); await pending })
+    await screen.findByRole('heading', { name: identityEnglish.AWAITING_REAUTH })
+    const previous = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (url, init) => {
+      if (String(url).endsWith('/cancel')) throw new TypeError('offline')
+      return previous(url, init)
+    })
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.cancelChange }))
+    await screen.findByText(identityEnglish.cancelUnconfirmed)
+    fireEvent.click(screen.getByRole('button', { name: 'Close account center' }))
+    expect(close).toHaveBeenCalledWith(false)
+    expect(store.getSnapshot().operation?.id).toBe('op')
+  })
+  it('orders identifiers before connected providers before additions and uses durable create/reauth/complete', async () => {
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByText('a@example.invalid')
+    const facts = screen.getByRole('region', { name: identityEnglish.identifiers })
+    const providers = screen.getByRole('region', { name: identityEnglish.providers })
+    let additions = screen.getByRole('region', { name: identityEnglish.add })
+    expect(facts.compareDocumentPosition(providers) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(providers.compareDocumentPosition(additions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    additions = openAdd()
+    fireEvent.change(within(additions).getByLabelText(identityEnglish.EMAIL), { target: { value: 'new@example.invalid' } })
+    fireEvent.click(within(additions).getByRole('button', { name: identityEnglish.add }))
+    await screen.findByRole('heading', { name: identityEnglish.AWAITING_REAUTH })
+    const request = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/identity-operations'))!
+    expect(JSON.parse(String(request[1]?.body))).toEqual({ type: 'ADD', expectedLoginMethodVersion: 3, payload: { identifier: { kind: 'EMAIL', value: 'new@example.invalid' } } })
+    fireEvent.change(screen.getByLabelText(identityEnglish.password), { target: { value: 'private-password' } })
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.verifyContinue }))
+    await screen.findByRole('heading', { name: identityEnglish.AWAITING_PROOF })
+    fireEvent.change(screen.getByLabelText(identityEnglish.otp), { target: { value: '123456' } })
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.verifyComplete }))
+    await screen.findByRole('heading', { name: identityEnglish.COMMITTED })
+    expect(document.body.textContent).not.toContain('private-password')
+  })
+  it('reopens the same uncertain operation after remount and shows cancellation uncertainty', async () => {
+    const store = identityOperationStore(client)
+    await store.reopen('op')
+    const view = render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByRole('heading', { name: identityEnglish.AWAITING_REAUTH })
+    fetchMock.mockImplementationOnce(async () => { throw new TypeError('offline') })
+    await act(async () => { try { await store.cancel() } catch { /* observable error state */ } })
+    expect(screen.getByText(identityEnglish.cancelUnconfirmed)).toBeTruthy()
+    view.unmount()
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await waitFor(() => expect(store.getSnapshot().cancelUnconfirmed).toBe(false))
+    expect(store.getSnapshot().operation?.id).toBe('op')
+  })
+  it('ordinary profile edits have no username control or username write', async () => {
+    render(<IamUiProvider><AccountProfilePanel /></IamUiProvider>)
+    const displayName = await screen.findByLabelText('Display name')
+    await waitFor(() => expect((displayName as HTMLInputElement).value).toBe('User'))
+    expect(screen.queryByLabelText('Username')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Display' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save profile' }))
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true))
+    const request = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH')!
+    expect(JSON.parse(String(request[1]?.body))).toEqual({ displayName: 'Display', avatarUrl: null })
+  })
+})
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: Error) => void
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
 }
-
-describe('ConnectedAccounts', () => {
-  beforeEach(() => {
-    sessionStorage.clear()
-    vi.useRealTimers()
-    storeTestTokens(makeTestJwt(), ['orders:read'])
-    setupFetch()
+function switchIdentity(view: ReturnType<typeof render>, tree: () => ReactElement, userId = 'new-user') {
+  act(() => {
+    client.tokenManager.clear()
+    client.tokenManager.store({ access_token: makeTestJwt({ sub: userId, sid: 'new-session' }), expires_in: 3600, token_type: 'Bearer' }, 'OAUTH_AUTHORIZATION_CODE', null)
   })
-
-  afterEach(() => {
-    vi.restoreAllMocks()
-  })
-
-  it('renders current methods and actionable linkable providers', async () => {
-    renderWithProvider(createElement(ConnectedAccounts, { confirmDisconnect: false, redirect: false }))
-    await waitFor(() => expect(screen.getByText('Password')).toBeTruthy())
-
-    expect(screen.getByText('Google')).toBeTruthy()
-    expect(screen.getByText('GitHub')).toBeTruthy()
-    expect(screen.queryByLabelText('Connect SAML')).toBeNull()
-    expect((screen.getByLabelText('Disconnect Password') as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.getByText('This is required to keep account access available.')).toBeTruthy()
-  })
-
-  it('uses the Chinese credential catalog instead of SDK-generated English enum labels', async () => {
-    render(createElement(
-      IamProvider,
-      { ...testProviderProps(), locale: 'zh-CN' },
-      createElement(ConnectedAccounts, { confirmDisconnect: false, redirect: false }),
-    ))
-
-    await waitFor(() => expect(screen.getByText('密码')).toBeTruthy())
-    expect(screen.queryByText('Password')).toBeNull()
-  })
-
-  it('uses Chinese provider, protocol, and step-up method labels without exposing enum codes', async () => {
-    setupFetch({ stepUpOn: 'unlink' })
-    render(createElement(
-      IamProvider,
-      { ...testProviderProps(), locale: 'zh-CN' },
-      createElement(ConnectedAccounts, { confirmDisconnect: false, redirect: false }),
-    ))
-
-    await waitFor(() => expect(screen.getByText('GitHub（OAuth 2.0）')).toBeTruthy())
-    expect(screen.queryByText('Github (OAUTH2)')).toBeNull()
-
-    await act(async () => {
-      fireEvent.click(screen.getByLabelText('解除 Google 的关联'))
+  view.rerender(tree())
+}
+async function controlOperation() {
+  const previous = fetchMock.getMockImplementation()!
+  fetchMock.mockImplementation(async (url, init) => {
+    if (String(url).includes('/identity-operations')) return response({
+      ...operation(), requiredProofs: [{ purpose: 'CURRENT_ACCOUNT', methods: ['STEP_UP_PROOF', 'PROVIDER'], strength: 'POLICY', satisfied: false }],
     })
-
-    expect(screen.getByRole('alert').textContent).toBe('请再次验证后继续。可用方式：身份验证器应用。')
-    expect(screen.getByRole('alert').textContent).not.toContain('TOTP')
+    return previous(url, init)
   })
-
-  it('starts link only after response state match and stores account-link pending state', async () => {
-    const onLinkStarted = vi.fn()
-    renderWithProvider(createElement(ConnectedAccounts, {
-      confirmDisconnect: false,
-      redirect: false,
-      redirectUri: 'https://app.example.test/account-link/callback',
-      onLinkStarted,
-    }))
-    await waitFor(() => expect(screen.getByLabelText('Connect GitHub')).toBeTruthy())
-
-    await act(async () => {
-      fireEvent.click(screen.getByLabelText('Connect GitHub'))
+  await act(async () => { await identityOperationStore(client).reopen('op') })
+}
+describe('SDK-C01 mounted identity form isolation', () => {
+  it.each(['REPLACE', 'TRANSFER'] as const)('discards the old %s draft before new facts arrive on the same mounted client', async type => {
+    const identifiers = vi.spyOn(client.identity, 'identifiers').mockResolvedValue({
+      loginMethodVersion: 3, items: [
+        { id: 'old-id', kind: 'EMAIL', displayValue: 'old@example.invalid', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: true },
+        { id: 'old-primary', kind: 'EMAIL', displayValue: 'other@example.invalid', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: false },
+      ],
     })
-
-    expect(onLinkStarted).toHaveBeenCalledWith(githubProvider, 'https://github.example.test/login/oauth/authorize')
-    const pending = sessionStorage.getItem(ACCOUNT_LINK_STATE_KEY)
-    expect(pending).toContain('idp-github')
-    expect(pending).not.toContain('link_ticket')
-    expect(sessionStorage.getItem('iam_oauth_state')).toBeNull()
-  })
-
-  it('unlinks using URL-encoded methodId', async () => {
-    const fetchMock = setupFetch()
-    renderWithProvider(createElement(ConnectedAccounts, { confirmDisconnect: false, redirect: false }))
-    await waitFor(() => expect(screen.getByLabelText('Disconnect Google')).toBeTruthy())
-
-    await act(async () => {
-      fireEvent.click(screen.getByLabelText('Disconnect Google'))
+    const tree = () => <IamUiProvider><ConnectedAccounts /></IamUiProvider>
+    const view = render(tree())
+    const oldItem = (await screen.findByText('old@example.invalid')).parentElement!
+    const root = screen.getByRole('region', { name: identityEnglish.title })
+    expect(screen.queryByLabelText(identityEnglish.operationId)).toBeNull()
+    fireEvent.click(within(oldItem).getByText(identityEnglish.moreActions))
+    fireEvent.click(within(oldItem).getByRole('button', { name: type === 'REPLACE' ? identityEnglish.replace : identityEnglish.transfer }))
+    if (type === 'REPLACE') {
+      fireEvent.change(screen.getByLabelText(identityEnglish.kind), { target: { value: 'PHONE' } })
+      fireEvent.change(screen.getByLabelText(identityEnglish.region), { target: { value: 'CN' } })
+      fireEvent.change(screen.getByLabelText(identityEnglish.kind), { target: { value: 'EMAIL' } })
+      fireEvent.change(screen.getByLabelText(identityEnglish.value), { target: { value: 'old-draft@example.invalid' } })
+      fireEvent.click(screen.getByLabelText(identityEnglish.removeOld))
+    } else fireEvent.change(screen.getByLabelText(identityEnglish.targetUser), { target: { value: 'old-recipient' } })
+    fireEvent.change(screen.getByLabelText(identityEnglish.replacementPrimary), { target: { value: 'old-primary' } })
+    const newFacts = deferred<Awaited<ReturnType<typeof client.identity.identifiers>>>()
+    identifiers.mockReturnValue(newFacts.promise)
+    vi.spyOn(client.identity, 'loginMethods').mockResolvedValue({ loginMethodVersion: 4, methods: [] })
+    switchIdentity(view, tree, type === 'TRANSFER' ? 'user-1' : 'new-user')
+    expect(screen.getByRole('region', { name: identityEnglish.title })).toBe(root)
+    expect(screen.queryByText('old@example.invalid')).toBeNull()
+    expect(screen.queryByRole('heading', { name: /old@example/ })).toBeNull()
+    expect(screen.queryByLabelText(identityEnglish.operationId)).toBeNull()
+    expect(screen.queryByLabelText(identityEnglish.value)).toBeNull()
+    expect(screen.queryByLabelText(identityEnglish.kind)).toBeNull()
+    expect(screen.queryByLabelText(identityEnglish.targetUser)).toBeNull()
+    expect((screen.getByRole('button', { name: identityEnglish.addEmail, exact: true }) as HTMLButtonElement).disabled).toBe(true)
+    await act(async () => { newFacts.resolve({ loginMethodVersion: 4, items: [
+      { id: 'new-id', kind: 'EMAIL', displayValue: 'new@example.invalid', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: true },
+    ] }) })
+    await screen.findByText('new@example.invalid')
+    fireEvent.click(screen.getByText(identityEnglish.moreActions, { selector: 'summary' }))
+    fireEvent.click(screen.getByRole('button', { name: type === 'REPLACE' ? identityEnglish.replace : identityEnglish.transfer }))
+    expect((screen.getByLabelText(identityEnglish.replacementPrimary) as HTMLSelectElement).value).toBe('')
+    if (type === 'REPLACE') {
+      expect((screen.getByLabelText(identityEnglish.removeOld) as HTMLInputElement).checked).toBe(true)
+      fireEvent.change(screen.getByLabelText(identityEnglish.kind), { target: { value: 'PHONE' } })
+      expect((screen.getByLabelText(identityEnglish.region) as HTMLInputElement).value).toBe('')
+      fireEvent.change(screen.getByLabelText(identityEnglish.kind), { target: { value: 'EMAIL' } })
+      fireEvent.change(screen.getByLabelText(identityEnglish.value), { target: { value: 'replacement@example.invalid' } })
+    } else {
+      expect((screen.getByLabelText(identityEnglish.targetUser) as HTMLInputElement).value).toBe('')
+      fireEvent.change(screen.getByLabelText(identityEnglish.targetUser), { target: { value: 'new-recipient' } })
+    }
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.complete }))
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/identity-operations') && init?.method === 'POST')).toBe(true))
+    const request = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/identity-operations') && init?.method === 'POST')!
+    expect(JSON.parse(String(request[1]?.body))).toEqual({
+      type, expectedLoginMethodVersion: 4, payload: type === 'REPLACE'
+        ? { identifierId: 'new-id', replacement: { kind: 'EMAIL', value: 'replacement@example.invalid' }, removeOld: true }
+        : { identifierId: 'new-id', targetUserId: 'new-recipient' },
     })
-
-    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/v1/auth/me/login-methods/idp%3Aidp-google'))).toBe(true)
+    expect(sessionStorage.length).toBe(0)
+    expect(localStorage.length).toBe(0)
   })
-
-  it('shows safe step-up copy without raw backend JSON', async () => {
-    setupFetch({ stepUpOn: 'unlink' })
-    renderWithProvider(createElement(ConnectedAccounts, { confirmDisconnect: false, redirect: false }))
-    await waitFor(() => expect(screen.getByLabelText('Disconnect Google')).toBeTruthy())
-
+  it.each(['existing', 'late-success', 'late-failure'] as const)('discards %s step-up state across a mounted session switch', async boundary => {
+    const pending = deferred<{ challengeId: string; availableMethods: ('totp' | 'webauthn')[] }>()
+    const start = vi.spyOn(client.identity, 'startStepUp').mockReturnValue(pending.promise)
+    const tree = () => <IamUiProvider><ConnectedAccounts /></IamUiProvider>
+    const view = render(tree())
+    await screen.findByText('a@example.invalid')
+    const root = screen.getByRole('region', { name: identityEnglish.title })
+    await controlOperation()
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.stepUp }))
+    await waitFor(() => expect(start).toHaveBeenCalledOnce())
+    if (boundary === 'existing') {
+      await act(async () => pending.resolve({ challengeId: 'old-challenge', availableMethods: ['totp'] }))
+      fireEvent.change(await screen.findByLabelText(identityEnglish.otp), { target: { value: '654321' } })
+    }
+    switchIdentity(view, tree)
+    await controlOperation()
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Disconnect Google'))
+      if (boundary === 'late-success') pending.resolve({ challengeId: 'old-challenge', availableMethods: ['totp'] })
+      if (boundary === 'late-failure') pending.reject(new Error('old account failure'))
     })
-
-    expect(screen.getByRole('alert').textContent).toBe('Verify again to continue. Available methods: Authenticator app.')
-    expect(screen.getByRole('alert').textContent).not.toContain('STEP_UP_REQUIRED')
-    expect(screen.getByRole('alert').textContent).not.toContain('MFA_CHANGE')
+    expect(screen.getByRole('region', { name: identityEnglish.title })).toBe(root)
+    expect(screen.queryByLabelText(identityEnglish.otp)).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(document.body.textContent).not.toContain('old-challenge')
+    expect(sessionStorage.length).toBe(0)
   })
+  it('does not apply a late TOTP verification to the new identity operation', async () => {
+    vi.spyOn(client.identity, 'startStepUp').mockResolvedValue({ challengeId: 'old-challenge', availableMethods: ['totp'] })
+    const pending = deferred<void>()
+    const verify = vi.spyOn(client.identity, 'verifyStepUp').mockReturnValue(pending.promise)
+    const reauth = vi.spyOn(client.identity, 'reauthenticate')
+    const tree = () => <IamUiProvider><ConnectedAccounts /></IamUiProvider>
+    const view = render(tree())
+    await screen.findByText('a@example.invalid')
+    await controlOperation()
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.stepUp }))
+    fireEvent.change(await screen.findByLabelText(identityEnglish.otp), { target: { value: '654321' } })
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.verifyContinue }))
+    await waitFor(() => expect(verify).toHaveBeenCalledWith('old-challenge', '654321'))
+    switchIdentity(view, tree)
+    await controlOperation()
+    await act(async () => pending.resolve())
+    expect(reauth).not.toHaveBeenCalled()
+    expect(screen.queryByLabelText(identityEnglish.otp)).toBeNull()
+  })
+  it('discards a late native WebAuthn assertion before verification or reauthentication', async () => {
+    vi.spyOn(client.identity, 'startStepUp').mockResolvedValue({ challengeId: 'old-challenge', availableMethods: ['webauthn'] })
+    vi.spyOn(client.identity, 'startStepUpWebAuthn').mockResolvedValue({ requestId: 'old-request', publicKey: '{}' })
+    const pending = deferred<string>()
+    const assertion = vi.spyOn(webauthn, 'assertIdentityWebAuthn').mockReturnValue(pending.promise)
+    const verify = vi.spyOn(client.identity, 'verifyStepUpWebAuthn')
+    const reauth = vi.spyOn(client.identity, 'reauthenticate')
+    const tree = () => <IamUiProvider><ConnectedAccounts /></IamUiProvider>
+    const view = render(tree())
+    await screen.findByText('a@example.invalid')
+    await controlOperation()
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.stepUp }))
+    fireEvent.click(await screen.findByRole('button', { name: identityEnglish.webauthn }))
+    await waitFor(() => expect(assertion).toHaveBeenCalledOnce())
+    switchIdentity(view, tree)
+    await controlOperation()
+    await act(async () => pending.resolve('old-private-assertion'))
+    expect(verify).not.toHaveBeenCalled()
+    expect(reauth).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: identityEnglish.webauthn })).toBeNull()
+    expect(sessionStorage.length).toBe(0)
+  })
+  it('closes the old provider popup and clears pending state before a late authorization returns', async () => {
+    const popup = { location: { href: 'about:blank' }, close: vi.fn() }
+    vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
+    const pending = deferred<{ authorizationId: string; authorizationUrl: string; expiresAt: string }>()
+    const authorize = vi.spyOn(client.identity, 'authorize').mockReturnValue(pending.promise)
+    const tree = () => <IamUiProvider><ConnectedAccounts redirectUri="/identity-callback" /></IamUiProvider>
+    const view = render(tree())
+    await screen.findByText('a@example.invalid')
+    await controlOperation()
+    fireEvent.click(screen.getByText(identityEnglish.otherProofs, { selector: 'summary' }))
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.providerMethod('Provider One') }))
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.providerMethod('Provider One') }))
+    await waitFor(() => expect(authorize).toHaveBeenCalledOnce())
+    switchIdentity(view, tree)
+    await screen.findByText('a@example.invalid')
+    expect((screen.getByRole('button', { name: identityEnglish.addEmail, exact: true }) as HTMLButtonElement).disabled).toBe(false)
+    expect(popup.close).toHaveBeenCalled()
+    await act(async () => pending.resolve({ authorizationId: 'old-auth', authorizationUrl: 'https://old-provider.invalid', expiresAt: '2099-01-01T00:00:00Z' }))
+    expect(popup.location.href).toBe('about:blank')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect((screen.getByRole('button', { name: identityEnglish.addEmail, exact: true }) as HTMLButtonElement).disabled).toBe(false)
+    expect(sessionStorage.length).toBe(0)
+    expect(localStorage.length).toBe(0)
+  })
+})
 
-  it('shows empty states without exposing endpoint details', async () => {
-    setupFetch({ methods: [], providers: [] })
-    renderWithProvider(createElement(ConnectedAccounts, { confirmDisconnect: false, redirect: false }))
+describe('SDK-C02 AccountCenter local methods theme', () => {
+  it.each(['dark', 'light'] as const)('honors local %s over the opposite provider scheme for body, input and buttons', async local => {
+    const light = { backgroundColor: '#f1f4f7', surfaceColor: '#e5edf5', textColor: '#102030', inputBackgroundColor: '#fafcfe', primaryColor: '#245678' }
+    const dark = { backgroundColor: '#112233', surfaceColor: '#152637', textColor: '#eff6ff', inputBackgroundColor: '#203448', primaryColor: '#17618c' }
+    render(<IamUiProvider colorScheme={local === 'dark' ? 'light' : 'dark'} darkAppearance={{ textColor: '#ff0000' }}>
+      <AccountCenter open onOpenChange={() => undefined} initialSection="methods" colorScheme={local} appearance={light} darkAppearance={dark} />
+    </IamUiProvider>)
+    await screen.findByText('a@example.invalid')
+    const tokens = local === 'dark' ? dark : light
+    const rgb = (value: string) => { const div = document.createElement('div'); div.style.color = value; return div.style.color }
+    const root = screen.getByRole('region', { name: identityEnglish.title })
+    expect(screen.getByRole('dialog').getAttribute('data-color-scheme')).toBe(local)
+    expect(getComputedStyle(root).backgroundColor).toBe(rgb(tokens.backgroundColor))
+    expect(getComputedStyle(root).color).toBe(rgb(tokens.textColor))
+    openAdd()
+    const input = screen.getByLabelText(identityEnglish.EMAIL)
+    expect(getComputedStyle(input).backgroundColor).toBe(rgb(tokens.inputBackgroundColor))
+    expect(getComputedStyle(input).color).toBe(rgb(tokens.textColor))
+    expect(getComputedStyle(screen.getByRole('button', { name: identityEnglish.add, exact: true })).backgroundColor).toBe(rgb(tokens.primaryColor))
+    expect(getComputedStyle(screen.getByRole('button', { name: identityEnglish.later })).backgroundColor).toBe(rgb(tokens.surfaceColor))
+    expect(getComputedStyle(screen.getByRole('button', { name: identityEnglish.later })).color).toBe(rgb(tokens.textColor))
+  })
+})
 
-    await waitFor(() => expect(screen.getByText('No sign-in methods are available.')).toBeTruthy())
-    expect(screen.getByText('No providers are available to connect.')).toBeTruthy()
-    expect(document.body.textContent).not.toContain('/api/v1/auth/me')
+describe('ui-sdk2 operation action stages', () => {
+  async function mounted(initial: ReturnType<typeof operation>) {
+    let view = initial
+    vi.spyOn(client.identity, 'get').mockImplementation(async () => view)
+    await identityOperationStore(client).reopen('op')
+    render(<IamUiProvider><ConnectedAccounts redirectUri="/identity-callback" /></IamUiProvider>)
+    await screen.findByRole('heading', { name: identityEnglish[initial.state as 'AWAITING_REAUTH'] })
+    return { set: (next: ReturnType<typeof operation>) => { view = next } }
+  }
+  it('offers one proof action, no premature completion or refresh, and submits OTP only once before terminal exit', async () => {
+    const h = await mounted(operation())
+    expect(screen.getAllByRole('button', { name: identityEnglish.verifyContinue })).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: identityEnglish.complete })).toBeNull()
+    expect(screen.queryByRole('button', { name: identityEnglish.reopen })).toBeNull()
+    expect(screen.queryByRole('button', { name: identityEnglish.queryStatus })).toBeNull()
+    fireEvent.change(screen.getByLabelText(identityEnglish.password), { target: { value: 'private-test-password' } })
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.verifyContinue }))
+    await screen.findByRole('button', { name: identityEnglish.verifyComplete })
+    expect(screen.queryByRole('button', { name: identityEnglish.complete })).toBeNull()
+    expect(screen.queryByLabelText(identityEnglish.password)).toBeNull()
+    const complete = vi.spyOn(client.identity, 'complete')
+    fireEvent.change(screen.getByLabelText(identityEnglish.otp), { target: { value: '123456' } })
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.verifyComplete }))
+    await screen.findByRole('heading', { name: identityEnglish.COMMITTED })
+    expect(complete).toHaveBeenCalledExactlyOnceWith('op', { proofs: [{ purpose: 'TARGET_OWNERSHIP', method: 'EMAIL_OTP', code: '123456' }] })
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.queryByRole('button', { name: identityEnglish.later })).toBeNull()
+    expect(screen.queryByRole('button', { name: identityEnglish.cancelChange })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.done }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    h.set(operation('COMMITTED'))
+  })
+  it('shows generic completion only for READY and all satisfied proofs, guarded against synthetic premature submission', async () => {
+    const ready = { ...operation('READY'), requiredProofs: operation('COMMITTED').requiredProofs }
+    const h = await mounted(ready)
+    expect(screen.getAllByRole('button', { name: identityEnglish.complete })).toHaveLength(1)
+    expect(screen.queryByRole('textbox')).toBeNull()
+    h.set({ ...ready, state: 'AWAITING_PROOF' })
+    await act(() => identityOperationStore(client).reopen())
+    expect(screen.queryByRole('button', { name: identityEnglish.complete })).toBeNull()
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/complete'))).toBe(false)
+  })
+  it('chooses one available account path and clears passwords when switching to a named Provider', async () => {
+    await mounted({ ...operation(), requiredProofs: [
+      { purpose: 'CURRENT_ACCOUNT', methods: ['PASSWORD', 'STEP_UP_PROOF', 'PROVIDER'], strength: 'POLICY', satisfied: false },
+    ] })
+    fireEvent.change(screen.getByLabelText(identityEnglish.password), { target: { value: 'discard-me' } })
+    expect(screen.getAllByRole('button', { name: identityEnglish.verifyContinue })).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: identityEnglish.providerDone })).toBeNull()
+    fireEvent.click(screen.getByText(identityEnglish.otherProofs, { selector: 'summary' }))
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.providerMethod('Provider One') }))
+    expect(screen.queryByLabelText(identityEnglish.password)).toBeNull()
+    expect(screen.queryByRole('button', { name: identityEnglish.verifyContinue })).toBeNull()
+    expect(screen.getAllByRole('button', { name: identityEnglish.providerMethod('Provider One') })).toHaveLength(1)
+    expect(document.body.innerHTML).not.toContain('discard-me')
+  })
+  it('blocks proof replay after a lost completion and queries the exact operation before terminal exit', async () => {
+    const h = await mounted(operation('AWAITING_PROOF'))
+    const complete = vi.spyOn(client.identity, 'complete').mockRejectedValue(new TypeError('lost completion response'))
+    fireEvent.change(screen.getByLabelText(identityEnglish.otp), { target: { value: '123456' } })
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.verifyComplete }))
+    await screen.findByRole('button', { name: identityEnglish.queryStatus })
+    const form = screen.getByLabelText(identityEnglish.otp).closest('form')!
+    fireEvent.change(screen.getByLabelText(identityEnglish.otp), { target: { value: '123456' } })
+    fireEvent.submit(form)
+    expect(complete).toHaveBeenCalledOnce()
+    h.set(operation('COMMITTED'))
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.queryStatus }))
+    await screen.findByRole('heading', { name: identityEnglish.COMMITTED })
+    expect(client.identity.get).toHaveBeenLastCalledWith('op')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: identityEnglish.queryStatus })).toBeNull()
+  })
+  it('preserves recipient transfer decisions after account proof and never substitutes complete or initiator cancel', async () => {
+    const transfer = { ...operation(), type: 'TRANSFER', requiredProofs: [
+      { purpose: 'TRANSFER_COUNTERPART', methods: ['PASSWORD'], strength: 'POLICY', satisfied: false },
+    ] }
+    let view = transfer
+    vi.spyOn(client.identity, 'get').mockImplementation(async () => view)
+    vi.spyOn(client.identity, 'reauthenticate').mockImplementation(async () => transfer)
+    const confirm = vi.spyOn(client.identity, 'confirmTransfer').mockImplementation(async (_id, decision) => {
+      view = { ...transfer, state: decision === 'ACCEPT' ? 'READY' : 'REJECTED', requiredProofs: transfer.requiredProofs.map(p => ({ ...p, satisfied: true })) }
+      return view
+    })
+    await identityOperationStore(client).reopen('op')
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByLabelText(identityEnglish.password)
+    expect(screen.queryByRole('button', { name: identityEnglish.accept })).toBeNull()
+    expect(screen.getByRole('button', { name: identityEnglish.reject })).toBeTruthy()
+    fireEvent.change(screen.getByLabelText(identityEnglish.password), { target: { value: 'recipient-password' } })
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.verifyContinue }))
+    await screen.findByRole('button', { name: identityEnglish.accept })
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.accept }))
+    await waitFor(() => expect(confirm).toHaveBeenCalledExactlyOnceWith('op', 'ACCEPT'))
+    expect(screen.queryByRole('button', { name: identityEnglish.complete })).toBeNull()
+    expect(screen.queryByRole('button', { name: identityEnglish.cancelChange })).toBeNull()
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/complete') || String(url).endsWith('/cancel'))).toBe(false)
+  })
+  it('lets a recipient reject without account proof and displays the real terminal result', async () => {
+    const transfer = { ...operation(), type: 'TRANSFER', requiredProofs: [
+      { purpose: 'TRANSFER_COUNTERPART', methods: ['PASSWORD'], strength: 'POLICY', satisfied: false },
+    ] }
+    const confirm = vi.spyOn(client.identity, 'confirmTransfer').mockResolvedValue({ ...transfer, state: 'REJECTED' })
+    await mounted(transfer)
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.reject }))
+    await screen.findByRole('heading', { name: identityEnglish.REJECTED })
+    expect(confirm).toHaveBeenCalledExactlyOnceWith('op', 'REJECT')
+    expect(screen.queryByRole('button', { name: identityEnglish.later })).toBeNull()
+    expect(screen.getByRole('button', { name: identityEnglish.done })).toBeTruthy()
+  })
+  it('does not let the initiating account complete a transfer while the other account is still pending', async () => {
+    await mounted({ ...operation('AWAITING_PROOF'), type: 'TRANSFER', requiredProofs: [
+      { purpose: 'CURRENT_ACCOUNT', methods: ['PASSWORD'], strength: 'POLICY', satisfied: true },
+      { purpose: 'TRANSFER_COUNTERPART', methods: [], strength: 'POLICY', satisfied: false },
+    ] })
+    expect(screen.getByText(identityEnglish.awaitingCounterpart)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: identityEnglish.complete })).toBeNull()
+    expect(screen.queryByRole('button', { name: identityEnglish.accept })).toBeNull()
+    expect(screen.getByRole('button', { name: identityEnglish.cancelChange })).toBeTruthy()
+  })
+  it('does not leave proof forms or writable actions on an expired operation', async () => {
+    const expired = { ...operation(), expiresAt: new Date(Date.now() - 1).toISOString() }
+    await identityOperationStore(client).reopen('op')
+    vi.spyOn(client.identity, 'get').mockResolvedValue(expired)
+    await identityOperationStore(client).reopen()
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByRole('heading', { name: identityEnglish.EXPIRED })
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.queryByRole('button', { name: identityEnglish.verifyContinue })).toBeNull()
+    expect(screen.queryByRole('button', { name: identityEnglish.cancelChange })).toBeNull()
+    expect(screen.getByRole('button', { name: identityEnglish.done })).toBeTruthy()
   })
 })

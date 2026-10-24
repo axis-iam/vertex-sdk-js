@@ -96,7 +96,7 @@ export function AuthDialog({
       next === 'sign-up' && !(canSignUp || (candidateSignup && flow.state.step === 'loading'))
         ? 'sign-in'
         : next
-    flow.actions.setIntent(selected)
+    void flow.actions.setIntent(selected).catch(() => { /* The flow exposes cancellation failure. */ })
     setHostedView(selected)
   }
   useEffect(() => {
@@ -109,12 +109,14 @@ export function AuthDialog({
         !dialog.current?.contains(active)
           ? active
           : null
-      selectView(requested.current ?? initialView)
+      if (flow.state.step !== 'verification' || flow.state.registration.status !== 'PENDING_VERIFICATION')
+        selectView(requested.current ?? initialView)
       requested.current = null
       close.current?.focus()
     }
     if (!open && wasOpen.current) {
-      flow.actions.cancel()
+      if (flow.state.step !== 'verification' || flow.state.registration.status !== 'PENDING_VERIFICATION')
+        void flow.actions.cancel().catch(() => { /* The flow exposes cancellation failure. */ })
       const active = opener.current
       opener.current = null
       if (active?.isConnected && !active.matches(':disabled')) active.focus()
@@ -125,8 +127,12 @@ export function AuthDialog({
   useEffect(() => {
     if (flow.state.step !== 'loading' && !canSignUp && flow.state.intent === 'sign-up') selectView('sign-in')
   }, [canSignUp, flow.state.step])
-  const closeDialog = () => {
-    flow.actions.cancel()
+  const closeDialog = async () => {
+    if (flow.state.pending) return
+    if (flow.state.step === 'verification' && flow.state.registration.status === 'PENDING_VERIFICATION') {
+      try { await flow.actions.cancelRegistration() } catch { return }
+    }
+    try { await flow.actions.cancel() } catch { return }
     onOpenChange(false)
   }
   const activeView = mode === 'embedded' ? flow.state.intent : hostedView
