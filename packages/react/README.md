@@ -334,6 +334,17 @@ the new field. PHONE password support does not depend on SMS delivery readiness.
 Appearance, host fonts, brand copy, logo visibility and EN/zh-CN localization
 remain host-controlled through the existing APIs.
 
+PHONE sign-in uses a country/region selector (localized name and calling code)
+and a local-number field. No country is selected from locale. Pasting a valid
+international number synchronizes both fields; unresolved shared-code services,
+unknown numbers and country mismatches are rejected locally. Changing country
+clears the draft. Embedded and Dialog submit normalized E.164
+`{ kind: 'PHONE', value: '+8613800138000' }` without `region`.
+Custom/headless keeps its existing typed-identifier contract: hosts own any
+country-selection UI and must supply valid E.164 without `region`, or a local
+number with the explicit region. `examples/CustomAuth.tsx` has no duplicate
+region form and retains the public E.164 path.
+
 Registration verification has one primary action, a text resend/cooldown helper,
 and a separate text cancellation action. Resend failures preserve entered codes;
 cancellation uncertainty retains the original registration and offers a status

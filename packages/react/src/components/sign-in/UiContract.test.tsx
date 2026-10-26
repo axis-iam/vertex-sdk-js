@@ -28,9 +28,10 @@ afterEach(() => { cleanup(); vi.useRealTimers() })
 describe('approved SDK UI contracts', () => {
   it('uses the explicit default, discloses alternatives, clears and focuses the typed field, and handles Escape', () => {
     const h = setup({ capabilities: { ...flowCapabilities, defaultIdentifierKind: 'PHONE' } })
-    expect(screen.queryByRole('combobox')).toBeNull()
+    expect(screen.getByRole('combobox', { name: 'Country / region' })).toBeTruthy()
     const phone = screen.getByLabelText('Phone number')
     fireEvent.change(phone, { target: { value: '+12025550123' } })
+    expect((screen.getByRole('combobox', { name: 'Country / region' }) as HTMLSelectElement).value).toBe('US')
     const trigger = screen.getByRole('button', { name: 'Use another sign-in method' })
     fireEvent.click(trigger)
     expect(trigger.getAttribute('aria-expanded')).toBe('true')
@@ -45,6 +46,74 @@ describe('approved SDK UI contracts', () => {
     fireEvent.change(username, { target: { value: 'sample' } })
     fireEvent.submit(username.closest('form')!)
     expect(h.actions.continueWithIdentifier).toHaveBeenCalledWith({ kind: 'USERNAME', value: 'sample' })
+  })
+  it('normalizes a selected local phone to E.164 without sending a region', () => {
+    const h = setup({ capabilities: { ...flowCapabilities, defaultIdentifierKind: 'PHONE' } })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Country / region' }), { target: { value: 'CN' } })
+    const phone = screen.getByLabelText('Phone number')
+    fireEvent.change(phone, { target: { value: '13800138000' } })
+    fireEvent.submit(phone.closest('form')!)
+    expect(h.actions.continueWithIdentifier).toHaveBeenCalledWith({ kind: 'PHONE', value: '+8613800138000' })
+  })
+  it('rejects an incomplete phone without calling the flow action', () => {
+    const h = setup({ capabilities: { ...flowCapabilities, defaultIdentifierKind: 'PHONE' } })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Country / region' }), { target: { value: 'CN' } })
+    fireEvent.change(screen.getByLabelText('Phone number'), { target: { value: '123' } })
+    fireEvent.submit(screen.getByLabelText('Phone number').closest('form')!)
+    expect(h.actions.continueWithIdentifier).not.toHaveBeenCalled()
+    expect(screen.getAllByRole('alert')[0].textContent).toContain('valid phone number')
+  })
+  it.each(['+8613800138000', '+86 13800138000'])('synchronizes international paste %s without a locale-selected default', value => {
+    const h = setup({ capabilities: { ...flowCapabilities, defaultIdentifierKind: 'PHONE' } }, 'zh-CN')
+    const country = screen.getByLabelText('国家/地区') as HTMLSelectElement
+    const phone = screen.getByLabelText('手机号') as HTMLInputElement
+    expect(country.value).toBe('')
+    fireEvent.change(phone, { target: { value } })
+    expect(country.value).toBe('CN')
+    expect(phone.value).toBe('13800138000')
+    fireEvent.submit(phone.closest('form')!)
+    expect(h.actions.continueWithIdentifier).toHaveBeenCalledWith({ kind: 'PHONE', value: '+8613800138000' })
+  })
+  it.each(['', '13800138000', '+18005550123', '+99912345', '+8613800138000abc'])('never calls the flow with a missing country or invalid international input %j', value => {
+    const h = setup({ capabilities: { ...flowCapabilities, defaultIdentifierKind: 'PHONE' } })
+    const phone = screen.getByLabelText('Phone number')
+    fireEvent.change(phone, { target: { value } })
+    fireEvent.submit(phone.closest('form')!)
+    expect(h.actions.continueWithIdentifier).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert')).toBeTruthy()
+  })
+  it('clears the previous country for an unresolved international edit and clears drafts on country change', () => {
+    setup({ capabilities: { ...flowCapabilities, defaultIdentifierKind: 'PHONE' } })
+    const country = screen.getByLabelText('Country / region') as HTMLSelectElement
+    const phone = screen.getByLabelText('Phone number') as HTMLInputElement
+    fireEvent.change(phone, { target: { value: '+12025550123' } })
+    expect(country.value).toBe('US')
+    fireEvent.change(phone, { target: { value: '+18005550123' } })
+    expect(country.value).toBe('')
+    fireEvent.submit(phone.closest('form')!)
+    fireEvent.change(country, { target: { value: 'CN' } })
+    expect(phone.value).toBe('')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(document.activeElement).toBe(phone)
+  })
+  it.each(['email', 'username'])('clears phone state across a round trip through %s', alternative => {
+    const h = setup({ capabilities: { ...flowCapabilities, defaultIdentifierKind: 'PHONE' } })
+    fireEvent.change(screen.getByLabelText('Phone number'), { target: { value: '+8613800138000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Use another sign-in method' }))
+    fireEvent.click(screen.getByRole('button', { name: `Sign in with ${alternative}` }))
+    expect(screen.queryByLabelText('Country / region')).toBeNull()
+    const input = screen.getByLabelText(alternative === 'email' ? 'Email' : 'Username') as HTMLInputElement
+    expect(input.value).toBe('')
+    fireEvent.change(input, { target: { value: alternative === 'email' ? 'member@example.invalid' : 'member' } })
+    fireEvent.submit(input.closest('form')!)
+    expect(h.actions.continueWithIdentifier).toHaveBeenCalledWith({
+      kind: alternative === 'email' ? 'EMAIL' : 'USERNAME', value: input.value,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Use another sign-in method' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in with phone number' }))
+    expect((screen.getByLabelText('Country / region') as HTMLSelectElement).value).toBe('')
+    expect((screen.getByLabelText('Phone number') as HTMLInputElement).value).toBe('')
+    expect(screen.queryByRole('alert')).toBeNull()
   })
   it('does not invent a field or switcher for Provider-only or a single supported kind', () => {
     const h = setup({ capabilities: { ...flowCapabilities, identifierMethods: [{ kind: 'PHONE', methods: ['PASSWORD'] }], defaultIdentifierKind: 'PHONE', smsOtpEnabled: false } })

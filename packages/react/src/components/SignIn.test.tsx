@@ -351,7 +351,7 @@ describe('SignIn', () => {
       expect(screen.getByLabelText(locale === 'en' ? 'Identifier type' : '标识类型')).toBeTruthy()
       expect(screen.getAllByRole('button', { name: down })).toHaveLength(1)
       fireEvent.click(screen.getByRole('button', { name: down }))
-      expect(screen.getByPlaceholderText(locale === 'en' ? 'you@example.com' : 'you@example.com 或 +86 13800138000')).toBeTruthy()
+      expect(screen.getByLabelText(locale === 'en' ? 'Email' : '邮箱')).toBeTruthy()
       expect(screen.getAllByRole('button', { name: up })).toHaveLength(1)
     })
 
@@ -673,8 +673,8 @@ describe('SignIn', () => {
       })
 
       expect(screen.getByAltText('应用标志')).toBeTruthy()
-      fireEvent.change(screen.getByLabelText('标识类型'), { target: { value: 'PHONE' } })
-      const identifier = screen.getByPlaceholderText('you@example.com 或 +86 13800138000')
+      const identifier = screen.getByLabelText('手机号')
+      fireEvent.change(screen.getByLabelText('国家/地区'), { target: { value: 'CN' } })
       fireEvent.change(identifier, { target: { value: '+8613800138000' } })
       await act(async () => {
         fireEvent.submit(identifier.closest('form')!)
@@ -682,7 +682,7 @@ describe('SignIn', () => {
       })
 
       expect(screen.getByText('手机号')).toBeTruthy()
-      expect(screen.getByPlaceholderText('+86 13800138000')).toBeTruthy()
+      expect(screen.getByPlaceholderText('手机号')).toBeTruthy()
       expect(screen.getByText('发送验证码')).toBeTruthy()
     })
 
@@ -734,7 +734,7 @@ describe('SignIn', () => {
 
       expect(screen.getByText('Phone number')).toBeTruthy()
       expect(screen.getByRole('button', { name: 'Password', exact: true })).toBeTruthy()
-      expect(screen.getByPlaceholderText('+86 13800138000')).toBeTruthy()
+      expect(screen.getByPlaceholderText('Phone number')).toBeTruthy()
       expect(screen.getByText('Send code')).toBeTruthy()
     })
 
@@ -791,7 +791,7 @@ describe('SignIn', () => {
       })
       fireEvent.change(screen.getByPlaceholderText('Enter 6-digit code'), { target: { value: '123456' } })
       await act(async () => {
-        fireEvent.submit(screen.getByPlaceholderText('+86 13800138000').closest('form')!)
+        fireEvent.submit(screen.getByPlaceholderText('Phone number').closest('form')!)
         await vi.advanceTimersByTimeAsync(100)
       })
 

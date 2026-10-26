@@ -64,9 +64,7 @@ it.each(['Embedded', 'Dialog', 'Custom'])(
     if (entry === 'Custom')
       expect(await screen.findByText('Custom metadata ready')).toBeTruthy()
     else {
-      const input = await screen.findByPlaceholderText(
-        'you@example.com or +86 13800138000',
-      )
+      const input = await screen.findByPlaceholderText('you@example.com')
       expect(input).toBeTruthy()
       expect(
         screen.queryByText('Invalid auth capability/policy response'),

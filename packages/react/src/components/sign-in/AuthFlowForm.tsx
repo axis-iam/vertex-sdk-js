@@ -16,6 +16,8 @@ import {
   linkStyle,
 } from '../styles'
 import type { SignInProviderButtonRenderProps } from './types'
+import { PhoneIdentifierInput } from './PhoneIdentifierInput'
+import { normalizePhoneIdentifier, PhoneIdentifierError } from './phone-identifier'
 
 export function AuthFlowForm({
   flow,
@@ -39,7 +41,7 @@ export function AuthFlowForm({
   registrationGrant?: RegistrationGrantInput
 }) {
   const { state: s, actions } = flow
-  const { localization: l } = useIamUi()
+  const { localization: l, locale } = useIamUi()
   const prefix = useId()
   const root = useRef<HTMLDivElement>(null)
   const mounted = useRef(true)
@@ -48,16 +50,18 @@ export function AuthFlowForm({
   const kinds = s.capabilities?.identifierMethods ?? []
   const kind = selectedKind && kinds.some((entry) => entry.kind === selectedKind)
     ? selectedKind : s.capabilities?.defaultIdentifierKind ?? null
+  const previousKind = useRef(kind)
   const [methodsExpanded, expandMethods] = useState(false)
   const methodTrigger = useRef<HTMLButtonElement>(null)
   const [registrationKind, setRegistrationKind] = useState<
     'EMAIL' | 'USERNAME'
   >('EMAIL')
   const [region, setRegion] = useState('')
-  const typedIdentifier = (): LoginIdentifier =>
-    kind === null ? (() => { throw new Error('Identifier capability is unavailable') })() : kind === 'PHONE'
-      ? { kind, value: identifier, ...(region ? { region } : {}) }
-      : { kind, value: identifier }
+  const typedIdentifier = (): LoginIdentifier => {
+    if (kind === null) throw new Error('Identifier capability is unavailable')
+    if (kind === 'PHONE') return { kind, value: normalizePhoneIdentifier(identifier, region || undefined).e164 }
+    return { kind, value: identifier }
+  }
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [code, setCode] = useState('')
@@ -97,6 +101,11 @@ export function AuthFlowForm({
     setKind(null); setIdentifier(''); setRegion(''); expandMethods(false)
     setPassword(''); setConfirmPassword(''); setCode(''); setValidation(null); setNotice(null)
   }, [s.capabilities, s.intent])
+  useEffect(() => {
+    if (previousKind.current !== kind)
+      root.current?.querySelector<HTMLInputElement>('input[name="identifier"]')?.focus()
+    previousKind.current = kind
+  }, [kind])
   const [, updateDeadline] = useState(0)
   const registrationExpiry = s.step === 'verification' ? s.registration.expiresAt : null
   const registrationExpired = registrationExpiry !== null && Date.parse(registrationExpiry) <= Date.now()
@@ -154,8 +163,10 @@ export function AuthFlowForm({
     setValidation(null)
     try {
       action()
-    } catch {
-      setValidation(l.auth.identifierInvalid)
+    } catch (error) {
+      if (error instanceof PhoneIdentifierError)
+        setValidation(error.code === 'PHONE_REGION_REQUIRED' ? l.identity.phoneAmbiguous : l.identity.phoneInvalid)
+      else setValidation(l.auth.identifierInvalid)
     }
   }
   const field = (
@@ -282,7 +293,7 @@ export function AuthFlowForm({
       className="axis-iam-auth-form"
       style={{ '--axis-auth-focus': a.focusColor } as React.CSSProperties}
     >
-      <style>{`.axis-iam-auth-form input,.axis-iam-auth-form button{font-family:inherit;letter-spacing:normal;text-transform:none}.axis-iam-auth-form input::placeholder{color:inherit;opacity:.72}.axis-iam-auth-form input:focus-visible,.axis-iam-auth-form button:focus-visible,.axis-iam-auth-form a:focus-visible{outline:2px solid var(--axis-auth-focus);outline-offset:3px}.axis-iam-auth-form button:disabled{cursor:not-allowed}.axis-iam-auth-form button:not(:disabled):hover{filter:brightness(.95)}.axis-iam-auth-form .axis-auth-text-action{text-decoration:none}.axis-iam-auth-form .axis-auth-text-action:not(:disabled):hover{text-decoration:underline;text-underline-offset:3px}.axis-iam-auth-form{min-width:0;overflow-wrap:anywhere}@media(prefers-reduced-motion:reduce){.axis-iam-auth-form *{transition:none!important}}`}</style>
+      <style>{`.axis-iam-auth-form input,.axis-iam-auth-form select,.axis-iam-auth-form button{font-family:inherit;letter-spacing:normal;text-transform:none}.axis-iam-auth-form input::placeholder{color:inherit;opacity:.72}.axis-iam-auth-form input:focus-visible,.axis-iam-auth-form select:focus-visible,.axis-iam-auth-form button:focus-visible,.axis-iam-auth-form a:focus-visible{outline:2px solid var(--axis-auth-focus);outline-offset:3px}.axis-iam-auth-form button:disabled{cursor:not-allowed}.axis-iam-auth-form button:not(:disabled):hover{filter:brightness(.95)}.axis-iam-auth-form .axis-auth-text-action{text-decoration:none}.axis-iam-auth-form .axis-auth-text-action:not(:disabled):hover{text-decoration:underline;text-underline-offset:3px}.axis-iam-auth-form{min-width:0;overflow-wrap:anywhere}@media(prefers-reduced-motion:reduce){.axis-iam-auth-form *{transition:none!important}}`}</style>
       {s.step === 'loading' && <p role="status">{l.auth.loadingOptions}</p>}
       {s.step === 'unavailable' && (
         <div><p role="status">
@@ -303,19 +314,25 @@ export function AuthFlowForm({
               sync(() => actions.continueWithIdentifier(typedIdentifier())),
             )}
           >
-            {kind === 'PHONE' &&
-              field('region', l.identity.region, 'text', region, setRegion, {
-                required: !identifier.startsWith('+'),
-              })}
-            {field(
+            {kind === 'PHONE' ? <PhoneIdentifierInput
+              appearance={a}
+              locale={locale}
+              prefix={prefix}
+              value={identifier}
+              country={region}
+              onValueChange={(value) => { setIdentifier(value); setValidation(null) }}
+              onCountryChange={(value) => { setRegion(value); setValidation(null) }}
+              labels={{ country: l.identity.phoneCountry, chooseCountry: l.identity.choosePhoneCountry, number: l.identity.phoneNumber }}
+              error={validation}
+            /> : field(
               'identifier',
               l.identity[kind],
-              kind === 'EMAIL' ? 'email' : kind === 'PHONE' ? 'tel' : 'text',
+              kind === 'EMAIL' ? 'email' : 'text',
               identifier,
               setIdentifier,
               {
-                placeholder: kind === 'EMAIL' ? l.auth.emailPlaceholder : kind === 'PHONE' ? l.auth.phonePlaceholder : l.signUp.usernamePlaceholder,
-                autoComplete: kind === 'PHONE' ? 'tel' : 'username',
+                placeholder: kind === 'EMAIL' ? l.auth.emailPlaceholder : l.signUp.usernamePlaceholder,
+                autoComplete: 'username',
               },
             )}
             {button(l.auth.continue)}
@@ -331,7 +348,6 @@ export function AuthFlowForm({
                 style={{ ...buttonStyle(a, 'ghost'), minHeight: 44 }}
                 onClick={() => {
                   setKind(entry.kind); setIdentifier(''); setRegion(''); setPassword(''); setConfirmPassword(''); setCode(''); setValidation(null); setNotice(null); expandMethods(false)
-                  root.current?.querySelector<HTMLInputElement>('input[name="identifier"]')?.focus()
                 }}>{l.identity.useKind(l.identity[entry.kind])}</button>)}
             </div>}
           </div>}

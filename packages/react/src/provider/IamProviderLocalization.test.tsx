@@ -170,6 +170,6 @@ describe('IamProvider localization', () => {
     expect(localization.connectedAccounts.stepUpMethod('PASSWORD')).toBe('密码')
     expect(localization.connectedAccounts.stepUpMethod('UNKNOWN_METHOD')).toBe('验证方式')
     expect(localization.auth.logoAlt).toBe('应用标志')
-    expect(localization.auth.phonePlaceholder).toBe('+86 13800138000')
+    expect(localization.auth.phonePlaceholder).toBe('手机号')
   })
 })
