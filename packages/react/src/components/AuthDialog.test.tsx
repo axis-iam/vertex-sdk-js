@@ -55,6 +55,8 @@ function setupFetch({
         ],
         identifierMethods: [{ kind: 'EMAIL', methods: ['PASSWORD'] }, { kind: 'PHONE', methods: ['PASSWORD'] }, { kind: 'USERNAME', methods: ['PASSWORD'] }],
         defaultIdentifierKind: 'EMAIL',
+        defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
+        allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
         idpProviders: [],
         resend: { emailVerificationCooldownSeconds: 60 },
       })
@@ -80,6 +82,8 @@ function setupFetch({
         progressiveLockout: false,
         idpAutoProvisioningEnabled: false,
         signupMode,
+        defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
+        allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
         allowedRegistrationGrantTypes: ['ACCESS_CODE'],
       })
     if (url.includes('/branding')) return response({}, 404)
@@ -434,9 +438,7 @@ describe('AuthDialog', () => {
       ).toBeTruthy(),
     )
     expect(screen.getByPlaceholderText('you@example.com')).toBeTruthy()
-    expect(
-      screen.queryByPlaceholderText('you@example.com'),
-    ).toBeNull()
+    expect(screen.queryByPlaceholderText('Enter your password')).toBeNull()
 
     fireEvent.click(
       screen.getByRole('button', { name: 'Close authentication dialog' }),
@@ -449,7 +451,7 @@ describe('AuthDialog', () => {
     expect(
       screen.getByPlaceholderText('you@example.com'),
     ).toBeTruthy()
-    expect(screen.queryByPlaceholderText('you@example.com')).toBeNull()
+    expect(screen.queryByLabelText('Confirm password')).toBeNull()
   })
 
   it('normalizes a disabled-signup initial view to the mounted sign-in pane', async () => {
@@ -467,7 +469,7 @@ describe('AuthDialog', () => {
       ).toBeTruthy(),
     )
     expect(screen.queryByRole('tab')).toBeNull()
-    expect(screen.queryByPlaceholderText('you@example.com')).toBeNull()
+    expect(screen.queryByLabelText('Confirm password')).toBeNull()
     expect(screen.getByRole('heading', { name: /Sign in/ })).toBeTruthy()
   })
 
@@ -488,7 +490,7 @@ describe('AuthDialog', () => {
       ).toBeTruthy(),
     )
     expect(screen.queryByRole('tab')).toBeNull()
-    expect(screen.queryByPlaceholderText('you@example.com')).toBeNull()
+    expect(screen.queryByLabelText('Confirm password')).toBeNull()
     expect(screen.getByRole('heading', { name: /Sign in/ })).toBeTruthy()
   })
 
@@ -535,7 +537,7 @@ describe('AuthDialog', () => {
       ).toBeTruthy(),
     )
     expect(screen.queryByRole('button', { name: /Sign up/ })).toBeNull()
-    expect(screen.queryByPlaceholderText('you@example.com')).toBeNull()
+    expect(screen.queryByLabelText('Confirm password')).toBeNull()
     expect(document.querySelector('[data-auth-view="sign-up"]')).toBeNull()
     expect(document.querySelector('[data-auth-view="sign-in"]')).toBeTruthy()
     expect(
@@ -657,7 +659,7 @@ describe('AuthDialog', () => {
     expect(
       screen.getByPlaceholderText('you@example.com'),
     ).toBeTruthy()
-    expect(screen.queryByPlaceholderText('you@example.com')).toBeNull()
+    expect(screen.queryByLabelText('Confirm password')).toBeNull()
     expect(
       fetchMock.mock.calls.filter(([input]) =>
         String(input).includes('/auth-policy'),

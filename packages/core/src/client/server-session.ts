@@ -3,7 +3,7 @@ import { parseCurrentUser } from './current-user.js'
 import type { CurrentUser } from './current-user.js'
 import type { AuthenticationTransaction, AuthenticationView, PrimaryAuthentication, MfaProofMethod, PrimaryProofMethod } from './authentication-transaction.js'
 import type { LoginIdentifier } from './identity.js'
-import { providerAuthorization, SessionTransportError, UnsupportedOperationError } from './session-transport.js'
+import { providerAuthorization, SessionTransportError } from './session-transport.js'
 import type { SessionRequest, SessionTransport, ProviderRegistrationProof } from './session-transport.js'
 
 export type LoginView = Omit<AuthenticationView, 'transactionId'>
@@ -146,6 +146,7 @@ export class ServerSession {
 
 export class SessionLogin implements AuthenticationFlow {
   private active = true
+  private magicCallbackConsumed = false
   private readonly generation: number
   constructor(private readonly session: ServerSession) { this.generation = session.generation }
   private check() { if (!this.active) throw new SessionInvalidatedError(); this.session.assertCurrent(this.generation) }
@@ -167,6 +168,7 @@ export class SessionLogin implements AuthenticationFlow {
     this.check()
     const v = await this.session.loginAction({ action: 'challenge', body: { method, identifier } })
     if (!('challengeExpiresAt' in v) || !v.challengeExpiresAt || typeof v.cooldownSeconds !== 'number' || !Number.isFinite(v.cooldownSeconds) || v.cooldownSeconds < 0) throw new SessionTransportError('SESSION_RESPONSE_INVALID')
+    if (method === 'EMAIL_MAGIC_LINK') this.magicCallbackConsumed = false
     return { expiresAt: v.expiresAt, challengeExpiresAt: v.challengeExpiresAt, cooldownSeconds: v.cooldownSeconds }
   }
   async verifyMfa(method: MfaProofMethod, code: string) { this.check(); await this.session.loginAction({ action: 'mfa', body: { method, code } }); return this.getSnapshot() }
@@ -178,5 +180,20 @@ export class SessionLogin implements AuthenticationFlow {
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new SessionTransportError('SESSION_RESPONSE_INVALID')
     return { authorizationUrl: url.href, expiresAt: v.expiresAt }
   }
-  async authenticateMagicLink(_url: string, _identifier: LoginIdentifier): Promise<LoginView> { throw new UnsupportedOperationError() }
+  async authenticateMagicLink(url: string, identifier: LoginIdentifier): Promise<LoginView> {
+    this.check()
+    const callback = new URL(url)
+    const p = new URLSearchParams(callback.hash.slice(1))
+    const keys = ['kind', 'method', 'auth_transaction_id', 'state', 'proof']
+    if (this.magicCallbackConsumed || identifier.kind !== 'EMAIL' || callback.search || callback.username || callback.password || !['https:', 'http:'].includes(callback.protocol) ||
+      (typeof location !== 'undefined' && callback.origin !== location.origin) ||
+      [...p.keys()].some(k => !keys.includes(k)) || keys.some(k => p.getAll(k).length !== 1) ||
+      p.get('kind') !== 'AUTH_PROOF' || p.get('method') !== 'EMAIL_MAGIC_LINK' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.get('auth_transaction_id') ?? '') ||
+      ['state', 'proof'].some(k => !p.get(k)?.trim() || p.get(k)!.length > 128)) throw new SessionTransportError('AUTH_MAGIC_CALLBACK_INVALID')
+    this.magicCallbackConsumed = true
+    if (typeof window !== 'undefined' && window.location.href === url) window.history.replaceState(null, '', callback.pathname)
+    await this.session.loginAction({ action: 'magic', body: { transactionId: p.get('auth_transaction_id')!, state: p.get('state')!, proof: p.get('proof')! } })
+    return this.getSnapshot()
+  }
 }

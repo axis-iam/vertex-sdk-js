@@ -1,12 +1,12 @@
 import type { PrimaryAuthentication, MfaProofMethod } from './authentication-transaction.js'
-import type { CreateIdentityOperation, CompleteIdentityOperation, IdentityProofPurpose } from './identity.js'
+import type { CreateIdentityOperation, CompleteIdentityOperation, IdentityProofPurpose, StartRegistration } from './identity.js'
 
 export class UnsupportedOperationError extends Error {
   readonly code = 'UNSUPPORTED_OPERATION'
   constructor() { super('This operation is unavailable in server_session mode'); this.name = 'UnsupportedOperationError' }
 }
 export class SessionTransportError extends Error {
-  constructor(readonly code: string, readonly status = 0) { super(code); this.name = 'SessionTransportError' }
+  constructor(readonly code: string, readonly status = 0, readonly retryAfterSeconds?: number) { super(code); this.name = 'SessionTransportError' }
 }
 export type ProviderRegistrationProof =
   | { registrationGrantToken: string; registrationAccessCode?: never }
@@ -34,6 +34,7 @@ type EmptyAction = 'bootstrap' | 'session' | 'login' | 'complete' | 'cancel' | '
 export type SessionRequest =
   | { action: EmptyAction; purposeRef?: string }
   | { action: 'authenticate'; body: PrimaryAuthentication }
+  | { action: 'magic'; body: { transactionId: string; proof: string; state: string } }
   | { action: 'challenge'; body: { method: 'EMAIL_OTP' | 'SMS_OTP' | 'EMAIL_MAGIC_LINK'; identifier: PrimaryAuthentication['identifier'] } }
   | { action: 'authorize'; body: { providerId: string } & ProviderRegistrationProof }
   | { action: 'mfa'; body: { method: MfaProofMethod; code: string } }
@@ -50,7 +51,7 @@ export type SessionRequest =
   | { action: 'identityComplete'; ref: string; body: CompleteIdentityOperation }
   | { action: 'identityTransfer'; ref: string; body: { decision: 'ACCEPT' | 'REJECT' } }
   | { action: 'identityAuthorize'; ref: string; body: { purpose: IdentityProofPurpose; methodId?: string } }
-  | { action: 'registrationStart'; body: { email: string; password: string; uiLocales?: string }; idempotencyKey: string }
+  | { action: 'registrationStart'; body: Omit<StartRegistration, 'organizationInvitationToken'>; idempotencyKey: string }
   | { action: 'registrationGet' | 'registrationChallenge' | 'registrationCancel'; ref: string }
   | { action: 'registrationComplete'; ref: string; body: { code: string } }
   | { action: 'resetRequest'; body: { email: string } }
@@ -78,6 +79,7 @@ const segment = (value: string) => {
 const routes = {
   bootstrap: ['GET', '/session/bootstrap'], session: ['GET', '/session'], login: ['POST', '/session/login'],
   authenticate: ['POST', '/session/login/authenticate'], challenge: ['POST', '/session/login/challenges'],
+  magic: ['POST', '/session/login/magic'],
   authorize: ['POST', '/session/login/authorize'], mfa: ['POST', '/session/login/mfa'],
   complete: ['POST', '/session/login/complete'], cancel: ['POST', '/session/login/cancel'], logout: ['POST', '/session/logout'],
   workspaces: ['GET', '/session/workspaces'], workspace: ['POST', '/session/workspace'],
@@ -158,7 +160,9 @@ export class CookieSessionTransport implements SessionTransport {
         let code = 'SESSION_REQUEST_FAILED'
         const data: unknown = await response.json().catch(() => null)
         if (data && typeof data === 'object' && 'error' in data && typeof data.error === 'string' && /^[A-Z0-9_]+$/.test(data.error)) code = data.error
-        throw new SessionTransportError(code, response.status)
+        const retry = response.headers.get('Retry-After')
+        const seconds = retry !== null && /^\d+$/.test(retry) && Number.isSafeInteger(Number(retry)) ? Number(retry) : undefined
+        throw new SessionTransportError(code, response.status, seconds)
       }
       const data: unknown = response.status === 204 ? undefined : await response.json()
       if (revision !== this.revision) throw new SessionTransportError('SESSION_INVALIDATED')

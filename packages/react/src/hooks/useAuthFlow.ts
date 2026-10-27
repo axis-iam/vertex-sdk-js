@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AuthenticationTransactionError,
+  SessionTransportError,
   SessionInvalidatedError,
 } from '@axis-iam/vertex'
 import type {
@@ -79,6 +80,7 @@ export function useAuthFlow(
   const mounted = useRef(true)
   const registrationAttempt = useRef<{ body: string; key: string } | null>(null)
   const transaction = useRef<AuthenticationFlow | null>(null)
+  const selectionCancellation = useRef<Promise<void> | null>(null)
   const cooldown = useRef(0)
   const operation = useRef<{
     name: AuthFlowPending
@@ -116,7 +118,7 @@ export function useAuthFlow(
       intent,
     ).filter((x) => intent === 'sign-in' || (signup && x.availableForSignup))
     const hasMethod = intent === 'sign-in' ? base.capabilities.identifierMethods.length > 0 : base.capabilities.methods.some((x) =>
-      signup && x.availableForSignup && x.type === 'PASSWORD',
+      signup && base.capabilities!.allowedSignupIdentifierKinds.length > 0 && x.availableForSignup && x.type === 'PASSWORD',
     )
     return {
       ...base,
@@ -132,6 +134,7 @@ export function useAuthFlow(
 
   useEffect(() => {
     mounted.current = true
+    selectionCancellation.current = null
     ++epoch.current
     let cancelled = false
     update(initial(latest.current.initialIntent ?? 'sign-in'))
@@ -301,7 +304,7 @@ export function useAuthFlow(
             error instanceof Error ? error : new Error('Authentication failed')
           const retry =
             next instanceof IamApiError ||
-            next instanceof AuthenticationTransactionError
+            next instanceof AuthenticationTransactionError || next instanceof SessionTransportError
               ? next.retryAfterSeconds
               : undefined
           if (retry !== undefined) cooldown.current = Date.now() + retry * 1000
@@ -339,6 +342,10 @@ export function useAuthFlow(
       return promise
     }
     async function getTransaction(check: () => void) {
+      if (selectionCancellation.current) {
+        await selectionCancellation.current
+        check()
+      }
       if (transaction.current) return transaction.current
       const next = await client.beginAuthentication()
       try {
@@ -457,7 +464,7 @@ export function useAuthFlow(
       if (!previous) return
       const currentEpoch = epoch.current
       const generation = client.state.generation
-      void previous.cancel().catch((error: unknown) => {
+      const cancellation = previous.cancel().then(() => undefined).catch((error: unknown) => {
         if (
           !mounted.current ||
           epoch.current !== currentEpoch ||
@@ -470,11 +477,16 @@ export function useAuthFlow(
             : new AuthFlowStateError('Cancellation was not confirmed')
         update({
           ...snapshot.current,
+          step: 'unavailable',
           cancellationUnconfirmed: true,
           error: failure,
         })
         latest.current.onError?.(failure)
+        throw failure
       })
+      selectionCancellation.current = cancellation
+      // Record uncertainty in public state even if no subsequent credential action awaits it.
+      void cancellation.catch(() => undefined)
     }
     function requireCooldown() {
       if (Date.now() < cooldown.current)
@@ -520,7 +532,7 @@ export function useAuthFlow(
       back: () => reset(),
       continueWithIdentifier(identifier) {
         const current = assertAvailable()
-        if (current.intent !== 'sign-in' || current.step !== 'identifier')
+        if (current.intent !== 'sign-in' || !['identifier', 'method'].includes(current.step) || current.pending !== null)
           throw new AuthFlowStateError(
             'An identifier cannot be selected in this step',
           )
@@ -548,6 +560,7 @@ export function useAuthFlow(
         update({
           ...current,
           step: 'method',
+          phase: 'credentials',
           identifier: identifier.value.trim(),
           loginIdentifier: identifier,
           identifierKind,
@@ -558,6 +571,7 @@ export function useAuthFlow(
           error: null,
           pending: null,
           retryAfterSeconds: 0,
+          transactionExpiresAt: null, challengeExpiresAt: null, verificationResendDeadline: null,
         })
       },
       selectMethod(next) {
@@ -566,10 +580,12 @@ export function useAuthFlow(
           throw new AuthFlowStateError(
             'This authentication method is unavailable',
           )
+        if (current.method === next) return
         changeSelection()
         update({
           ...current,
           method: next,
+          phase: 'credentials',
           codeSent: false,
           magicLinkSent: false,
           error: null,
@@ -611,6 +627,7 @@ export function useAuthFlow(
           update({
             ...snapshot.current,
             codeSent: true,
+            phase: 'code',
             challengeExpiresAt: challenge.challengeExpiresAt,
           })
           setCooldown(challenge.cooldownSeconds)
@@ -619,6 +636,7 @@ export function useAuthFlow(
       verifyCode(code) {
         return run('verify-code', code, async (check, committed) => {
           const current = method('code')
+          if (current.challengeExpiresAt && Date.parse(current.challengeExpiresAt) <= Date.now()) throw new AuthenticationTransactionError('AUTH_CHALLENGE_EXPIRED')
           if (!current.codeSent || !transaction.current)
             throw new AuthFlowStateError('Request a code first')
           await advance(
@@ -648,6 +666,7 @@ export function useAuthFlow(
           update({
             ...snapshot.current,
             magicLinkSent: true,
+            phase: 'magic-link',
             challengeExpiresAt: challenge.challengeExpiresAt,
           })
           setCooldown(challenge.cooldownSeconds)
@@ -745,6 +764,8 @@ export function useAuthFlow(
           const { current, policy, capabilities } = assertSignup(grant)
           if (
             current.step !== 'sign-up' ||
+            !['EMAIL', 'USERNAME'].includes(input.identifier.kind) ||
+            !capabilities.allowedSignupIdentifierKinds.includes(input.identifier.kind) ||
             !capabilities.methods.some(
               (x) => x.type === 'PASSWORD' && x.availableForSignup,
             )

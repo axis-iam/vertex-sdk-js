@@ -1,3 +1,4 @@
+import { parseAuthCapabilities, parseDefaultLogin, parseSignupIdentifierKinds } from '@axis-iam/vertex'
 import { requestJson, requestNoContent } from './http-client'
 import { IamApiError, IamConfigurationError } from './types'
 import type { AuthClient } from './auth-client'
@@ -11,6 +12,8 @@ export function validateFlowMetadata(
   policy: PublicAuthPolicyResponse,
 ): void {
   validateIdentifierCapabilities(capabilities)
+  parseDefaultLogin(policy.defaultLogin)
+  parseSignupIdentifierKinds(policy.allowedSignupIdentifierKinds)
   if (
     !isRecord(capabilities) ||
     !isRecord(policy) ||
@@ -60,29 +63,9 @@ export function validateFlowMetadata(
 export function validateIdentifierCapabilities(value: unknown): void {
   if (!isRecord(value) || !Array.isArray(value.identifierMethods))
     throw malformed('identifier capability')
-  const kinds = new Set<string>()
-  for (const entry of value.identifierMethods) {
-    if (
-      !isRecord(entry) ||
-      typeof entry.kind !== 'string' ||
-      !['EMAIL', 'PHONE', 'USERNAME'].includes(entry.kind) ||
-      kinds.has(entry.kind) ||
-      !Array.isArray(entry.methods) ||
-      !entry.methods.length ||
-      new Set(entry.methods).size !== entry.methods.length ||
-      !entry.methods.every((method) =>
-        method === 'PASSWORD' ||
-        (entry.kind === 'EMAIL' && (method === 'EMAIL_OTP' || method === 'EMAIL_MAGIC_LINK')) ||
-        (entry.kind === 'PHONE' && method === 'SMS_OTP'),
-      ) ||
-      !entry.methods.every((method) => Array.isArray(value.methods) &&
-        value.methods.some((item) => isRecord(item) && item.type === method && item.availableForLogin === true))
-    ) throw malformed('identifier capability')
-    kinds.add(entry.kind)
-  }
-  if (kinds.size === 0 ? value.defaultIdentifierKind !== null
-    : typeof value.defaultIdentifierKind !== 'string' || !kinds.has(value.defaultIdentifierKind))
-    throw malformed('default identifier capability')
+  const parsed = parseAuthCapabilities(value)
+  if (!parsed.identifierMethods.every(entry => entry.methods.every(method =>
+    Array.isArray(value.methods) && value.methods.some(item => isRecord(item) && item.type === method && item.availableForLogin === true)))) throw malformed('identifier capability')
 }
 export function registrationGrantBody(input?: unknown): Record<string, string> {
   if (input === undefined) return {}

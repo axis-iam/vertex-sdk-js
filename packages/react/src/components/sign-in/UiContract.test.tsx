@@ -26,23 +26,17 @@ function setup(patch: Partial<AuthFlowState> = {}, locale: 'en' | 'zh-CN' = 'en'
 }
 afterEach(() => { cleanup(); vi.useRealTimers() })
 describe('approved SDK UI contracts', () => {
-  it('uses the explicit default, discloses alternatives, clears and focuses the typed field, and handles Escape', () => {
+  it('uses the explicit default with compact keyboard segments and clears kind-specific drafts', () => {
     const h = setup({ capabilities: { ...flowCapabilities, defaultIdentifierKind: 'PHONE' } })
-    expect(screen.getByRole('combobox', { name: 'Country / region' })).toBeTruthy()
     const phone = screen.getByLabelText('Phone number')
     fireEvent.change(phone, { target: { value: '+12025550123' } })
     expect((screen.getByRole('combobox', { name: 'Country / region' }) as HTMLSelectElement).value).toBe('US')
-    const trigger = screen.getByRole('button', { name: 'Use another sign-in method' })
-    fireEvent.click(trigger)
-    expect(trigger.getAttribute('aria-expanded')).toBe('true')
-    fireEvent.keyDown(screen.getByRole('button', { name: 'Sign in with email' }), { key: 'Escape' })
-    expect(document.activeElement).toBe(trigger)
-    expect(trigger.getAttribute('aria-expanded')).toBe('false')
-    fireEvent.click(trigger)
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in with username' }))
+    const usernameButton = screen.getByRole('button', { name: 'Username', exact: true })
+    fireEvent.click(usernameButton)
     const username = screen.getByLabelText('Username') as HTMLInputElement
     expect(username.value).toBe('')
     expect(document.activeElement).toBe(username)
+    expect(screen.getByRole('button', { name: 'Username', exact: true }).getAttribute('aria-pressed')).toBe('true')
     fireEvent.change(username, { target: { value: 'sample' } })
     fireEvent.submit(username.closest('form')!)
     expect(h.actions.continueWithIdentifier).toHaveBeenCalledWith({ kind: 'USERNAME', value: 'sample' })
@@ -99,8 +93,7 @@ describe('approved SDK UI contracts', () => {
   it.each(['email', 'username'])('clears phone state across a round trip through %s', alternative => {
     const h = setup({ capabilities: { ...flowCapabilities, defaultIdentifierKind: 'PHONE' } })
     fireEvent.change(screen.getByLabelText('Phone number'), { target: { value: '+8613800138000' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Use another sign-in method' }))
-    fireEvent.click(screen.getByRole('button', { name: `Sign in with ${alternative}` }))
+    fireEvent.click(screen.getByRole('button', { name: alternative === 'email' ? 'Email' : 'Username', exact: true }))
     expect(screen.queryByLabelText('Country / region')).toBeNull()
     const input = screen.getByLabelText(alternative === 'email' ? 'Email' : 'Username') as HTMLInputElement
     expect(input.value).toBe('')
@@ -109,8 +102,7 @@ describe('approved SDK UI contracts', () => {
     expect(h.actions.continueWithIdentifier).toHaveBeenCalledWith({
       kind: alternative === 'email' ? 'EMAIL' : 'USERNAME', value: input.value,
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Use another sign-in method' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in with phone number' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Phone number', exact: true }))
     expect((screen.getByLabelText('Country / region') as HTMLSelectElement).value).toBe('')
     expect((screen.getByLabelText('Phone number') as HTMLInputElement).value).toBe('')
     expect(screen.queryByRole('alert')).toBeNull()
@@ -136,6 +128,51 @@ describe('approved SDK UI contracts', () => {
   it('rejects an absent or unsupported default rather than choosing the first kind', () => {
     for (const defaultIdentifierKind of [undefined, null, 'OTHER'])
       expect(() => validateFlowMetadata({ ...flowCapabilities, defaultIdentifierKind } as typeof flowCapabilities, flowPolicy)).toThrow()
+  })
+  it('preserves PHONE country and local number while changing credential method, clears secrets, and never reorders segments', () => {
+    setup({ capabilities: { ...flowCapabilities, defaultIdentifierKind: 'PHONE' } })
+    fireEvent.change(screen.getByLabelText('Phone number'), { target: { value: '+8613800138000' } })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'fixture-only' } })
+    const before = screen.getAllByRole('group')[1].textContent
+    fireEvent.click(screen.getByRole('button', { name: 'SMS code', exact: true }))
+    expect((screen.getByLabelText('Phone number') as HTMLInputElement).value).toBe('13800138000')
+    expect((screen.getByLabelText('Country / region') as HTMLSelectElement).value).toBe('CN')
+    expect(screen.queryByLabelText('Password')).toBeNull()
+    expect(screen.queryByLabelText('Verification code')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Password', exact: true }))
+    expect((screen.getByLabelText('Password') as HTMLInputElement).value).toBe('')
+    expect(screen.getAllByRole('group')[1].textContent).toBe(before)
+  })
+  it('shows OTP only after successful send and retains its input on resend errors with an expiry action', () => {
+    const h = setup()
+    expect(screen.queryByLabelText('Verification code')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Email code', exact: true }))
+    expect(screen.queryByLabelText('Verification code')).toBeNull()
+    h.update({ step: 'method', phase: 'code', identifier: 'member@example.invalid', loginIdentifier: { kind: 'EMAIL', value: 'member@example.invalid' }, identifierKind: 'email', method: 'email_otp', methods: ['email_otp', 'password'], codeSent: true, magicLinkSent: false, challengeExpiresAt: new Date(Date.now() + 60000).toISOString() })
+    const code = screen.getByLabelText('Verification code') as HTMLInputElement
+    fireEvent.change(code, { target: { value: '123456' } })
+    h.update({ error: new Error('fixture network error') })
+    expect(code.value).toBe('123456')
+    h.update({ challengeExpiresAt: new Date(Date.now() - 1).toISOString() })
+    expect(code.disabled).toBe(true)
+    expect(screen.getByText(/has expired/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Change', exact: true })).toBeTruthy()
+  })
+  it('limits registration to the effective USERNAME capability and clears secret drafts when changing signup kind', () => {
+    const h = setup({ step: 'sign-up', intent: 'sign-up', capabilities: { ...flowCapabilities, allowedSignupIdentifierKinds: ['USERNAME'] } })
+    expect(screen.queryByLabelText('Email')).toBeNull()
+    expect(screen.queryByRole('group')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'member' } })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'Fixture_123!' } })
+    fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'Fixture_123!' } })
+    fireEvent.submit(screen.getByLabelText('Username').closest('form')!)
+    expect(h.actions.signUp).toHaveBeenCalledWith({ identifier: { kind: 'USERNAME', value: 'member' }, password: 'Fixture_123!' })
+  })
+  it('does not pretend a magic link was verified before the real callback', () => {
+    setup({ step: 'method', phase: 'magic-link', identifier: 'member@example.invalid', loginIdentifier: { kind: 'EMAIL', value: 'member@example.invalid' }, identifierKind: 'email', method: 'magic_link', methods: ['magic_link'], codeSent: false, magicLinkSent: true })
+    expect(screen.getByRole('status').textContent).toContain('sign-in link')
+    expect(screen.queryByRole('button', { name: 'Sign in', exact: true })).toBeNull()
+    expect(screen.queryByLabelText('Verification code')).toBeNull()
   })
   it.each(['en', 'zh-CN'] as const)('keeps %s verification hierarchy, input and focus stable through cooldown and failures', async (locale) => {
     const h = setup({

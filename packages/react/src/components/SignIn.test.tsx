@@ -99,6 +99,8 @@ const defaultAuthMethods: PublicAuthMethodsResponse = {
   postVerificationRedirectUri: null,
   identifierMethods: [{ kind: 'EMAIL', methods: ['PASSWORD'] }, { kind: 'PHONE', methods: ['PASSWORD'] }, { kind: 'USERNAME', methods: ['PASSWORD'] }],
   defaultIdentifierKind: 'EMAIL',
+  defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
+  allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
   methods: [
     {
       type: 'PASSWORD',
@@ -150,6 +152,8 @@ function setupFetchMock(
         ok: true,
         json: async () => ({
           signupMode: 'OPEN',
+          defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
+          allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
           allowedRegistrationGrantTypes: [],
           idpAutoProvisioningEnabled: false,
           minPasswordLength: 8,
@@ -244,6 +248,7 @@ function authMethodsWith(options: {
       { kind: 'USERNAME', methods: methods.filter(m => m.availableForLogin && m.type === 'PASSWORD').map(() => 'PASSWORD' as const) },
     ] as PublicAuthMethodsResponse['identifierMethods']).filter(entry => entry.methods.length > 0),
     defaultIdentifierKind: options.password || options.magicLink || options.emailOtp ? 'EMAIL' : options.sms ? 'PHONE' : null,
+    defaultLogin: options.password ? { identifierKind: 'EMAIL', method: 'PASSWORD' } : options.magicLink ? { identifierKind: 'EMAIL', method: 'EMAIL_MAGIC_LINK' } : options.emailOtp ? { identifierKind: 'EMAIL', method: 'EMAIL_OTP' } : options.sms ? { identifierKind: 'PHONE', method: 'SMS_OTP' } : null,
     methods,
     idpProviders: options.providers ?? [],
     resend: {
@@ -269,13 +274,11 @@ function methodAvailability(
 async function continueWithIdentifier(value: string, kind: 'EMAIL' | 'PHONE' | 'USERNAME' = 'EMAIL') {
   const label = { EMAIL: 'Email', PHONE: 'Phone number', USERNAME: 'Username' }[kind]
   if (!screen.queryByLabelText(label)) {
-    fireEvent.click(screen.getByRole('button', { name: /Use another sign-in method|Sign in with/ }))
-    fireEvent.click(screen.getByRole('button', { name: `Sign in with ${label.toLowerCase()}` }))
+    fireEvent.click(screen.getByRole('button', { name: label, exact: true }))
   }
   const input = screen.getByLabelText(label)
   fireEvent.change(input, { target: { value } })
   await act(async () => {
-    fireEvent.submit(input.closest('form')!)
     await vi.advanceTimersByTimeAsync(10)
   })
 }
@@ -332,10 +335,9 @@ describe('SignIn', () => {
       setupFetchMock()
       renderWithProvider(createElement(SignIn, { mode: 'embedded' }))
       await act(async () => vi.advanceTimersByTimeAsync(10))
-      fireEvent.click(screen.getByRole('button', { name: 'Use another sign-in method' }))
-      fireEvent.click(screen.getByRole('button', { name: 'Sign in with phone number' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Phone number', exact: true }))
       fireEvent.click(screen.getByRole('button', { name: 'Sign up', exact: true }))
-      expect((screen.getByLabelText('Identifier type') as HTMLSelectElement).value).toBe('EMAIL')
+      expect(screen.getByRole('button', { name: 'Email', exact: true }).getAttribute('aria-pressed')).toBe('true')
       expect((screen.getByLabelText('Email') as HTMLInputElement).type).toBe('email')
       expect(screen.queryByLabelText('Phone number')).toBeNull()
     })
@@ -384,7 +386,7 @@ describe('SignIn', () => {
       expect(screen.queryByRole('button', { name: 'Sign up' })).toBeNull()
     })
 
-    it('renders identifier-first form and then password challenge for an email', async () => {
+    it('renders identifier above its actual credential method without an extra continue step', async () => {
       setupFetchMock()
       renderWithProvider(createElement(SignIn, { mode: 'embedded' }))
       await act(async () => {
@@ -392,11 +394,10 @@ describe('SignIn', () => {
       })
 
       expect(screen.getByPlaceholderText('you@example.com')).toBeTruthy()
-      expect(screen.queryByPlaceholderText('Enter your password')).toBeNull()
+      expect(screen.getByPlaceholderText('Enter your password')).toBeTruthy()
 
       await continueWithIdentifier('user@test.com')
 
-      expect(screen.getByText(/Signing in as/)).toBeTruthy()
       expect(screen.getByPlaceholderText('Enter your password')).toBeTruthy()
     })
 
@@ -605,9 +606,10 @@ describe('SignIn', () => {
       })
 
       await continueWithIdentifier('username-only')
+      fireEvent.submit(screen.getByLabelText('Email').closest('form')!)
 
       expect(screen.getByText('Enter a valid email address or phone number.')).toBeTruthy()
-      expect(screen.queryByPlaceholderText('Enter your password')).toBeNull()
+      expect(screen.getByPlaceholderText('Enter your password')).toBeTruthy()
       expect(screen.queryByRole('button', { name: 'Resend', exact: true })).toBeNull()
     })
 
@@ -681,9 +683,8 @@ describe('SignIn', () => {
         await vi.advanceTimersByTimeAsync(10)
       })
 
-      expect(screen.getByText('手机号')).toBeTruthy()
-      expect(screen.getByPlaceholderText('手机号')).toBeTruthy()
-      expect(screen.getByText('发送验证码')).toBeTruthy()
+      expect(screen.getByLabelText('验证码')).toBeTruthy()
+      expect(screen.queryByLabelText('手机号')).toBeNull()
     })
 
     it('keeps branding logo centered and bounded when host CSS makes images block-level', async () => {
@@ -732,9 +733,11 @@ describe('SignIn', () => {
 
       await continueWithIdentifier('+8613800138000', 'PHONE')
 
-      expect(screen.getByText('Phone number')).toBeTruthy()
+      expect(screen.getByLabelText('Phone number')).toBeTruthy()
       expect(screen.getByRole('button', { name: 'Password', exact: true })).toBeTruthy()
-      expect(screen.getByPlaceholderText('Phone number')).toBeTruthy()
+      expect((screen.getByLabelText('Phone number') as HTMLInputElement).value).toBe('13800138000')
+      expect(screen.getByRole('button', { name: 'Sign in', exact: true })).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'SMS code', exact: true }))
       expect(screen.getByText('Send code')).toBeTruthy()
     })
 
@@ -791,7 +794,7 @@ describe('SignIn', () => {
       })
       fireEvent.change(screen.getByPlaceholderText('Enter 6-digit code'), { target: { value: '123456' } })
       await act(async () => {
-        fireEvent.submit(screen.getByPlaceholderText('Phone number').closest('form')!)
+        fireEvent.submit(screen.getByPlaceholderText('Enter 6-digit code').closest('form')!)
         await vi.advanceTimersByTimeAsync(100)
       })
 
@@ -1075,7 +1078,7 @@ describe('SignIn', () => {
       expect(screen.queryByText(/raw provider backend details/)).toBeNull()
     })
 
-    it('does not show credential method actions before identifier continue', async () => {
+    it('shows actual credential choices under the identifier before submission', async () => {
       renderEmbeddedWithAuthMethods(
         authMethodsWith({ password: true, sms: true, magicLink: true, emailOtp: true }),
       )
@@ -1083,11 +1086,11 @@ describe('SignIn', () => {
         await vi.advanceTimersByTimeAsync(10)
       })
 
-      expect(screen.getByText('Continue')).toBeTruthy()
-      expect(screen.queryByText('Password')).toBeNull()
+      expect(screen.getByRole('button', { name: 'Sign in', exact: true })).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Password', exact: true })).toBeTruthy()
       expect(screen.queryByText('SMS code')).toBeNull()
-      expect(screen.queryByText('Magic link')).toBeNull()
-      expect(screen.queryByText('Email code')).toBeNull()
+      expect(screen.getByRole('button', { name: 'Magic link', exact: true })).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Email code', exact: true })).toBeTruthy()
     })
 
     it('does not create visible methods from deprecated IamConfig authMethods', async () => {
@@ -1137,7 +1140,7 @@ describe('SignIn', () => {
       })
       fireEvent.change(screen.getByPlaceholderText('Enter 6-digit code'), { target: { value: '123456' } })
       await act(async () => {
-        fireEvent.submit(screen.getByPlaceholderText('you@example.com').closest('form')!)
+        fireEvent.submit(screen.getByPlaceholderText('Enter 6-digit code').closest('form')!)
         await vi.advanceTimersByTimeAsync(100)
       })
 

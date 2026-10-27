@@ -1,3 +1,6 @@
+export type { AuthCapabilities, DefaultLogin, IdentifierMethods, SignupIdentifierKind } from '@axis-iam/vertex'
+export { phoneCountries, parsePhoneIdentifier, normalizePhoneIdentifier, PhoneIdentifierError } from './components/sign-in/phone-identifier'
+export type { PhoneCountryOption, PhoneParseResult } from './components/sign-in/phone-identifier'
 export { useAuthFlow, AuthFlowStateError } from './hooks/useAuthFlow'
 export type { AuthFlowState, AuthFlowActions, AuthFlowIntent, AuthCredentialMethod, UseAuthFlowOptions, UseAuthFlowResult } from './hooks/useAuthFlow'
 // --- Provider ---

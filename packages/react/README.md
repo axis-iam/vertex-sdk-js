@@ -54,9 +54,11 @@ step-up returns a purpose ref consumed by the matching sensitive action; it is n
 materials within the host's dedicated recovery UI; never put them in generic session/query state, logs or storage.
 Enrollment secrets/QR are likewise caller-owned, not session authority.
 
-The delivered console anonymous registration adapter supports EMAIL registration only. Server-session grant-preview,
-organization-invitation and browser Magic-fragment completion have no delivered finite adapter and explicitly reject;
-do not route them through raw authenticated upstream APIs. Provider registration uses the delivered strict authorize
+The console registration adapter accepts the strict `{identifier:{kind:"EMAIL"|"USERNAME",value},password}` body,
+with one optional `registrationGrantToken` or `registrationAccessCode`. It never previews or consumes the grant early.
+Server-session grant-preview and organization-invitation adapters remain explicitly unsupported. Browser Magic callback
+completion uses the delivered `/console/session/login/magic` DTO; the server-owned fragment bridge normally handles
+the callback and returns to `/login`, where bootstrap restores the safe session or MFA continuation. Provider registration uses the delivered strict authorize
 DTO independently of that registration adapter. Impersonation destination wire is outside this frozen handoff.
 
 ### Provider Registration DTO
@@ -233,7 +235,7 @@ disallowed and conflicting proofs before transport.
 
 ### Application identity operations
 
-Password login and registration accept an explicit `LoginIdentifier` (`EMAIL`, `USERNAME`, or `PHONE` with an explicit region when needed). Text never changes the selected kind. Email registration returns a registration operation, not a User or session. Use `client.identity.startRegistration`, `getRegistration`, and `registrationAction` (`challenges`, `complete`, `cancel`). The Registration-Control secret stays in memory and is separate from the email code. If it is lost, restart and choose your own password. Only a completed operation offers sign-in; completion does not sign in automatically.
+Password login accepts an explicit `LoginIdentifier` (`EMAIL`, `USERNAME`, or `PHONE` with an explicit region when needed). Registration accepts only the effective allowed EMAIL/USERNAME kinds, never PHONE. Text never changes the selected kind. Email registration returns a registration operation, not a User or session. Use `client.identity.startRegistration`, `getRegistration`, and `registrationAction` (`challenges`, `complete`, `cancel`). The Registration-Control secret stays in memory and is separate from the email code. If it is lost, restart and choose your own password. Only a completed operation offers sign-in; completion does not sign in automatically.
 
 `client.identity` exposes identifier/version facts, durable create/get/reauthenticate/challenge/authorize/providerCallback/complete/cancel/confirmTransfer actions and independent recovery authorization/status/challenge/completion/cancellation. `useIdentityOperations` exposes the same shared state to Custom and AccountCenter. Preserve the operation ID when a cancellation is uncertain and GET it before retrying. Provider confirmation uses PKCE and a separate window so the initiating context keeps the verifier in memory. The callback page contains no token handling; return to the initiating window to finish confirmation. A receiving account opens the operation ID in its own session and reauthenticates before ACCEPT; REJECT ends the transfer.
 
@@ -322,15 +324,22 @@ state; explicit logout discards it and invalidates local ownership.
 
 Embedded, Dialog and `useAuthFlow` consume the public auth-methods response's
 `identifierMethods: Array<{ kind: 'EMAIL' | 'PHONE' | 'USERNAME'; methods: Array<'PASSWORD' | 'EMAIL_MAGIC_LINK' | 'EMAIL_OTP' | 'SMS_OTP'> }>`
-and `defaultIdentifierKind`. The explicit default must belong to the supported
-set; Provider-only applications return an empty set and a null default.
+and the resolved `defaultLogin:{identifierKind,method}`, nullable `defaultIdentifierKind`,
+and effective `allowedSignupIdentifierKinds`. The resolved pair must match the first ordered identifier/method; Provider-only applications return an empty set and a null default.
 Missing, duplicate or contradictory capabilities fail closed. The unavailable
 view offers Retry (`actions.retryOptions()` for Custom); there is no guessed
-kind, account-existence probe or default derived from array order.
+kind or account-existence probe. `auth-policy.defaultLogin` is only a preference and is never used to invent an available method. The strict parser validates the resolved default before the ordered list is used.
 
-The shared form shows one typed field and discloses alternative supported kinds
-on request. Switching clears the previous draft and proof inputs, then focuses
-the new field. PHONE password support does not depend on SMS delivery readiness.
+The shared form shows compact identifier segments only when multiple kinds are available,
+with the typed field above ordered credential choices. Single choices hide their switchers.
+Changing credential method preserves the identifier (including PHONE country/local number)
+but clears password/OTP. Changing identifier kind clears its draft, region and proof inputs.
+User choices never reorder the server list. OTP enters a separate verification view only after
+a successful send; `state.phase` exposes `credentials`, `code`, or `magic-link` for Custom.
+Cooldown/429 and expiry use server deadlines; Change/Back cancel the old challenge. A magic
+link waits for a real callback rather than an "already clicked" authentication shortcut.
+EMAIL and USERNAME registration are independent, gated by the effective allowed set;
+USERNAME never fabricates an email. An empty signup set leaves existing login/binding alone. PHONE password support does not depend on SMS delivery readiness.
 Appearance, host fonts, brand copy, logo visibility and EN/zh-CN localization
 remain host-controlled through the existing APIs.
 
@@ -366,3 +375,13 @@ references and exact expiry are in expandable details, not the main heading.
 Custom integrations can still use `useIdentityOperations().actions.reopen(ref)`
 when they already hold an authorized operation reference; the prebuilt view no
 longer asks ordinary users to paste an operation ID.
+
+### Headless Capability Consumption
+
+Core exports `parseAuthCapabilities`, `AuthCapabilities`, `DefaultLogin`, `IdentifierMethods`,
+and `SignupIdentifierKind`. React re-exports the types and exposes `useAuthFlow` public actions
+without requiring any prebuilt UI. `examples/CustomAuth.tsx` uses only public imports and the
+same authoritative capability/default/registration state. PHONE hosts may reuse the pure
+`phoneCountries`, `parsePhoneIdentifier` and `normalizePhoneIdentifier` helpers; no country is
+inferred from locale. `allowSignUp` only controls presentation; it cannot enable server-disabled
+registration and is not a substitute for the effective allowed set.

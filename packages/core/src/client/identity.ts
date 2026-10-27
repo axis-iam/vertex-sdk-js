@@ -101,8 +101,9 @@ export interface RegistrationOperation {
   nextAction: 'VERIFY_EMAIL' | 'LOGIN' | 'RESTART'
   nextChallengeAt?: string | null
 }
+export type RegistrationIdentifier = { kind: 'EMAIL' | 'USERNAME'; value: string; region?: never }
 export interface StartRegistration {
-  identifier: LoginIdentifier
+  identifier: RegistrationIdentifier
   password: string
   uiLocales?: string
   registrationGrantToken?: string

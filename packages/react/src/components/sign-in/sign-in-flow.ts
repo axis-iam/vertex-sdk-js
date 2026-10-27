@@ -142,21 +142,7 @@ export function hasAnyCredentialLoginMethod(authMethods: PublicAuthMethodsRespon
 
 export function getAvailableCredentialMethods(authMethods: PublicAuthMethodsResponse, identifierKind: IdentifierKind): { id: CredentialMethod }[] {
   const capability = authMethods.identifierMethods.find((entry) => entry.kind === identifierKind.toUpperCase())
-  const methodAvailable = (type: Exclude<PublicAuthMethodsResponse['methods'][number]['type'], 'SOCIAL'>) => capability?.methods.includes(type) === true
-  const methods: { id: CredentialMethod }[] = []
-  if (identifierKind === 'email') {
-    if (methodAvailable('PASSWORD')) methods.push({ id: 'password' })
-    if (methodAvailable('EMAIL_OTP')) methods.push({ id: 'email_otp' })
-    if (methodAvailable('EMAIL_MAGIC_LINK')) methods.push({ id: 'magic_link' })
-    return methods
-  }
-  if (identifierKind === 'username') {
-    if (methodAvailable('PASSWORD')) methods.push({ id: 'password' })
-    return methods
-  }
-  if (methodAvailable('SMS_OTP')) methods.push({ id: 'sms' })
-  if (methodAvailable('PASSWORD')) methods.push({ id: 'password' })
-  return methods
+  return (capability?.methods ?? []).map(type => ({ id: type === 'PASSWORD' ? 'password' : type === 'EMAIL_OTP' ? 'email_otp' : type === 'EMAIL_MAGIC_LINK' ? 'magic_link' : 'sms' }))
 }
 
 export function getAvailableProviderOptions(

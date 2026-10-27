@@ -170,7 +170,8 @@ describe('public primary transaction flow', () => {
   it('uses explicit identifier capabilities and keeps PHONE password independent of SMS readiness', async () => {
     vi.mocked(currentClient.getPublicAuthMethods).mockResolvedValue({
       ...flowCapabilities, smsOtpEnabled: false,
-      identifierMethods: [{ kind: 'PHONE', methods: ['PASSWORD'] }], defaultIdentifierKind: 'PHONE',
+      identifierMethods: [{ kind: 'PHONE', methods: ['PASSWORD'] }],
+      defaultLogin: { identifierKind: 'PHONE', method: 'PASSWORD' }, defaultIdentifierKind: 'PHONE',
     })
     const h = await setup()
     expect(() => act(() => h.result.current.actions.continueWithIdentifier({ kind: 'EMAIL', value: 'sample@example.invalid' }))).toThrow(/kind is unavailable/)
@@ -825,4 +826,89 @@ describe('transaction recovery and cancellation boundaries', () => {
     ).rejects.toThrow('signed-in account')
     expect(sessionStorage.getItem('axis_iam_pending_authorization')).toBeNull()
   })
+})
+
+describe('auth experience producer contract', () => {
+  it('selects the actual ordered method and preserves the typed identifier through method switches', async () => {
+    vi.mocked(currentClient.getPublicAuthMethods).mockResolvedValue({ ...flowCapabilities,
+      identifierMethods: [{ kind: 'PHONE', methods: ['SMS_OTP', 'PASSWORD'] }, { kind: 'EMAIL', methods: ['PASSWORD'] }],
+      defaultIdentifierKind: 'PHONE', defaultLogin: { identifierKind: 'PHONE', method: 'SMS_OTP' },
+    })
+    const h = await setup()
+    act(() => h.result.current.actions.continueWithIdentifier({ kind: 'PHONE', value: '+8613800138000' }))
+    expect(h.result.current.state).toMatchObject({ method: 'sms', methods: ['sms', 'password'], phase: 'credentials' })
+    act(() => h.result.current.actions.selectMethod('password'))
+    expect(h.result.current.state).toMatchObject({ loginIdentifier: { kind: 'PHONE', value: '+8613800138000' }, method: 'password' })
+  })
+  it('enters code phase only after the successful challenge and clears it on method changes', async () => {
+    const h = await setup(); await identify(h)
+    act(() => h.result.current.actions.selectMethod('email_otp'))
+    fetchMock.mockRejectedValueOnce(new Error('fixture network failure'))
+    await act(async () => { await expect(h.result.current.actions.sendCode()).rejects.toThrow() })
+    expect(h.result.current.state).toMatchObject({ phase: 'credentials', codeSent: false })
+    await act(async () => h.result.current.actions.sendCode())
+    expect(h.result.current.state).toMatchObject({ phase: 'code', codeSent: true, retryAfterSeconds: 30 })
+    act(() => h.result.current.actions.selectMethod('password'))
+    expect(h.result.current.state).toMatchObject({ phase: 'credentials', codeSent: false, challengeExpiresAt: null })
+  })
+  it('rejects disabled EMAIL and PHONE signup before transport, and sends USERNAME without an email', async () => {
+    vi.mocked(currentClient.getPublicAuthMethods).mockResolvedValue({ ...flowCapabilities, allowedSignupIdentifierKinds: ['USERNAME'] })
+    fetchMock.mockResolvedValue(response({ ...user, status: 'COMPLETED', nextAction: 'LOGIN' }))
+    const h = await setup({ initialIntent: 'sign-up' })
+    for (const identifier of [{ kind: 'EMAIL', value: 'member@example.invalid' }, { kind: 'PHONE', value: '+8613800138000' }] as const) {
+      await act(async () => { await expect(h.result.current.actions.signUp({ identifier, password: 'Fixture_123!' })).rejects.toThrow() })
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+    await act(async () => h.result.current.actions.signUp({ identifier: { kind: 'USERNAME', value: 'member' }, password: 'Fixture_123!' }))
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(body.identifier).toEqual({ kind: 'USERNAME', value: 'member' })
+    expect(body).not.toHaveProperty('email')
+  })
+})
+
+it('waits for old challenge cancellation before a different credential may create a transaction', async () => {
+  const h = await setup(); await identify(h)
+  act(() => h.result.current.actions.selectMethod('email_otp'))
+  await act(async () => h.result.current.actions.sendCode())
+  const original = globalThis.fetch
+  let finish!: () => void
+  let cancellationStarted = false
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).endsWith('/cancel')) { cancellationStarted = true; await new Promise<void>(resolve => { finish = resolve }) }
+    return original(input, init)
+  })
+  act(() => h.result.current.actions.selectMethod('password'))
+  const before = fetchMock.mock.calls.length
+  let pending!: Promise<void>
+  act(() => { pending = h.result.current.actions.submitPassword('{{SECRET_vw9kk7bz}}') })
+  await act(async () => { await Promise.resolve() })
+  expect(cancellationStarted).toBe(true)
+  expect(fetchMock.mock.calls.length).toBe(before)
+  await act(async () => { finish(); await pending })
+  expect(h.result.current.state.step).toBe('success')
+})
+
+it('fails closed after a credential-switch cancellation refusal and exposes explicit retry', async () => {
+  const h = await setup()
+  await identify(h)
+  act(() => h.result.current.actions.selectMethod('email_otp'))
+  await act(async () => h.result.current.actions.sendCode())
+  const original = globalThis.fetch
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) =>
+    String(input).endsWith('/cancel')
+      ? response({ error: 'TEMPORARILY_UNAVAILABLE' }, 503)
+      : original(input, init),
+  )
+  act(() => h.result.current.actions.selectMethod('password'))
+  await waitFor(() => expect(h.result.current.state).toMatchObject({
+    step: 'unavailable', cancellationUnconfirmed: true,
+  }))
+  const before = fetchMock.mock.calls.length
+  await act(async () => {
+    await expect(h.result.current.actions.submitPassword('test-only-password')).rejects.toThrow()
+  })
+  expect(fetchMock.mock.calls.length).toBe(before)
+  await act(async () => h.result.current.actions.retryOptions())
+  await waitFor(() => expect(h.result.current.state.step).toBe('identifier'))
+  expect(h.result.current.state.cancellationUnconfirmed).toBe(false)
 })

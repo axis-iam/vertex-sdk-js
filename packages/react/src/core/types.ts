@@ -1,3 +1,4 @@
+import type { AuthCapabilities, DefaultLogin, SignupIdentifierKind } from '@axis-iam/vertex'
 /** OIDC Discovery document (subset of fields we use) */
 export interface OIDCConfiguration {
   issuer: string
@@ -122,7 +123,7 @@ export interface AuthMethodIdpProviderResponse {
   authorizationUrl: string | null
 }
 
-export interface PublicAuthMethodsResponse {
+export interface PublicAuthMethodsResponse extends AuthCapabilities {
   clientId: string
   passwordLoginEnabled: boolean
   emailMagicLinkEnabled: boolean
@@ -136,12 +137,6 @@ export interface PublicAuthMethodsResponse {
   postVerificationRedirectUri: string | null
   methods: AuthMethodAvailabilityResponse[]
   idpProviders: AuthMethodIdpProviderResponse[]
-  /** Authoritative supported identifier/method pairs; never inferred from global flags. */
-  identifierMethods: {
-    kind: 'EMAIL' | 'PHONE' | 'USERNAME'
-    methods: Exclude<AuthMethodType, 'SOCIAL'>[]
-  }[]
-  defaultIdentifierKind: 'EMAIL' | 'PHONE' | 'USERNAME' | null
   resend: {
     emailVerificationCooldownSeconds: number
   }
@@ -177,6 +172,9 @@ export interface LogoutOptions extends LogoutUrlOptions {
 
 /** Resolved public auth policy for browser login/signup flows. */
 export interface PublicAuthPolicyResponse {
+  /** Effective preference, not the resolved capability default. */
+  defaultLogin: DefaultLogin
+  allowedSignupIdentifierKinds: SignupIdentifierKind[]
   passwordLoginEnabled: boolean
   passwordlessEnabled: boolean
   minPasswordLength: number

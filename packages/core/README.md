@@ -91,3 +91,19 @@ signature and required issuer/audience/sub/iat/exp/nonce claims, including azp b
 present or required. It throws `IdTokenValidationError` (`OIDC_ID_TOKEN_INVALID`) without
 claim/provider text. It does not decode Access Tokens or supply UI permissions. Hosted
 `PendingAuthorization.nonce` is finite tab-local navigation material, never an ordinary token.
+
+## Resolved Authentication Capabilities
+
+`parseAuthCapabilities(raw)` is framework-neutral. It returns the producer-ordered
+`identifierMethods`, resolved nullable `defaultLogin`/`defaultIdentifierKind`, and effective
+`allowedSignupIdentifierKinds`. Missing/duplicate/invalid pairs, inconsistent first/default
+combinations and PHONE signup fail closed with `AuthCapabilitiesError`. It never resolves
+the preference from auth-policy or enables a disabled method. Empty local capabilities have
+null defaults; an empty signup array explicitly disables local registration, not existing login.
+
+Compose these capabilities with public `AuthenticationTransaction`/`AuthenticationFlow` actions:
+`challenge` first, then proof `authenticate`, and retain the original MFA/complete protocol.
+The finite Cookie transport adds `magic` with exactly `{transactionId,proof,state}` and typed
+EMAIL/USERNAME `registrationStart` with the optional mutually-exclusive token/access-code grant.
+No grant preview/redemption, browser token, control secret or PKCE material is added to Cookie
+state. `SessionTransportError.retryAfterSeconds` carries a valid numeric server Retry-After.

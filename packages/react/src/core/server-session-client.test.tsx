@@ -52,7 +52,6 @@ it.each(['Embedded','Dialog'])('renders %s login and original MFA with only Cook
   render(createElement(IamProvider,config(),entry==='Dialog'?createElement(AuthDialog,{open:true,signInProps:{onSuccess:success}}):createElement(SignIn,{mode:'embedded',onSuccess:success})))
   const identifier=await screen.findByPlaceholderText('you@example.com')
   fireEvent.change(identifier,{target:{value:'u@example.invalid'}})
-  fireEvent.submit(identifier.closest('form')!)
   const password=await screen.findByPlaceholderText('Enter your password')
   fireEvent.change(password,{target:{value:'fixture-password'}});fireEvent.submit(password.closest('form')!)
   const code=await screen.findByLabelText('Authenticator code')
@@ -118,5 +117,23 @@ it('binds single-use purpose refs to the authenticated owner generation', async 
   f.setView(pending())
   await client.restoreSession()
   expect(() => client.consumePurpose('LOGIN_METHOD_CHANGE')).toThrow('STEP_UP_REQUIRED')
+  client.dispose()
+})
+
+it.each(['EMAIL', 'USERNAME'] as const)('sends the delivered typed %s registration and grant without preview or email alias', async kind => {
+  const f = fixture()
+  const client = new ServerSessionClient(config())
+  const request = vi.spyOn(client.session.transport, 'request')
+  request.mockImplementation(async input => {
+    if (input.action === 'registrationStart') return { ref, status: kind === 'USERNAME' ? 'COMPLETED' : 'PENDING_VERIFICATION', expiresAt: expiry(), nextAction: kind === 'USERNAME' ? 'LOGIN' : 'VERIFY_EMAIL' }
+    return { ...pending() }
+  })
+  await client.restoreSession()
+  await client.identity.startRegistration({ identifier: { kind, value: kind === 'EMAIL' ? 'member@example.invalid' : 'member' }, password: '{{SECRET_vw9kk7bz}}', registrationAccessCode: '12345678' }, 'fixture-key')
+  const action = request.mock.calls.find(([input]) => input.action === 'registrationStart')![0]
+  expect(action).toMatchObject({ action: 'registrationStart', body: { identifier: { kind }, registrationAccessCode: '12345678' }, idempotencyKey: 'fixture-key' })
+  expect(action).not.toHaveProperty('body.email')
+  expect(f.calls.some(c => /preview/.test(c.path))).toBe(false)
+  await expect(client.identity.startRegistration({ identifier: { kind: 'PHONE', value: '+8613800138000' }, password: 'fixture' }, 'key')).rejects.toMatchObject({ code: 'UNSUPPORTED_OPERATION' })
   client.dispose()
 })

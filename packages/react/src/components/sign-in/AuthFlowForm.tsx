@@ -4,7 +4,7 @@ import type { FormEvent, ReactNode } from 'react'
 import { SessionInvalidatedError } from '@axis-iam/vertex'
 import { useIamUi } from '../../provider/IamUiProvider'
 import { localizeError } from '../../localization'
-import type { UseAuthFlowResult } from '../../core/auth-flow-types'
+import type { AuthCredentialMethod, UseAuthFlowResult } from '../../core/auth-flow-types'
 import type { RegistrationGrantInput } from '../../core/types'
 import type { Appearance } from '../styles'
 import type { BrandingConfig } from '../useBranding'
@@ -16,6 +16,7 @@ import {
   linkStyle,
 } from '../styles'
 import type { SignInProviderButtonRenderProps } from './types'
+import { getAvailableCredentialMethods } from './sign-in-flow'
 import { PhoneIdentifierInput } from './PhoneIdentifierInput'
 import { normalizePhoneIdentifier, PhoneIdentifierError } from './phone-identifier'
 
@@ -51,11 +52,12 @@ export function AuthFlowForm({
   const kind = selectedKind && kinds.some((entry) => entry.kind === selectedKind)
     ? selectedKind : s.capabilities?.defaultIdentifierKind ?? null
   const previousKind = useRef(kind)
-  const [methodsExpanded, expandMethods] = useState(false)
-  const methodTrigger = useRef<HTMLButtonElement>(null)
-  const [registrationKind, setRegistrationKind] = useState<
-    'EMAIL' | 'USERNAME'
-  >('EMAIL')
+  const [selectedMethod, setSelectedMethod] = useState<AuthCredentialMethod | null>(null)
+  const methods = s.capabilities && kind ? getAvailableCredentialMethods(s.capabilities, kind === 'EMAIL' ? 'email' : kind === 'PHONE' ? 'phone' : 'username').map(m => m.id) : []
+  const credential = selectedMethod && methods.includes(selectedMethod) ? selectedMethod : methods[0] ?? null
+  const signupKinds = s.capabilities?.allowedSignupIdentifierKinds ?? []
+  const [selectedRegistrationKind, setRegistrationKind] = useState<'EMAIL' | 'USERNAME' | null>(null)
+  const registrationKind = selectedRegistrationKind && signupKinds.includes(selectedRegistrationKind) ? selectedRegistrationKind : signupKinds[0] ?? null
   const [region, setRegion] = useState('')
   const typedIdentifier = (): LoginIdentifier => {
     if (kind === null) throw new Error('Identifier capability is unavailable')
@@ -98,7 +100,7 @@ export function AuthFlowForm({
   const [validation, setValidation] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   useEffect(() => {
-    setKind(null); setIdentifier(''); setRegion(''); expandMethods(false)
+    setKind(null); setIdentifier(''); setRegion(''); setSelectedMethod(null)
     setPassword(''); setConfirmPassword(''); setCode(''); setValidation(null); setNotice(null)
   }, [s.capabilities, s.intent])
   useEffect(() => {
@@ -169,6 +171,20 @@ export function AuthFlowForm({
       else setValidation(l.auth.identifierInvalid)
     }
   }
+  const clearProofs = () => { setPassword(''); setConfirmPassword(''); setCode(''); setValidation(null); setNotice(null) }
+  const segments = <T extends string,>(items: readonly T[], active: T | null, choose: (value: T) => void, label: (value: T) => string, name: string) => (
+    <div role="group" aria-label={name} className="axis-auth-segments" style={{ display: 'flex', gap: 4, padding: 4, background: a.subtleColor, borderRadius: a.borderRadius, marginBottom: 16 }}>
+      {items.map(value => <button key={value} type="button" aria-pressed={active === value} disabled={busy}
+        onClick={() => choose(value)} onKeyDown={event => { if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return; event.preventDefault(); const i = items.indexOf(value); const next = items[(i + (event.key === 'ArrowRight' ? 1 : -1) + items.length) % items.length]!; choose(next); const buttons = event.currentTarget.parentElement?.querySelectorAll('button'); buttons?.[items.indexOf(next)]?.focus() }}
+        style={{ flex: '1 1 0', minWidth: 0, minHeight: 44, padding: '8px 6px', borderRadius: a.borderRadius, border: `1px solid ${active === value ? a.borderColor : 'transparent'}`, background: active === value ? a.backgroundColor : 'transparent', color: active === value ? a.textColor : a.mutedTextColor, fontSize: 14, fontWeight: active === value ? 600 : 400, cursor: 'pointer' }}>{label(value)}</button>)}
+    </div>
+  )
+  const challengeExpired = s.challengeExpiresAt !== null && Date.parse(s.challengeExpiresAt) <= Date.now()
+  useEffect(() => {
+    if (!s.challengeExpiresAt || challengeExpired) return
+    const timer = setTimeout(() => { setCode(''); updateDeadline(value => value + 1) }, Math.min(Date.parse(s.challengeExpiresAt) - Date.now(), 2147483647))
+    return () => clearTimeout(timer)
+  }, [s.challengeExpiresAt, challengeExpired])
   const field = (
     name: string,
     label: string,
@@ -302,266 +318,58 @@ export function AuthFlowForm({
             : s.error
               ? l.auth.optionsUnavailable
               : l.auth.noMethodAvailable}
-        </p>{s.error && textButton(l.identity.retry, () => consume(actions.retryOptions()))}</div>
+        </p>{textButton(l.identity.retry, () => consume(actions.retryOptions()))}</div>
       )}
       {s.step === 'identifier' && providerCallback && (
         <div>{button(l.auth.continue, () => consume(actions.resumeProviderCallback(window.location.href)))}</div>
       )}
-      {s.step === 'identifier' && !providerCallback && (
-        <>
-          {kind !== null && <form
-            onSubmit={formSubmit(() =>
-              sync(() => actions.continueWithIdentifier(typedIdentifier())),
-            )}
-          >
-            {kind === 'PHONE' ? <PhoneIdentifierInput
-              appearance={a}
-              locale={locale}
-              prefix={prefix}
-              value={identifier}
-              country={region}
-              onValueChange={(value) => { setIdentifier(value); setValidation(null) }}
-              onCountryChange={(value) => { setRegion(value); setValidation(null) }}
-              labels={{ country: l.identity.phoneCountry, chooseCountry: l.identity.choosePhoneCountry, number: l.identity.phoneNumber }}
-              error={validation}
-            /> : field(
-              'identifier',
-              l.identity[kind],
-              kind === 'EMAIL' ? 'email' : 'text',
-              identifier,
-              setIdentifier,
-              {
-                placeholder: kind === 'EMAIL' ? l.auth.emailPlaceholder : l.signUp.usernamePlaceholder,
-                autoComplete: 'username',
-              },
-            )}
-            {button(l.auth.continue)}
+      {s.completionPending && <div>{button(l.identity.retry, () => consume(actions.retryCompletion()))}{textButton(l.auth.back, () => leave(actions.cancel))}</div>}
+      {((s.step === 'identifier' && !providerCallback) || (s.step === 'method' && !s.completionPending)) && <>
+        {kind !== null && (s.step !== 'method' || (!s.codeSent && !s.magicLinkSent)) && <form onSubmit={formSubmit(() => sync(() => {
+          const value = typedIdentifier()
+          if (s.step !== 'method' || s.loginIdentifier.kind !== value.kind || s.loginIdentifier.value !== value.value) {
+            actions.continueWithIdentifier(value)
+          }
+          if (credential) actions.selectMethod(credential)
+          if (credential === 'password') consume(actions.submitPassword(password))
+          else if (credential === 'magic_link') consume(magicCallback ? actions.completeMagicLink(window.location.href) : actions.sendMagicLink())
+          else consume(actions.sendCode())
+        }))}>
+          {kinds.length > 1 && segments(kinds.map(entry => entry.kind), kind, next => {
+            const switchKind = () => { setKind(next); setIdentifier(''); setRegion(''); setSelectedMethod(null); clearProofs() }
+            if (s.step === 'method') consume(actions.back(), switchKind)
+            else switchKind()
+          }, entry => l.identity[entry], l.identity.kind)}
+          {kind === 'PHONE' ? <PhoneIdentifierInput appearance={a} locale={locale} prefix={prefix} value={identifier} country={region}
+            onValueChange={value => { setIdentifier(value); setValidation(null) }} onCountryChange={value => { setRegion(value); setValidation(null) }}
+            labels={{ country: l.identity.phoneCountry, chooseCountry: l.identity.choosePhoneCountry, number: l.identity.phoneNumber }} disabled={busy} error={validation} />
+            : field('identifier', l.identity[kind], kind === 'EMAIL' ? 'email' : 'text', identifier, setIdentifier, { autoComplete: 'username', disabled: busy, placeholder: kind === 'EMAIL' ? l.auth.emailPlaceholder : l.signUp.usernamePlaceholder })}
+          {methods.length > 1 && segments(methods, credential, next => { setSelectedMethod(next); clearProofs(); if (s.step === 'method') actions.selectMethod(next) }, method => l.auth.credentialMethod(method), l.connectedAccounts.credential)}
+          {credential === 'password' && field('password', l.auth.password, 'password', password, setPassword, { autoComplete: 'current-password', placeholder: l.auth.passwordPlaceholder, disabled: busy })}
+          {credential && button(busy ? l.auth.signInBusy : credential === 'password' ? (branding?.loginButtonText ?? l.auth.signIn) : credential === 'magic_link' ? magicCallback ? l.auth.signIn : l.auth.sendMagicLink : l.auth.sendCode, undefined, busy || s.cancellationUnconfirmed || (credential !== 'password' && s.retryAfterSeconds > 0))}
+          {credential === 'password' && (onForgotPassword || forgotPasswordUrl) && <p style={{ margin: '12px 0 0' }}>{onForgotPassword ? textButton(l.auth.forgotPassword, onForgotPassword) : <a href={forgotPasswordUrl} style={linkStyle(a)}>{l.auth.forgotPassword}</a>}</p>}
+        </form>}
+        {s.step === 'method' && !s.codeSent && !s.magicLinkSent && textButton(l.auth.change, () => consume(actions.back(), clearProofs), false)}
+        {s.step === 'method' && (s.codeSent || s.magicLinkSent) && <div>
+          <p style={{ fontSize: 14, overflowWrap: 'anywhere' }}>{l.auth.signingInAs(s.identifier)}</p>
+          {s.magicLinkSent ? <>
+            <h3 style={{ fontSize: 18, margin: '16px 0 12px' }}>{l.signUp.checkEmail}</h3>
+            <p role="status">{l.auth.magicLinkSent(s.identifier)}</p>
+            {magicCallback && button(l.auth.signIn, () => consume(actions.completeMagicLink(window.location.href)))}
+          </> : <form onSubmit={formSubmit(() => consume(actions.verifyCode(code)))}>
+            {field('code', l.auth.verificationCode, 'text', code, setCode, { autoComplete: 'one-time-code', inputMode: 'numeric', maxLength: 6, placeholder: l.auth.verificationCodePlaceholder, disabled: busy || challengeExpired })}
+            {button(busy ? l.auth.verifying : l.auth.verify, undefined, busy || challengeExpired || code.length < 4)}
           </form>}
-          {kinds.length > 1 && <div style={{ textAlign: 'center', marginTop: 12 }}
-            onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); expandMethods(false); methodTrigger.current?.focus() } }}>
-            <button ref={methodTrigger} type="button" aria-expanded={methodsExpanded} aria-controls={`${prefix}-other-methods`}
-              onClick={() => expandMethods(!methodsExpanded)} style={{ ...linkStyle(a), minHeight: 44, border: 0, background: 'transparent', cursor: 'pointer' }}>
-              {kinds.length === 2 ? l.identity.useKind(l.identity[kinds.find((entry) => entry.kind !== kind)!.kind]) : l.identity.otherMethods}
-            </button>
-            {methodsExpanded && <div id={`${prefix}-other-methods`} style={{ display: 'grid', gap: 8 }}>
-              {kinds.filter((entry) => entry.kind !== kind).map((entry) => <button key={entry.kind} type="button"
-                style={{ ...buttonStyle(a, 'ghost'), minHeight: 44 }}
-                onClick={() => {
-                  setKind(entry.kind); setIdentifier(''); setRegion(''); setPassword(''); setConfirmPassword(''); setCode(''); setValidation(null); setNotice(null); expandMethods(false)
-                }}>{l.identity.useKind(l.identity[entry.kind])}</button>)}
-            </div>}
-          </div>}
-          {providers}
-        </>
-      )}
-      {s.completionPending && (
-        <div>
-          {button(l.identity.retry, () => consume(actions.retryCompletion()))}
-          <button
-            type="button"
-            onClick={() => leave(actions.cancel)}
-            style={linkStyle(a)}
-          >
-            {l.auth.back}
-          </button>
-        </div>
-      )}
-      {s.step === 'method' && !s.completionPending && (
-        <>
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'baseline',
-              gap: 12,
-              marginBottom: 20,
-            }}
-          >
-            <span style={{ fontSize: 14, overflowWrap: 'anywhere' }}>
-              {l.auth.signingInAs(s.identifier)}
-            </span>
-            <button
-              type="button"
-              onClick={() => leave(actions.back)}
-              style={linkStyle(a)}
-            >
-              {l.auth.change}
-            </button>
+          {challengeExpired && <p role="status">{l.auth.challengeExpired}</p>}
+          <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+            {textButton(l.auth.change, () => consume(actions.back(), () => { setIdentifier(s.identifier); clearProofs() }))}
+            {s.retryAfterSeconds > 0 ? <span style={{ display: 'inline-flex', alignItems: 'center', minHeight: 44 }}>{l.auth.resendIn(s.retryAfterSeconds)}</span> : textButton(l.auth.resend, () => consume(s.magicLinkSent ? actions.sendMagicLink() : actions.sendCode()))}
           </div>
-          {s.methods.length > 1 && (
-            <div
-              style={{
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: 8,
-                marginBottom: 20,
-              }}
-            >
-              {s.methods.map((method) => (
-                <button
-                  key={method}
-                  type="button"
-                  aria-pressed={s.method === method}
-                  onClick={() => leave(() => actions.selectMethod(method))}
-                  style={{
-                    ...buttonStyle(a, 'ghost'),
-                    width: 'auto',
-                    borderColor:
-                      s.method === method ? a.focusColor : a.borderColor,
-                  }}
-                >
-                  {l.auth.credentialMethod(method)}
-                </button>
-              ))}
-            </div>
-          )}
-          {!s.method && <p role="status">{l.auth.noMethodForIdentifier}</p>}
-          {s.method === 'password' && (
-            <>
-              <form
-                onSubmit={formSubmit(() =>
-                  consume(actions.submitPassword(password)),
-                )}
-              >
-                {field(
-                  'password',
-                  l.auth.password,
-                  'password',
-                  password,
-                  setPassword,
-                  {
-                    autoComplete: 'current-password',
-                    placeholder: l.auth.passwordPlaceholder,
-                  },
-                )}
-                {button(
-                  busy
-                    ? l.auth.signInBusy
-                    : (branding?.loginButtonText ?? l.auth.signIn),
-                )}
-              </form>
-              {(onForgotPassword || forgotPasswordUrl) && (
-                <p style={{ margin: '12px 0 0' }}>
-                  {onForgotPassword ? (
-                    <button
-                      type="button"
-                      onClick={onForgotPassword}
-                      style={linkStyle(a)}
-                    >
-                      {l.auth.forgotPassword}
-                    </button>
-                  ) : (
-                    <a href={forgotPasswordUrl} style={linkStyle(a)}>
-                      {l.auth.forgotPassword}
-                    </a>
-                  )}
-                </p>
-              )}
-            </>
-          )}
-          {(s.method === 'email_otp' || s.method === 'sms') && (
-            <form
-              onSubmit={formSubmit(() => consume(actions.verifyCode(code)))}
-            >
-              <label
-                htmlFor={`${prefix}-readonly-identifier`}
-                style={labelStyle(a)}
-              >
-                {s.method === 'sms' ? l.auth.phone : l.auth.email}
-              </label>
-              <input
-                id={`${prefix}-readonly-identifier`}
-                type={s.method === 'sms' ? 'tel' : 'email'}
-                value={s.identifier}
-                readOnly
-                placeholder={
-                  s.method === 'sms'
-                    ? l.auth.phonePlaceholder
-                    : l.auth.emailPlaceholder
-                }
-                style={{ ...inputStyle(a), marginBottom: 16 }}
-              />
-              {button(
-                s.retryAfterSeconds
-                  ? l.auth.resendIn(s.retryAfterSeconds)
-                  : s.codeSent
-                    ? l.auth.resend
-                    : l.auth.sendCode,
-                () => consume(actions.sendCode()),
-                busy || s.retryAfterSeconds > 0,
-              )}
-              {s.codeSent && (
-                <div style={{ marginTop: 16 }}>
-                  {field(
-                    'code',
-                    l.auth.verificationCode,
-                    'text',
-                    code,
-                    setCode,
-                    {
-                      autoComplete: 'one-time-code',
-                      inputMode: 'numeric',
-                      maxLength: 6,
-                      placeholder: l.auth.verificationCodePlaceholder,
-                    },
-                  )}
-                  {button(
-                    busy
-                      ? l.auth.verifying
-                      : (branding?.loginButtonText ?? l.auth.signIn),
-                    undefined,
-                    busy || code.length < 4,
-                  )}
-                </div>
-              )}
-            </form>
-          )}
-          {s.method === 'magic_link' && (
-            <form
-              onSubmit={formSubmit(() =>
-                consume(
-                  magicCallback
-                    ? actions.completeMagicLink(window.location.href)
-                    : actions.sendMagicLink(),
-                ),
-              )}
-            >
-              <label htmlFor={`${prefix}-magic-email`} style={labelStyle(a)}>
-                {l.auth.email}
-              </label>
-              <input
-                id={`${prefix}-magic-email`}
-                type="email"
-                readOnly
-                value={s.identifier}
-                placeholder={l.auth.emailPlaceholder}
-                style={{ ...inputStyle(a), marginBottom: 16 }}
-              />
-              {s.magicLinkSent && (
-                <>
-                  <h3 style={{ fontSize: 18, margin: '16px 0 12px' }}>
-                    {l.signUp.checkEmail}
-                  </h3>
-                  <p role="status">{l.auth.magicLinkSent(s.identifier)}</p>
-                </>
-              )}
-              {button(
-                magicCallback
-                  ? l.auth.signIn
-                  : s.retryAfterSeconds
-                    ? l.auth.resendIn(s.retryAfterSeconds)
-                    : busy
-                      ? l.auth.sendingMagicLink
-                      : l.auth.sendMagicLink,
-                undefined,
-                busy || (!magicCallback && s.retryAfterSeconds > 0),
-              )}
-            </form>
-          )}
-          {resend}
-          {providers}
-        </>
-      )}
+          {textButton(l.auth.back, () => consume(actions.back(), clearProofs), busy, true)}
+        </div>}
+        {resend}
+        {providers}
+      </>}
       {s.step === 'mfa' && !s.completionPending && (
         <form
           onSubmit={formSubmit(() =>
@@ -629,7 +437,7 @@ export function AuthFlowForm({
                 : l.signUp.invitationRequired}
             </p>
           )}
-          {s.capabilities?.methods.some(
+          {registrationKind !== null && s.capabilities?.methods.some(
             (x) => x.type === 'PASSWORD' && x.availableForSignup,
           ) && (
             <form
@@ -654,22 +462,7 @@ export function AuthFlowForm({
                 )
               })}
             >
-              <label htmlFor={`${prefix}-signup-kind`} style={labelStyle(a)}>
-                {l.identity.kind}
-              </label>
-              <select
-                id={`${prefix}-signup-kind`}
-                value={registrationKind}
-                onChange={(e) =>
-                  setRegistrationKind(
-                    e.target.value === 'USERNAME' ? 'USERNAME' : 'EMAIL',
-                  )
-                }
-                style={inputStyle(a)}
-              >
-                <option value="EMAIL">{l.identity.EMAIL}</option>
-                <option value="USERNAME">{l.identity.USERNAME}</option>
-              </select>
+              {signupKinds.length > 1 && segments(signupKinds, registrationKind, next => { setRegistrationKind(next); setIdentifier(''); clearProofs() }, entry => l.identity[entry], l.identity.kind)}
               {field(
                 'identifier',
                 l.identity[registrationKind],
@@ -754,10 +547,10 @@ export function AuthFlowForm({
             s.capabilities.selfRegistrationEnabled &&
             s.policy &&
             s.policy.signupMode !== 'DISABLED' &&
-            (s.capabilities.methods.some(
+            ((s.capabilities.allowedSignupIdentifierKinds.length > 0 && s.capabilities.methods.some(
               (method) =>
                 method.type === 'PASSWORD' && method.availableForSignup,
-            ) ||
+            )) ||
               s.capabilities.idpProviders.some(
                 (provider) => provider.availableForSignup,
               )))) && (

@@ -1,3 +1,4 @@
+import { parseDefaultLogin, parseSignupIdentifierKinds } from '@axis-iam/vertex'
 import type {
   PublicAuthMethodsResponse,
   PublicAuthPolicyResponse,
@@ -24,6 +25,8 @@ export async function fetchPublicAuthPolicy(input: {
     )
   }
 
+  parseDefaultLogin(data.defaultLogin)
+  parseSignupIdentifierKinds(data.allowedSignupIdentifierKinds)
   return data
 }
 
@@ -73,8 +76,7 @@ function normalizePublicAuthMethodsResponse(
 
   const resend = isRecord(data.resend) ? data.resend : {}
   const cooldown = resend.emailVerificationCooldownSeconds
-  const emailVerificationCooldownSeconds =
-    cooldown === undefined ? 60 : cooldown
+  const emailVerificationCooldownSeconds = cooldown
   if (
     typeof emailVerificationCooldownSeconds !== 'number' ||
     !Number.isFinite(emailVerificationCooldownSeconds)

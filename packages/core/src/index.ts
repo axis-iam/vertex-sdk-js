@@ -41,3 +41,5 @@ export { CookieSessionTransport, SessionTransportError, UnsupportedOperationErro
 export type { SessionTransport, SessionRequest, ProviderRegistrationProof } from './client/session-transport.js'
 export { ServerSession, SessionLogin, parseServerSession, sessionRecord, sessionText } from './client/server-session.js'
 export type { ServerSessionView, AuthenticationFlow, LoginView } from './client/server-session.js'
+export { parseAuthCapabilities, parseDefaultLogin, parseSignupIdentifierKinds, AuthCapabilitiesError } from './client/auth-capabilities.js'
+export type { AuthCapabilities, DefaultLogin, IdentifierMethods, SignupIdentifierKind } from './client/auth-capabilities.js'

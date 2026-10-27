@@ -303,8 +303,10 @@ class SessionIdentityClient {
     this.client.rememberIdentityPurpose(text(v.ref))
   }
   async startRegistration(input: StartRegistration, idempotencyKey: string): Promise<RegistrationOperation> {
-    if (input.identifier.kind !== 'EMAIL' || 'registrationGrantToken' in input || 'registrationAccessCode' in input || 'organizationInvitationToken' in input) throw new UnsupportedOperationError()
-    return this.registration(await this.client.request({ action: 'registrationStart', body: { email: input.identifier.value, password: input.password }, idempotencyKey }))
+    if (!['EMAIL', 'USERNAME'].includes(input.identifier.kind) || 'region' in input.identifier || 'organizationInvitationToken' in input) throw new UnsupportedOperationError()
+    const proof = registrationGrantBody(input.registrationGrantToken !== undefined ? { type: 'EMAIL_LINK', registrationGrantToken: input.registrationGrantToken } : input.registrationAccessCode !== undefined ? { type: 'ACCESS_CODE', registrationAccessCode: input.registrationAccessCode } : undefined)
+    if (input.registrationGrantToken !== undefined && input.registrationAccessCode !== undefined) throw new IamConfigurationError('Choose one registration proof')
+    return this.registration(await this.client.request({ action: 'registrationStart', body: { identifier: input.identifier, password: input.password, ...(input.uiLocales !== undefined ? { uiLocales: input.uiLocales } : {}), ...proof }, idempotencyKey }))
   }
   private registration(value: unknown) {
     const v = record(value)

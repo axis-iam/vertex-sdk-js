@@ -90,6 +90,7 @@ export class IdentityClient {
     return this.action(id, 'provider-callback', { authorizationId, codeVerifier })
   }
   async startRegistration(input: StartRegistration, idempotencyKey: string): Promise<RegistrationOperation> {
+    if (!['EMAIL', 'USERNAME'].includes(input.identifier.kind) || 'region' in input.identifier) throw new IamConfigurationError('Registration requires an allowed EMAIL or USERNAME identifier')
     const generation = this.client.tokenManager.generation
     const raw = record(await this.call('signup', {
       json: { ...input, client_id: this.client.clientId }, headers: { 'Idempotency-Key': idempotencyKey },

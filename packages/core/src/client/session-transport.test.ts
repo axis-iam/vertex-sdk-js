@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { CookieSessionTransport, providerAuthorization } from './session-transport.js'
-import { ServerSession } from './server-session.js'
+import { ServerSession, SessionLogin } from './server-session.js'
 const secret = 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc'
 const prelogin = () => ({state:'PRELOGIN',csrfToken:secret,expiresAt:new Date(Date.now()+60000).toISOString()})
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
@@ -58,4 +58,25 @@ it('preserves CSRF/server errors and invalidates a late write on logout', async 
   finish(new Response(JSON.stringify(prelogin())))
   await rejected
   await expect(transport.request({ action: 'login' })).rejects.toMatchObject({ code: 'SESSION_CSRF_REQUIRED' })
+})
+
+it('posts only the delivered Cookie magic DTO and rejects mixed/replayed proof shapes', async () => {
+  const calls: unknown[] = []
+  const session = new ServerSession({ request: async input => { calls.push(input); return { ...prelogin(), state: input.action === 'magic' ? 'MFA_REQUIRED' : 'AUTHENTICATING', nextAction: input.action === 'magic' ? 'mfa' : 'authenticate' } } })
+  await session.restore()
+  const flow = new SessionLogin(session)
+  const fragment = new URLSearchParams({ kind: 'AUTH_PROOF', method: 'EMAIL_MAGIC_LINK', auth_transaction_id: '00000000-0000-4000-8000-000000000001', state: 'fixture-state', proof: 'fixture-proof' })
+  const url = 'https://app.test/console/session/callback#' + fragment
+  await expect(flow.authenticateMagicLink(url + '&proof=extra', { kind: 'EMAIL', value: 'member@example.invalid' })).rejects.toMatchObject({ code: 'AUTH_MAGIC_CALLBACK_INVALID' })
+  expect(calls).toHaveLength(1)
+  await expect(flow.authenticateMagicLink(url, { kind: 'EMAIL', value: 'member@example.invalid' })).resolves.toMatchObject({ state: 'MFA_REQUIRED' })
+  expect(calls[1]).toEqual({ action: 'magic', body: { transactionId: '00000000-0000-4000-8000-000000000001', state: 'fixture-state', proof: 'fixture-proof' } })
+  expect(JSON.stringify(calls)).not.toMatch(/identifier|password|controlSecret|codeVerifier/)
+  session.dispose()
+})
+it('preserves the exact BFF 429 retry deadline without inventing a cooldown', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/bootstrap') ? new Response(JSON.stringify(prelogin())) : new Response(JSON.stringify({ error: 'RATE_LIMITED' }), { status: 429, headers: { 'Retry-After': '17' } })))
+  const transport = new CookieSessionTransport({ origin: 'https://app.test' })
+  await transport.request({ action: 'bootstrap' })
+  await expect(transport.request({ action: 'challenge', body: { method: 'EMAIL_OTP', identifier: { kind: 'EMAIL', value: 'member@example.invalid' } } })).rejects.toMatchObject({ code: 'RATE_LIMITED', status: 429, retryAfterSeconds: 17 })
 })

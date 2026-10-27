@@ -1,5 +1,6 @@
 import type {
   LoginIdentifier,
+  RegistrationIdentifier,
   RegistrationOperation,
   MfaProofMethod,
 } from '@axis-iam/vertex'
@@ -52,6 +53,7 @@ export type AuthFlowState = AuthFlowCommon &
     | { readonly step: 'loading' | 'unavailable' | 'identifier' | 'sign-up' }
     | {
         readonly step: 'method'
+        readonly phase: 'credentials' | 'code' | 'magic-link'
         readonly identifier: string
         readonly identifierKind: 'email' | 'phone' | 'username'
         readonly loginIdentifier: LoginIdentifier
@@ -102,7 +104,7 @@ export interface AuthFlowActions {
   completeMagicLink(url: string): Promise<void>
   verifyMfa(code: string, method?: MfaProofMethod): Promise<void>
   signUp(input: {
-    identifier: LoginIdentifier
+    identifier: RegistrationIdentifier
     password: string
     registrationGrant?: RegistrationGrantInput
   }): Promise<void>
