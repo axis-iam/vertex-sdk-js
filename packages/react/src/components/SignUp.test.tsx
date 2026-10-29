@@ -52,6 +52,9 @@ const defaultAuthMethods: PublicAuthMethodsResponse = {
   postVerificationRedirectUri: null,
   identifierMethods: [{ kind: 'EMAIL', methods: ['PASSWORD'] }, { kind: 'PHONE', methods: ['PASSWORD'] }, { kind: 'USERNAME', methods: ['PASSWORD'] }],
   defaultIdentifierKind: 'EMAIL',
+  defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
+  allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
+  allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
   methods: [
     {
       type: 'PASSWORD',
@@ -69,6 +72,9 @@ const defaultAuthMethods: PublicAuthMethodsResponse = {
 }
 
 const defaultAuthPolicy: PublicAuthPolicyResponse = {
+  defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
+  allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
+  allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
   passwordLoginEnabled: true,
   passwordlessEnabled: false,
   minPasswordLength: 8,
@@ -247,9 +253,27 @@ describe('SignUp', () => {
       fireEvent.change(screen.getByPlaceholderText('Confirm your password'), { target: { value: 'password123' } })
       await act(async () => { fireEvent.submit(screen.getByPlaceholderText('you@example.com').closest('form')!); await vi.advanceTimersByTimeAsync(10) })
     }
+    it('keeps email registration usable through OTP when email password sign-in is disabled', async () => {
+      const methods: PublicAuthMethodsResponse = { ...defaultAuthMethods,
+        allowedPasswordIdentifierKinds: ['PHONE'], allowedSignupIdentifierKinds: ['EMAIL'],
+        defaultIdentifierKind: 'PHONE', defaultLogin: { identifierKind: 'PHONE', method: 'PASSWORD' },
+        identifierMethods: [{ kind: 'PHONE', methods: ['PASSWORD'] }, { kind: 'EMAIL', methods: ['EMAIL_OTP'] }],
+        methods: [{ type: 'PASSWORD', enabled: true, configured: true, availableForLogin: true, availableForSignup: false, unavailableReason: null },
+          { type: 'EMAIL_OTP', enabled: true, configured: true, availableForLogin: true, availableForSignup: true, unavailableReason: null }] }
+      const fetchMock = setupFetchMock({ authMethods: methods,
+        authPolicy: { allowedPasswordIdentifierKinds: ['PHONE'], defaultLogin: { identifierKind: 'PHONE', method: 'PASSWORD' } },
+        signupResponse: { ok: true, json: async () => ({ registrationId: 'otp-email', status: 'PENDING_VERIFICATION',
+          expiresAt: new Date(Date.now() + 600_000).toISOString(), nextAction: 'VERIFY_EMAIL', controlSecret: 'control' }) } })
+      renderWithProvider(createElement(SignUp, { mode: 'embedded' }))
+      await fillAndSubmit()
+      const req = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/auth/signup'))
+      expect(req).toBeDefined()
+      expect(JSON.parse(req![1].body).identifier).toEqual({ kind: 'EMAIL', value: 'new@user.com' })
+      expect(screen.getByText(/No account or session exists yet/)).toBeTruthy()
+    })
     it('submits typed input and waits for the email proof before reporting success', async () => {
       const onSuccess = vi.fn()
-      const fetchMock = setupFetchMock({ signupResponse: { ok: true, json: async () => ({ registrationId: 'r', status: 'PENDING_VERIFICATION', expiresAt: '2026-10-20T00:00:00Z', nextAction: 'VERIFY_EMAIL', controlSecret: 'control' }) } })
+      const fetchMock = setupFetchMock({ signupResponse: { ok: true, json: async () => ({ registrationId: 'r', status: 'PENDING_VERIFICATION', expiresAt: new Date(Date.now() + 600_000).toISOString(), nextAction: 'VERIFY_EMAIL', controlSecret: 'control' }) } })
       renderWithProvider(createElement(SignUp, { mode: 'embedded', onSuccess }))
       await fillAndSubmit()
       const req = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/auth/signup'))!
@@ -276,10 +300,10 @@ describe('SignUp', () => {
       expect(screen.getByRole('alert')).toBeTruthy()
     })
     it('shows explicit username-only registration and omits the email field', async () => {
-      const fetchMock = setupFetchMock({ signupResponse: { ok: true, json: async () => ({ registrationId: 'r', status: 'COMPLETED', expiresAt: '2026-10-20T00:00:00Z', nextAction: 'LOGIN' }) } })
+      const fetchMock = setupFetchMock({ signupResponse: { ok: true, json: async () => ({ registrationId: 'r', status: 'COMPLETED', expiresAt: new Date(Date.now() + 600_000).toISOString(), nextAction: 'LOGIN' }) } })
       renderWithProvider(createElement(SignUp, { mode: 'embedded' }))
       await act(async () => { await vi.advanceTimersByTimeAsync(10) })
-      fireEvent.change(screen.getByLabelText('Identifier type'), { target: { value: 'USERNAME' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Username' }))
       fireEvent.change(screen.getByLabelText('Username'), { target: { value: '123@example.invalid' } })
       fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password123' } })
       fireEvent.change(screen.getByPlaceholderText('Confirm your password'), { target: { value: 'password123' } })

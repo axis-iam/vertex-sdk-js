@@ -27,6 +27,7 @@ import {
   authFlowRequest,
   registrationGrantBody,
   validateFlowMetadata,
+  hasLocalRegistration,
 } from '../core/auth-flow-client'
 import {
   isLikelyEmail,
@@ -117,9 +118,7 @@ export function useAuthFlow(
       client.config.socialProviders,
       intent,
     ).filter((x) => intent === 'sign-in' || (signup && x.availableForSignup))
-    const hasMethod = intent === 'sign-in' ? base.capabilities.identifierMethods.length > 0 : base.capabilities.methods.some((x) =>
-      signup && base.capabilities!.allowedSignupIdentifierKinds.length > 0 && x.availableForSignup && x.type === 'PASSWORD',
-    )
+    const hasMethod = intent === 'sign-in' ? base.capabilities.identifierMethods.length > 0 : signup && hasLocalRegistration(base.capabilities)
     return {
       ...base,
       providers,
@@ -766,9 +765,7 @@ export function useAuthFlow(
             current.step !== 'sign-up' ||
             !['EMAIL', 'USERNAME'].includes(input.identifier.kind) ||
             !capabilities.allowedSignupIdentifierKinds.includes(input.identifier.kind) ||
-            !capabilities.methods.some(
-              (x) => x.type === 'PASSWORD' && x.availableForSignup,
-            )
+            !hasLocalRegistration(capabilities, input.identifier.kind)
           )
             throw new AuthFlowStateError('Password registration is unavailable')
           assertSignupPassword(input.password, policy)

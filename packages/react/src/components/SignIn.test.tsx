@@ -100,7 +100,7 @@ const defaultAuthMethods: PublicAuthMethodsResponse = {
   identifierMethods: [{ kind: 'EMAIL', methods: ['PASSWORD'] }, { kind: 'PHONE', methods: ['PASSWORD'] }, { kind: 'USERNAME', methods: ['PASSWORD'] }],
   defaultIdentifierKind: 'EMAIL',
   defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
-  allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
+  allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'], allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
   methods: [
     {
       type: 'PASSWORD',
@@ -152,8 +152,9 @@ function setupFetchMock(
         ok: true,
         json: async () => ({
           signupMode: 'OPEN',
+          passwordLoginEnabled: overrides.authMethods?.passwordLoginEnabled ?? true,
           defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
-          allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
+          allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'], allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
           allowedRegistrationGrantTypes: [],
           idpAutoProvisioningEnabled: false,
           minPasswordLength: 8,

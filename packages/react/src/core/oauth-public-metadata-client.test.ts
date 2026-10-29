@@ -40,6 +40,9 @@ const googleProvider: IdentityProviderOption = {
 }
 
 const publicAuthPolicy: PublicAuthPolicyResponse = {
+  defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
+  allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
+  allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
   passwordLoginEnabled: true,
   passwordlessEnabled: true,
   minPasswordLength: 8,
@@ -77,6 +80,9 @@ const publicAuthMethods: PublicAuthMethodsResponse = {
   postVerificationRedirectUri: 'https://app.example.com/verified',
   identifierMethods: [],
   defaultIdentifierKind: null,
+  defaultLogin: null,
+  allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
+  allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
   methods: [],
   idpProviders: [],
   resend: {

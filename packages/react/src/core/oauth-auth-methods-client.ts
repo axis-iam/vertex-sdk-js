@@ -1,4 +1,4 @@
-import { parseDefaultLogin, parseSignupIdentifierKinds } from '@axis-iam/vertex'
+import { parseDefaultLogin, parseSignupIdentifierKinds, parsePasswordIdentifierKinds, AuthCapabilitiesError } from '@axis-iam/vertex'
 import type {
   PublicAuthMethodsResponse,
   PublicAuthPolicyResponse,
@@ -27,6 +27,11 @@ export async function fetchPublicAuthPolicy(input: {
 
   parseDefaultLogin(data.defaultLogin)
   parseSignupIdentifierKinds(data.allowedSignupIdentifierKinds)
+  const kinds = parsePasswordIdentifierKinds(data.allowedPasswordIdentifierKinds)
+  if (typeof data.passwordLoginEnabled !== 'boolean' || (data.passwordLoginEnabled &&
+      (kinds.length === 0 || (data.defaultLogin.method === 'PASSWORD' && !kinds.includes(data.defaultLogin.identifierKind))))) {
+    throw new AuthCapabilitiesError()
+  }
   return data
 }
 
@@ -66,7 +71,6 @@ function isRegistrationGrantTypeArray(
 function normalizePublicAuthMethodsResponse(
   data: unknown,
 ): PublicAuthMethodsResponse {
-  validateIdentifierCapabilities(data)
   if (!isRecord(data)) {
     throw new Error('Auth methods response is missing required fields')
   }
@@ -74,6 +78,7 @@ function normalizePublicAuthMethodsResponse(
     throw new Error('Auth methods response is missing required fields')
   }
 
+  validateIdentifierCapabilities(data)
   const resend = isRecord(data.resend) ? data.resend : {}
   const cooldown = resend.emailVerificationCooldownSeconds
   const emailVerificationCooldownSeconds = cooldown

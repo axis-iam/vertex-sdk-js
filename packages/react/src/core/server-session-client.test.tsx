@@ -20,7 +20,7 @@ const authenticated = (owner=ref,version=1) => ({state:'AUTHENTICATED',owner,ver
 const pending = (state='PRELOGIN') => ({state,csrfToken:ref,expiresAt:expiry(),...(state==='PRELOGIN'?{}:{nextAction:state==='MFA_REQUIRED'?'mfa':state==='AUTHENTICATED'?'complete':'authenticate'})})
 afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals();sessionStorage.clear()})
 function config() {return {sessionMode:'server_session' as const,sessionTransport:new CookieSessionTransport({origin:window.location.origin}),clientId:'flow-test',issuerUri:'https://iam.test',redirectUri:'/login'}}
-function fixture(initial:unknown=pending()) {
+function fixture(initial:unknown=pending(), capabilities:unknown=flowCapabilities, policy:unknown=flowPolicy) {
   let view=initial
   const calls:{path:string;body:unknown;headers:Headers}[]=[]
   vi.stubGlobal('fetch',vi.fn(async(input:string,init:RequestInit)=>{
@@ -29,8 +29,8 @@ function fixture(initial:unknown=pending()) {
     expect(init.credentials).toBe('same-origin');expect(headers.has('Authorization')).toBe(false)
     if(init.method!=='GET')expect(headers.get('X-CSRF-Token')).toBe(ref)
     const send=(v:unknown)=>new Response(JSON.stringify(v))
-    if(path==='/console/auth-methods')return send(flowCapabilities)
-    if(path==='/console/auth-policy')return send(flowPolicy)
+    if(path==='/console/auth-methods')return send(capabilities)
+    if(path==='/console/auth-policy')return send(policy)
     if(path==='/console/session/bootstrap'||path==='/console/session')return send(view)
     if(path.endsWith('/login')){view=pending('AUTHENTICATING');return send(view)}
     if(path.endsWith('/authenticate')){view=pending('MFA_REQUIRED');return send(view)}
@@ -136,4 +136,26 @@ it.each(['EMAIL', 'USERNAME'] as const)('sends the delivered typed %s registrati
   expect(f.calls.some(c => /preview/.test(c.path))).toBe(false)
   await expect(client.identity.startRegistration({ identifier: { kind: 'PHONE', value: '+8613800138000' }, password: 'fixture' }, 'key')).rejects.toMatchObject({ code: 'UNSUPPORTED_OPERATION' })
   client.dispose()
+})
+
+it('consumes a single PHONE password capability without inventing SMS or an identifier selector', async () => {
+  fixture(pending(), { ...flowCapabilities, allowedPasswordIdentifierKinds: ['PHONE'],
+    identifierMethods: [{ kind: 'PHONE', methods: ['PASSWORD'] }], defaultIdentifierKind: 'PHONE',
+    defaultLogin: { identifierKind: 'PHONE', method: 'PASSWORD' }, allowedSignupIdentifierKinds: [],
+    methods: flowCapabilities.methods.filter(method => method.type === 'PASSWORD') },
+    { ...flowPolicy, allowedPasswordIdentifierKinds: ['PHONE'], defaultLogin: { identifierKind: 'PHONE', method: 'PASSWORD' } })
+  render(createElement(IamProvider, { ...config(), children: createElement(SignIn, { mode: 'embedded' }) }))
+  expect(await screen.findByPlaceholderText('Enter your password')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: /^Email$/ })).toBeNull()
+  expect(screen.queryByRole('button', { name: /^SMS code$/ })).toBeNull()
+  expect(screen.queryByRole('group', { name: 'Identifier type' })).toBeNull()
+})
+it('rejects missing password metadata before any Cookie login command', async () => {
+  const malformed = { ...flowCapabilities } as Record<string, unknown>
+  delete malformed.allowedPasswordIdentifierKinds
+  const f = fixture(pending(), malformed)
+  render(createElement(IamProvider, { ...config(), children: createElement(SignIn, { mode: 'embedded' }) }))
+  expect(await screen.findByRole('button', { name: /^Retry$/ })).toBeTruthy()
+  expect(screen.queryByPlaceholderText('Enter your password')).toBeNull()
+  expect(f.calls.some(call => call.path.endsWith('/login'))).toBe(false)
 })

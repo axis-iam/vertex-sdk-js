@@ -17,6 +17,7 @@ import {
 } from '../styles'
 import type { SignInProviderButtonRenderProps } from './types'
 import { getAvailableCredentialMethods } from './sign-in-flow'
+import { hasLocalRegistration } from '../../core/auth-flow-client'
 import { PhoneIdentifierInput } from './PhoneIdentifierInput'
 import { normalizePhoneIdentifier, PhoneIdentifierError } from './phone-identifier'
 
@@ -437,9 +438,7 @@ export function AuthFlowForm({
                 : l.signUp.invitationRequired}
             </p>
           )}
-          {registrationKind !== null && s.capabilities?.methods.some(
-            (x) => x.type === 'PASSWORD' && x.availableForSignup,
-          ) && (
+          {registrationKind !== null && s.capabilities && hasLocalRegistration(s.capabilities, registrationKind) && (
             <form
               onSubmit={formSubmit(() => {
                 if (password !== confirmPassword) {
@@ -547,10 +546,7 @@ export function AuthFlowForm({
             s.capabilities.selfRegistrationEnabled &&
             s.policy &&
             s.policy.signupMode !== 'DISABLED' &&
-            ((s.capabilities.allowedSignupIdentifierKinds.length > 0 && s.capabilities.methods.some(
-              (method) =>
-                method.type === 'PASSWORD' && method.availableForSignup,
-            )) ||
+            (hasLocalRegistration(s.capabilities) ||
               s.capabilities.idpProviders.some(
                 (provider) => provider.availableForSignup,
               )))) && (

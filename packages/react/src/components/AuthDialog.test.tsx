@@ -56,7 +56,7 @@ function setupFetch({
         identifierMethods: [{ kind: 'EMAIL', methods: ['PASSWORD'] }, { kind: 'PHONE', methods: ['PASSWORD'] }, { kind: 'USERNAME', methods: ['PASSWORD'] }],
         defaultIdentifierKind: 'EMAIL',
         defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
-        allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
+        allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'], allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
         idpProviders: [],
         resend: { emailVerificationCooldownSeconds: 60 },
       })
@@ -83,7 +83,7 @@ function setupFetch({
         idpAutoProvisioningEnabled: false,
         signupMode,
         defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
-        allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
+        allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'], allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
         allowedRegistrationGrantTypes: ['ACCESS_CODE'],
       })
     if (url.includes('/branding')) return response({}, 404)

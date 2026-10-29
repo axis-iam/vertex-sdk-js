@@ -18,7 +18,7 @@ export const flowCapabilities: PublicAuthMethodsResponse = {
   ],
   defaultIdentifierKind: 'EMAIL',
   defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
-  allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
+  allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'], allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
   methods: (['PASSWORD', 'EMAIL_OTP', 'EMAIL_MAGIC_LINK', 'SMS_OTP'] as const).map((type) => ({
     type,
     enabled: true,
@@ -45,7 +45,7 @@ export const flowCapabilities: PublicAuthMethodsResponse = {
 }
 export const flowPolicy: PublicAuthPolicyResponse = {
   defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
-  allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
+  allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'], allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
   passwordLoginEnabled: true,
   passwordlessEnabled: true,
   minPasswordLength: 10,

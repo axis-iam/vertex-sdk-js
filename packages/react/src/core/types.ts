@@ -1,4 +1,4 @@
-import type { AuthCapabilities, DefaultLogin, SignupIdentifierKind } from '@axis-iam/vertex'
+import type { AuthCapabilities, DefaultLogin, SignupIdentifierKind, LoginIdentifier } from '@axis-iam/vertex'
 /** OIDC Discovery document (subset of fields we use) */
 export interface OIDCConfiguration {
   issuer: string
@@ -175,6 +175,7 @@ export interface PublicAuthPolicyResponse {
   /** Effective preference, not the resolved capability default. */
   defaultLogin: DefaultLogin
   allowedSignupIdentifierKinds: SignupIdentifierKind[]
+  allowedPasswordIdentifierKinds: LoginIdentifier['kind'][]
   passwordLoginEnabled: boolean
   passwordlessEnabled: boolean
   minPasswordLength: number

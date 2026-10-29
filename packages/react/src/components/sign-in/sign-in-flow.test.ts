@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { IamUser } from '../../core/types'
+import type { IamUser, PublicAuthMethodsResponse } from '../../core/types'
 import {
   type CredentialMethod,
   getAvailableCredentialMethods,
@@ -106,7 +106,10 @@ describe('credential method helpers', () => {
   })
 
   it('filters credential methods by identifier kind from auth-methods discovery', () => {
-    const authMethods = {
+    const authMethods: PublicAuthMethodsResponse = {
+      identifierMethods: [{ kind: 'EMAIL', methods: ['PASSWORD', 'EMAIL_OTP', 'EMAIL_MAGIC_LINK'] }, { kind: 'PHONE', methods: ['SMS_OTP', 'PASSWORD'] }],
+      defaultIdentifierKind: 'EMAIL', defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
+      allowedSignupIdentifierKinds: ['EMAIL'], allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
       clientId: 'test-app',
       passwordLoginEnabled: true,
       emailMagicLinkEnabled: true,
@@ -126,7 +129,7 @@ describe('credential method helpers', () => {
       ],
       idpProviders: [],
       resend: { emailVerificationCooldownSeconds: 60 },
-    } as const
+    }
 
     expect(getAvailableCredentialMethods(authMethods, 'email').map((method) => method.id)).toEqual(['password', 'email_otp', 'magic_link'])
     expect(getAvailableCredentialMethods(authMethods, 'phone').map((method) => method.id)).toEqual(['sms', 'password'])

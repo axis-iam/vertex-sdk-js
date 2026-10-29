@@ -1,4 +1,4 @@
-import { parseAuthCapabilities, parseDefaultLogin, parseSignupIdentifierKinds } from '@axis-iam/vertex'
+import { parseAuthCapabilities, parseDefaultLogin, parseSignupIdentifierKinds, parsePasswordIdentifierKinds } from '@axis-iam/vertex'
 import { requestJson, requestNoContent } from './http-client'
 import { IamApiError, IamConfigurationError } from './types'
 import type { AuthClient } from './auth-client'
@@ -14,6 +14,14 @@ export function validateFlowMetadata(
   validateIdentifierCapabilities(capabilities)
   parseDefaultLogin(policy.defaultLogin)
   parseSignupIdentifierKinds(policy.allowedSignupIdentifierKinds)
+  const passwordKinds = parsePasswordIdentifierKinds(policy.allowedPasswordIdentifierKinds)
+  if (typeof policy.passwordLoginEnabled !== 'boolean' ||
+      policy.passwordLoginEnabled !== capabilities.passwordLoginEnabled ||
+      JSON.stringify(passwordKinds) !== JSON.stringify(capabilities.allowedPasswordIdentifierKinds) ||
+      (policy.passwordLoginEnabled && (passwordKinds.length === 0 ||
+        (policy.defaultLogin.method === 'PASSWORD' && !passwordKinds.includes(policy.defaultLogin.identifierKind))))) {
+    throw malformed('password identifier policy')
+  }
   if (
     !isRecord(capabilities) ||
     !isRecord(policy) ||
@@ -66,6 +74,16 @@ export function validateIdentifierCapabilities(value: unknown): void {
   const parsed = parseAuthCapabilities(value)
   if (!parsed.identifierMethods.every(entry => entry.methods.every(method =>
     Array.isArray(value.methods) && value.methods.some(item => isRecord(item) && item.type === method && item.availableForLogin === true)))) throw malformed('identifier capability')
+}
+
+/** Registration needs a permitted completion path, not necessarily password sign-in. */
+export function hasLocalRegistration(capabilities: PublicAuthMethodsResponse, kind?: 'EMAIL' | 'USERNAME' | 'PHONE'): boolean {
+  if (!capabilities.signupEnabled || !capabilities.selfRegistrationEnabled) return false
+  return capabilities.allowedSignupIdentifierKinds.some(candidate =>
+    (kind === undefined || kind === candidate) && capabilities.methods.some(method =>
+      method.availableForSignup &&
+      ((method.type === 'PASSWORD' && capabilities.passwordLoginEnabled && capabilities.allowedPasswordIdentifierKinds.includes(candidate)) ||
+        (candidate === 'EMAIL' && (method.type === 'EMAIL_OTP' || method.type === 'EMAIL_MAGIC_LINK')))))
 }
 export function registrationGrantBody(input?: unknown): Record<string, string> {
   if (input === undefined) return {}

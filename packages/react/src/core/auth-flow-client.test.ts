@@ -4,10 +4,32 @@ import {
   registrationGrantBody,
   assertSignupPassword,
   validateFlowMetadata,
+  hasLocalRegistration,
 } from './auth-flow-client'
 import { IamApiError, IamConfigurationError } from './types'
 import { flowCapabilities, flowPolicy } from './auth-flow-fixtures.test-support'
 describe('registration and capability boundary', () => {
+  it('preserves email OTP/link signup independently of the password identifier set', () => {
+    const capabilities = { ...flowCapabilities, allowedPasswordIdentifierKinds: ['PHONE'] as ('PHONE')[],
+      methods: flowCapabilities.methods.map(method => ({ ...method, availableForSignup: method.type === 'EMAIL_OTP' })) }
+    expect(hasLocalRegistration(capabilities, 'EMAIL')).toBe(true)
+    expect(hasLocalRegistration(capabilities, 'USERNAME')).toBe(false)
+    expect(hasLocalRegistration(capabilities, 'PHONE')).toBe(false)
+    expect(hasLocalRegistration({ ...capabilities, methods: capabilities.methods.map(method => ({ ...method, availableForSignup: false })) })).toBe(false)
+    expect(hasLocalRegistration({ ...capabilities, allowedSignupIdentifierKinds: [] })).toBe(false)
+  })
+
+  it('rejects missing or mismatched password policy instead of widening capabilities', () => {
+    expect(() => validateFlowMetadata(flowCapabilities, {
+      ...flowPolicy, allowedPasswordIdentifierKinds: ['PHONE'],
+    })).toThrow()
+    expect(() => validateFlowMetadata(flowCapabilities, {
+      ...flowPolicy, allowedPasswordIdentifierKinds: undefined,
+    } as never)).toThrow()
+    expect(() => validateFlowMetadata(flowCapabilities, {
+      ...flowPolicy, passwordLoginEnabled: false,
+    })).toThrow(IamConfigurationError)
+  })
   it('accepts current metadata without the retired verification mode and rejects genuine malformed readiness/policy', () => {
     expect(flowCapabilities).not.toHaveProperty('emailVerificationMode')
     expect(flowPolicy).not.toHaveProperty('emailVerificationMode')

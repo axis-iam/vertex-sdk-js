@@ -64,6 +64,9 @@ const googleAuthMethodProvider: AuthMethodIdpProviderResponse = {
 }
 
 const publicAuthPolicy = {
+  defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
+  allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
+  allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
   passwordLoginEnabled: true,
   passwordlessEnabled: true,
   minPasswordLength: 8,
@@ -101,6 +104,9 @@ const publicAuthMethods: PublicAuthMethodsResponse = {
   postVerificationRedirectUri: 'https://app.example.com/login',
   identifierMethods: [{ kind: 'EMAIL', methods: ['PASSWORD', 'EMAIL_MAGIC_LINK'] }, { kind: 'PHONE', methods: ['PASSWORD'] }, { kind: 'USERNAME', methods: ['PASSWORD'] }],
   defaultIdentifierKind: 'EMAIL',
+  defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
+  allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
+  allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
   methods: [
     {
       type: 'PASSWORD',
@@ -416,7 +422,7 @@ describe('OAuthClient', () => {
       expect(fetchMock.mock.calls[1]?.[0]).toBe(`${ISSUER}/api/v1/apps/my-app/auth-methods`)
     })
 
-    it('defaults email verification resend cooldown for older auth-method responses', async () => {
+    it('rejects missing resend metadata rather than inventing a cooldown', async () => {
       const { resend: _resend, ...legacyResponse } = publicAuthMethods
       fetchMock
         .mockResolvedValueOnce({
@@ -428,11 +434,7 @@ describe('OAuthClient', () => {
           json: async () => legacyResponse,
         })
 
-      await expect(client.getPublicAuthMethods()).resolves.toMatchObject({
-        resend: {
-          emailVerificationCooldownSeconds: 60,
-        },
-      })
+      await expect(client.getPublicAuthMethods()).rejects.toThrow('Auth methods response is missing required fields')
     })
 
     it('fails when public auth methods lacks required fields', async () => {
