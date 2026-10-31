@@ -271,7 +271,7 @@ describe('PortalOpenApiClient', () => {
     })
     const client = new PortalOpenApiClient(config)
     await client.listRegistrationGrants({ search: 'a b', page: 1, size: 10 })
-    await expect(client.createRegistrationGrant({ type: 'EMAIL_LINK' })).rejects.toMatchObject({ code: 'invalid_registration_grant_response' })
+    await expect(client.createRegistrationGrant({ type: 'EMAIL_LINK' }, 'test-create-key')).rejects.toMatchObject({ code: 'invalid_registration_grant_response' })
     await client.listRegistrationGrantRedemptions('123e4567-e89b-12d3-a456-426614174000')
     expect(scopes).toEqual([REGISTRATION_GRANTS_READ_SCOPE, REGISTRATION_GRANTS_WRITE_SCOPE, REGISTRATION_GRANTS_REDEMPTIONS_READ_SCOPE])
   })
@@ -307,10 +307,10 @@ describe('PortalOpenApiClient', () => {
       expect(init?.method).toBe('POST')
       expect(init?.headers).toMatchObject({ 'Content-Type': 'application/json' })
       expect(init?.body).toBe(JSON.stringify({ type }))
-      return jsonResponse({ grant: grant(type), [proofField]: 'fake-one-time-proof', [absentProofField]: null }, 201)
+      return jsonResponse({ grant: grant(type), secretAlreadyIssued: false, registrationInvitationUrl: type === 'EMAIL_LINK' ? 'https://auth.example.com/invitation?token=fake-one-time-proof' : null, [proofField]: 'fake-one-time-proof', [absentProofField]: null }, 201)
     })
 
-    const created = await new PortalOpenApiClient(config).createRegistrationGrant({ type })
+    const created = await new PortalOpenApiClient(config).createRegistrationGrant({ type }, 'test-create-key')
 
     expect(created.grant.type).toBe(type)
     expect(created[proofField]).toBe('fake-one-time-proof')
@@ -326,9 +326,9 @@ describe('PortalOpenApiClient', () => {
   ] as const)('fails closed for %s create response without leaking the proof', async (_name, grantType, proofs) => {
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => String(input).includes('/oauth2/token')
       ? tokenResponse(REGISTRATION_GRANTS_WRITE_SCOPE)
-      : jsonResponse({ grant: grant(grantType), ...proofs }, 201))
+      : jsonResponse({ grant: grant(grantType), secretAlreadyIssued: false, registrationInvitationUrl: 'https://auth.example.com/invitation?token=fake-token', ...proofs }, 201))
 
-    await expect(new PortalOpenApiClient(config).createRegistrationGrant({ type: 'EMAIL_LINK' })).rejects.toSatisfy((error: unknown) => {
+    await expect(new PortalOpenApiClient(config).createRegistrationGrant({ type: 'EMAIL_LINK' }, 'test-create-key')).rejects.toSatisfy((error: unknown) => {
       expect(error).toMatchObject({ code: 'invalid_registration_grant_response' })
       expect(String(error)).not.toContain('fake-token')
       expect(String(error)).not.toContain('fake-code')
@@ -524,7 +524,7 @@ function page(): { size: number; number: number; totalElements: number; totalPag
 
 function grant(type: 'EMAIL_LINK' | 'ACCESS_CODE' | 'ORG_INVITATION'): Record<string, unknown> {
   return {
-    id: '019f4cca-88f8-7e77-a67d-4a6a2a68b803', type, status: 'ACTIVE', displayName: null,
+    id: '019f4cca-88f8-7e77-a67d-4a6a2a68b803', version: 0, type, status: 'ACTIVE', displayName: null,
     allowedEmail: null, allowedDomain: null, expiresAt: null, maxUses: null, usedCount: 0,
     sourceType: 'API', createdAt: '2026-07-11T00:00:00Z', updatedAt: '2026-07-11T00:00:00Z',
     revokedAt: null, revokeReason: null,

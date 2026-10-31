@@ -1,5 +1,6 @@
 import type { PublicAuthMethodsResponse, PublicAuthPolicyResponse } from './types'
 export const flowCapabilities: PublicAuthMethodsResponse = {
+  identifierRestrictions: { signup: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } }, login: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } } },
   clientId: 'flow-test',
   passwordLoginEnabled: true,
   emailMagicLinkEnabled: true,
@@ -44,10 +45,15 @@ export const flowCapabilities: PublicAuthMethodsResponse = {
   resend: { emailVerificationCooldownSeconds: 30 },
 }
 export const flowPolicy: PublicAuthPolicyResponse = {
+  identifierRestrictions: { signup: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } }, login: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } } },
   defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
   allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'], allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
   passwordLoginEnabled: true,
-  passwordlessEnabled: true,
+  emailMagicLinkEnabled: true,
+  emailOtpEnabled: true,
+  smsOtpEnabled: true,
+  socialLoginEnabled: true,
+  smsAutoProvisioningEnabled: true,
   minPasswordLength: 10,
   requireUppercase: true,
   requireLowercase: true,

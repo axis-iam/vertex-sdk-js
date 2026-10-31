@@ -1,4 +1,5 @@
 import { SessionInvalidatedError, SessionLifecycle } from '../session-lifecycle.js'
+import type { SessionInvalidationReason } from '../session-lifecycle.js'
 import { parseCurrentUser } from './current-user.js'
 import type { CurrentUser } from './current-user.js'
 import type { AuthenticationTransaction, AuthenticationView, PrimaryAuthentication, MfaProofMethod, PrimaryProofMethod } from './authentication-transaction.js'
@@ -70,6 +71,7 @@ export class ServerSession {
   private loading = false
   constructor(readonly transport: SessionTransport, private readonly clientId?: string) {}
   get generation() { return this.lifecycle.generation }
+  get invalidationReason() { return this.lifecycle.invalidationReason }
   assertCurrent(generation: number) { this.lifecycle.assertCurrent(generation) }
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener) }
   private notify() { for (const listener of this.listeners) listener() }
@@ -77,17 +79,17 @@ export class ServerSession {
   getViewState() { return { status: this.error ? 'error' as const : this.view && Date.parse(this.view.expiresAt) <= Date.now() ? 'expired' as const : this.loading ? 'loading' as const : this.isAuthenticated() ? 'ready' as const : 'anonymous' as const, error: this.error, expiresAt: this.view ? Date.parse(this.view.expiresAt) : null } }
   isAuthenticated() { return !this.error && this.view !== null && 'profile' in this.view && Date.parse(this.view.expiresAt) > Date.now() }
   getUser(): CurrentUser | null { return this.isAuthenticated() && this.view && 'profile' in this.view ? this.view.profile : null }
-  clear() { this.lifecycle.invalidate(); this.view = null; this.error = null; this.loading = false; this.notify() }
-  dispose() { this.lifecycle.invalidate(); this.listeners.clear() }
+  clear(reason: SessionInvalidationReason = 'cleared') { this.lifecycle.invalidate(reason); this.view = null; this.error = null; this.loading = false; this.notify() }
+  dispose() { this.lifecycle.invalidate('disposed'); this.notify(); this.listeners.clear() }
   private apply(view: ServerSessionView) {
     if ('profile' in view && this.clientId !== undefined && view.profile.authenticationContext.clientId !== this.clientId) throw new SessionTransportError('SESSION_CONTEXT_MISMATCH')
     const previous = this.view
-    if (previous && 'profile' in previous && !('profile' in view)) this.lifecycle.invalidate()
+    if (previous && 'profile' in previous && !('profile' in view)) this.lifecycle.invalidate('replaced')
     if ('profile' in view && (!previous || !('profile' in previous) || previous.owner !== view.owner ||
       previous.profile.authenticationContext.workspaceId !== view.profile.authenticationContext.workspaceId ||
       previous.profile.authenticationContext.organizationId !== view.profile.authenticationContext.organizationId ||
       previous.profile.authenticationContext.sessionId !== view.profile.authenticationContext.sessionId ||
-      previous.profile.id !== view.profile.id)) this.lifecycle.invalidate()
+      previous.profile.id !== view.profile.id)) this.lifecycle.invalidate('replaced')
     if (previous && 'profile' in previous && 'profile' in view && previous.owner === view.owner && view.version < previous.version)
       throw new SessionInvalidatedError()
     this.view = view; this.error = null; this.loading = false
@@ -104,7 +106,7 @@ export class ServerSession {
       this.assertCurrent(generation); this.apply(view); return view
     } catch (error) {
       this.assertCurrent(generation)
-      if (error instanceof SessionTransportError && error.status === 401) this.clear()
+      if (error instanceof SessionTransportError && error.status === 401) this.clear('unauthorized')
       this.error = error instanceof Error ? error : new SessionTransportError('SESSION_REQUEST_FAILED')
       this.loading = false; this.notify(); throw this.error
     }
@@ -118,7 +120,7 @@ export class ServerSession {
       return result
     } catch (error) {
       this.assertCurrent(generation)
-      if (error instanceof SessionTransportError && error.status === 401) this.clear()
+      if (error instanceof SessionTransportError && error.status === 401) this.clear('unauthorized')
       throw error
     }
   }

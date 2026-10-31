@@ -9,14 +9,17 @@ export class SessionInvalidatedError extends Error {
 }
 
 /** Framework-neutral coordination; adapters own transport, token state and errors. */
+export type SessionInvalidationReason = 'cleared' | 'unauthorized' | 'replaced' | 'disposed'
 export class SessionLifecycle<T> {
   private revision = 0
+  private reason: SessionInvalidationReason | null = null
   private flight: Promise<T> | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
 
   get generation(): number {
     return this.revision
   }
+  get invalidationReason(): SessionInvalidationReason | null { return this.reason }
 
   isCurrent(generation: number): boolean {
     return generation === this.revision
@@ -26,7 +29,8 @@ export class SessionLifecycle<T> {
     if (!this.isCurrent(generation)) throw new SessionInvalidatedError()
   }
 
-  invalidate(): void {
+  invalidate(reason: SessionInvalidationReason = 'cleared'): void {
+    this.reason = reason
     this.revision += 1
     this.flight = null
     this.cancelTimer()

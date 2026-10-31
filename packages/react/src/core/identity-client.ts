@@ -1,4 +1,4 @@
-import { SessionInvalidatedError } from '@axis-iam/vertex'
+import { SessionInvalidatedError, parseMfaProofOption, parseMfaStepUpResult, parseMfaWebAuthnStartResult, parseIdentifierManagement, parseIdentifierActions, parseIdentityProviderTarget } from '@axis-iam/vertex'
 import type {
   AccountIdentifiers, AccountLoginMethods, AuthorizeIdentityOperation,
   CompleteIdentityOperation, CompleteRecovery, CreateIdentityOperation,
@@ -79,6 +79,20 @@ export class IdentityClient {
     return parseOperation(await this.call(`${this.operationPath(id)}/${action}`, { json }, true))
   }
   reauthenticate(id: string, input: OperationReauthentication) { return this.action(id, 'reauthenticate', input) }
+  async currentAccountChallenge(id: string, identifierId: string) {
+    const v = record(await this.call(`${this.operationPath(id)}/current-account/challenges`, { json: { identifierId } }, true))
+    return { operation: parseOperation(v.operation), challengeId: string(v.challengeId), nextChallengeAt: string(v.nextChallengeAt) }
+  }
+  async startOperationStepUp(id: string) {
+    const v = parseMfaStepUpResult(await this.call(`${this.operationPath(id)}/step-up/start`, { json: {} }, true), 'oauth_tokens')
+    return { challengeId: v.challengeRef, availableMethods: v.availableMethods }
+  }
+  verifyOperationStepUp(id: string, challengeId: string, code: string) { return this.action(id, 'step-up/verify', { challengeId, code }) }
+  async startOperationWebAuthn(id: string, challengeId: string) {
+    const v = parseMfaWebAuthnStartResult(await this.call(`${this.operationPath(id)}/step-up/webauthn/start`, { json: { challengeId } }, true), 'oauth_tokens')
+    return { requestId: v.requestRef, publicKey: v.publicKey }
+  }
+  verifyOperationWebAuthn(id: string, challengeId: string, requestId: string, credential: string) { return this.action(id, 'step-up/webauthn/verify', { challengeId, requestId, credential }) }
   challenge(id: string, targetProofMethod: TargetProofMethod) { return this.action(id, 'challenges', { targetProofMethod }) }
   complete(id: string, input: CompleteIdentityOperation) { return this.action(id, 'complete', input) }
   cancel(id: string) { return this.action(id, 'cancel', {}) }
@@ -183,13 +197,20 @@ function oneOf<T extends string>(value: unknown, choices: readonly T[]): T {
 }
 export function parseIdentifiers(value: unknown): AccountIdentifiers {
   const v = record(value)
-  return { loginMethodVersion: version(v.loginMethodVersion), items: array(v.items).map(x => {
+  const management = parseIdentifierManagement(v.management)
+  const items = array(v.items).map(x => {
     const i = record(x)
     return { id: string(i.id), kind: oneOf(i.kind, ['EMAIL', 'PHONE', 'USERNAME']), displayValue: string(i.displayValue),
       status: oneOf(i.status, ['ACTIVE', 'INACTIVE']), verificationState: string(i.verificationState),
       verifiedAt: optional(i.verifiedAt), verificationSource: optional(i.verificationSource),
-      isPrimary: boolean(i.isPrimary), managedBy: optional(i.managedBy) }
-  }) }
+      isPrimary: boolean(i.isPrimary), managedBy: optional(i.managedBy), capabilities: parseIdentifierActions(i.capabilities) }
+  })
+  if (new Set(items.map(item => item.id)).size !== items.length) return invalid()
+  for (const item of items) for (const capability of Object.values(item.capabilities)) {
+    if (capability.allowed && !management.proofOptions.length) return invalid()
+    if (capability.replacementPrimaryIds.some(id => !items.some(other => other.id === id && other.id !== item.id && other.kind === item.kind))) return invalid()
+  }
+  return { loginMethodVersion: version(v.loginMethodVersion), items, management }
 }
 export function parseMethods(value: unknown): AccountLoginMethods {
   const v = record(value)
@@ -205,6 +226,8 @@ export function parseMethods(value: unknown): AccountLoginMethods {
 }
 export function parseOperation(value: unknown): IdentityOperation {
   const v = record(value)
+  const providerTarget = parseIdentityProviderTarget(v.providerTarget)
+  if (providerTarget && (v.type !== 'LINK' || ['CANCELLED', 'EXPIRED', 'REJECTED'].includes(String(v.state)))) return invalid()
   return { id: string(v.id), type: oneOf(v.type, ['ADD', 'VERIFY', 'SET_PRIMARY', 'REMOVE', 'REPLACE', 'LINK', 'UNLINK', 'TRANSFER', 'ACCOUNT_DELETE']),
     state: oneOf(v.state, ['AWAITING_REAUTH', 'AWAITING_PROOF', 'READY', 'COMMITTED', 'CANCELLED', 'EXPIRED', 'REJECTED']),
     expiresAt: string(v.expiresAt), requiredProofs: array(v.requiredProofs).map(x => {
@@ -212,7 +235,14 @@ export function parseOperation(value: unknown): IdentityOperation {
       return { purpose: oneOf(p.purpose, ['CURRENT_ACCOUNT', 'TARGET_OWNERSHIP', 'TRANSFER_COUNTERPART']), methods: strings(p.methods),
         strength: string(p.strength), satisfied: boolean(p.satisfied) }
     }), result: v.result == null ? v.result : Object.fromEntries(Object.entries(record(v.result)).map(([k,v]) => [k,string(v)])),
+    completion: v.completion == null ? null : parseIdentityCompletion(v.completion),
+    proofOptions: array(v.proofOptions).map(parseMfaProofOption),
+    providerTarget,
     maskedIdentifier: optional(v.maskedIdentifier), nextChallengeAt: optional(v.nextChallengeAt) }
+}
+function parseIdentityCompletion(value: unknown) {
+  const v = record(value)
+  return { completedAt: string(v.completedAt), finalLoginMethodVersion: version(v.finalLoginMethodVersion), sessionImpact: oneOf(v.sessionImpact, ['UNCHANGED', 'CURRENT_SESSION_RETAINED', 'REAUTHENTICATE'] as const) }
 }
 export function parseRegistration(value: unknown): RegistrationOperation {
   const v = record(value)

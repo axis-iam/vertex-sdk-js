@@ -1,3 +1,4 @@
+import { managedIdentifiers, managementCapability } from '../core/identity-management-fixtures.test-support'
 import type { ReactElement } from 'react'
 import * as webauthn from '../core/identity-webauthn'
 import { IamUiProvider } from '../provider/IamUiProvider'
@@ -11,13 +12,14 @@ import { makeTestJwt } from '../test-utils'
 import { identityEnglish, identityZhCN } from '../identity-localization'
 import { identityOperationStore } from '../core/identity-operation-store'
 import { useIdentityOperations } from '../hooks/useIdentityOperations'
+import { flowCapabilities } from '../core/auth-flow-fixtures.test-support'
 
 vi.mock('../provider/IamProvider', () => ({ useIamContext: () => ({ client, user: client.tokenManager.getUser(), isAuthenticated: true, isLoaded: true }) }))
 const issuer = 'https://auth.test.com'
 let client: OAuthClient
 const fetchMock = vi.fn<typeof fetch>()
 const response = (data: unknown) => new Response(JSON.stringify(data), { status: 200 })
-const operation = (state = 'AWAITING_REAUTH') => ({ id: 'op', type: 'ADD', state, expiresAt: new Date(Date.now()+600000).toISOString(), requiredProofs: [
+const operation = (state = 'AWAITING_REAUTH') => ({ id: 'op', type: 'ADD', state, expiresAt: new Date(Date.now()+600000).toISOString(), proofOptions: [{ method: 'PASSWORD' }], completion: null, requiredProofs: [
   { purpose: 'CURRENT_ACCOUNT', methods: ['PASSWORD'], strength: 'POLICY', satisfied: state !== 'AWAITING_REAUTH' },
   { purpose: 'TARGET_OWNERSHIP', methods: ['EMAIL_OTP'], strength: 'OWNERSHIP', satisfied: state === 'COMMITTED' },
 ] })
@@ -31,12 +33,15 @@ beforeEach(() => {
   client = new OAuthClient({ issuerUri: issuer, clientId: 'c', redirectUri: '/callback' })
   client.tokenManager.store({ access_token: makeTestJwt(), expires_in: 3600, token_type: 'Bearer' }, 'OAUTH_AUTHORIZATION_CODE', null)
   vi.spyOn(client, 'discover').mockResolvedValue({ issuer, authorization_endpoint: `${issuer}/authorize`, token_endpoint: `${issuer}/token`, userinfo_endpoint: `${issuer}/userinfo`, jwks_uri: `${issuer}/jwks` })
+  vi.spyOn(client, 'getPublicAuthMethods').mockResolvedValue(flowCapabilities)
   fetchMock.mockReset().mockImplementation(async (url, init) => {
     const path = String(url)
-    if (path.endsWith('/identifiers')) return response({ loginMethodVersion: 3, items: [{ id: 'email-1', kind: 'EMAIL', displayValue: 'a@example.invalid', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: true, managedBy: null }] })
+    if (path.endsWith('/identifiers')) return response(managedIdentifiers([{ id: 'email-1', kind: 'EMAIL', displayValue: 'a@example.invalid', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: true, managedBy: null }], 3))
     if (path.endsWith('/login-methods')) return response({ loginMethodVersion: 3, methods: [{ methodId: 'opaque-provider', kind: 'PROVIDER', roles: ['FIRST_FACTOR'], status: 'AVAILABLE', providerId: 'p1', capabilities: { unlink: true }, unavailableReasons: [] }] })
     if (path.endsWith('/linkable-identity-providers')) return response([{ id: 'p1', displayName: 'Provider One', providerType: 'OIDC', protocol: 'OIDC', enabled: true, linked: true, linkedAt: null, supportsAccountLinking: true, canLink: false, canReauthenticate: true, unavailableReasons: [] }])
     if (path.endsWith('/profile')) return response({ userId: 'u1', email: null, username: null, displayName: 'User', emailVerified: false, status: 'ACTIVE', avatarUrl: null })
+    if (path.endsWith('/mfa/capabilities')) return response({ loginMethodVersion: 4, totpEnroll: { allowed: true, proofRequirement: 'SESSION', proofOptions: [], reasonCode: null }, totpDisable: { allowed: false, proofRequirement: 'SESSION', proofOptions: [], reasonCode: 'METHOD_UNAVAILABLE' }, recoveryCodesGenerate: { allowed: true, proofRequirement: 'SESSION', proofOptions: [], reasonCode: null } })
+    if (path.endsWith('/mfa/recovery-codes/remaining')) return response({ remaining: 0 })
     if (path.endsWith('/security')) return response({ emailVerified: false, passwordCredentialPresent: true, mfaEnrolled: false, activeSessionCount: 1 })
     if (path.endsWith('/reauthenticate')) return response(operation('AWAITING_PROOF'))
     if (path.endsWith('/complete')) return response(operation('COMMITTED'))
@@ -48,6 +53,139 @@ beforeEach(() => {
 })
 afterEach(() => { cleanup(); client.dispose(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 describe('AccountCenter real login-method consumer', () => {
+  it('uses authenticated per-kind/per-record decisions, including grandfathered and directory verification capabilities', async () => {
+    const facts = managedIdentifiers([{ id: 'managed-email', kind: 'EMAIL', displayValue: 'old@outside.invalid', status: 'ACTIVE', verificationState: 'UNVERIFIED', isPrimary: true, managedBy: 'directory' }], 3)
+    facts.management.add.PHONE = managementCapability(['TARGET_PROOF_UNAVAILABLE'], ['CURRENT_ACCOUNT_PROOF', 'NEW_IDENTIFIER', 'TARGET_PHONE_OTP'])
+    facts.items[0].capabilities.REMOVE = managementCapability(['LAST_LOGIN_METHOD'], ['CURRENT_ACCOUNT_PROOF', 'REMAINING_LOGIN_PATH'])
+    vi.spyOn(client.identity, 'identifiers').mockResolvedValue(facts)
+    vi.mocked(client.getPublicAuthMethods).mockRejectedValue(new Error('anonymous metadata must not be used'))
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByText('old@outside.invalid')
+    expect(screen.getByRole('button', { name: identityEnglish.addPhone }).matches(':disabled')).toBe(true)
+    expect(screen.getByText('Verification delivery for this identifier is unavailable.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.manageEmails }))
+    expect(screen.getByRole('button', { name: identityEnglish.verify, exact: true }).matches(':disabled')).toBe(false)
+    expect(screen.getByRole('button', { name: identityEnglish.remove, exact: true }).matches(':disabled')).toBe(true)
+    expect(screen.getByText('Add another complete sign-in path before removing this one.')).toBeTruthy()
+    expect(client.getPublicAuthMethods).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.addEmail }))
+    expect(screen.getByRole('region', { name: identityEnglish.managementRequirements })).toBeTruthy()
+    expect(screen.getByText(identityEnglish.managementRequirement.TARGET_EMAIL_OTP)).toBeTruthy()
+    expect(screen.getByText(identityEnglish.passwordMethod)).toBeTruthy()
+  })
+  it('bounds the email overview and pages five rows while retaining off-page primary candidates', async () => {
+    const items = Array.from({ length: 11 }, (_, index) => ({ id: `email-${index + 1}`, kind: 'EMAIL' as const,
+      displayValue: `member${index + 1}@example.invalid`, status: 'ACTIVE' as const,
+      verificationState: index === 1 ? 'UNVERIFIED' : 'VERIFIED', isPrimary: index === 0, managedBy: null }))
+    const snapshot = managedIdentifiers(items, 3)
+    snapshot.items[0].capabilities.REMOVE.replacementPrimaryIds = ['email-11']
+    vi.spyOn(client.identity, 'identifiers').mockResolvedValue(snapshot)
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByText('member1@example.invalid')
+    expect(screen.queryByText('member6@example.invalid')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.manageEmails }))
+    expect(screen.queryByText('member6@example.invalid')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.next }))
+    expect(screen.getByText('member6@example.invalid')).toBeTruthy()
+    expect(screen.queryByText('member2@example.invalid')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.previous }))
+    const more = screen.getByLabelText(`${identityEnglish.moreActions}: member1@example.invalid`).parentElement!
+    fireEvent.click(within(more).getByRole('button', { name: identityEnglish.remove }))
+    const primary = screen.getByLabelText(identityEnglish.replacementPrimary)
+    expect(within(primary).queryByRole('option', { name: 'member3@example.invalid' })).toBeNull()
+    expect(within(primary).getByRole('option', { name: 'member11@example.invalid' })).toBeTruthy()
+    expect(within(primary).queryByRole('option', { name: 'member2@example.invalid' })).toBeNull()
+    expect((primary as HTMLSelectElement).value).toBe('')
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: identityEnglish.complete }))
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/identity-operations') && init?.method === 'POST')).toBe(false)
+    fireEvent.change(primary, { target: { value: 'email-11' } })
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: identityEnglish.complete }))
+    await screen.findByRole('heading', { name: identityEnglish.AWAITING_REAUTH })
+    const request = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/identity-operations') && init?.method === 'POST')
+    expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({ type: 'REMOVE', payload: { identifierId: 'email-1', replacementPrimaryId: 'email-11' } })
+  })
+  it('continues PHONE addition through current-account and target SMS proof to a definitive result', async () => {
+    const previous = fetchMock.getMockImplementation()!
+    const phoneOperation = (state: string) => ({ ...operation(state), maskedIdentifier: '+86 138****8000',
+      requiredProofs: [{ purpose: 'CURRENT_ACCOUNT', methods: ['PASSWORD'], strength: 'POLICY', satisfied: state !== 'AWAITING_REAUTH' },
+        { purpose: 'TARGET_OWNERSHIP', methods: ['PHONE_OTP'], strength: 'OWNERSHIP', satisfied: state === 'COMMITTED' }],
+      completion: state === 'COMMITTED' ? { completedAt: new Date().toISOString(), finalLoginMethodVersion: 4, sessionImpact: 'CURRENT_SESSION_RETAINED' } : null })
+    fetchMock.mockImplementation(async (url, init) => {
+      const path = String(url)
+      if (path.endsWith('/identity-operations')) return response(phoneOperation('AWAITING_REAUTH'))
+      if (path.endsWith('/reauthenticate') || path.endsWith('/challenges')) return response(phoneOperation('AWAITING_PROOF'))
+      if (path.endsWith('/complete')) return response(phoneOperation('COMMITTED'))
+      return previous(url, init)
+    })
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByText('a@example.invalid')
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.addPhone }))
+    fireEvent.change(screen.getByLabelText(identityEnglish.PHONE), { target: { value: '13800138000' } })
+    fireEvent.change(screen.getByLabelText(identityEnglish.phoneCountry), { target: { value: 'CN' } })
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: identityEnglish.add }))
+    await screen.findByLabelText(identityEnglish.password)
+    fireEvent.change(screen.getByLabelText(identityEnglish.password), { target: { value: 'fixture-password' } })
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.verifyContinue }))
+    await screen.findByLabelText(identityEnglish.otp)
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.send }))
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/challenges'))).toBe(true))
+    fireEvent.change(screen.getByLabelText(identityEnglish.otp), { target: { value: '123456' } })
+    await waitFor(() => expect(screen.getByRole('button', { name: identityEnglish.verifyComplete }).matches(':disabled')).toBe(false))
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.verifyComplete }))
+    await screen.findByRole('heading', { name: identityEnglish.COMMITTED })
+    const request = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/complete'))
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ proofs: [{ purpose: 'TARGET_OWNERSHIP', method: 'PHONE_OTP', code: '123456' }] })
+  })
+  it('preserves bound facts on authoritative last-path rejection and obeys provider unlink capability', async () => {
+    vi.spyOn(client.identity, 'loginMethods').mockResolvedValue({ loginMethodVersion: 3, methods: [{ methodId: 'provider-last', kind: 'PROVIDER', roles: ['FIRST_FACTOR'], status: 'AVAILABLE', providerId: 'p1', capabilities: { unlink: false }, unavailableReasons: [] }] })
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByText('a@example.invalid')
+    expect(screen.getByRole('button', { name: identityEnglish.unlink }).matches(':disabled')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.manageEmails }))
+    const more = screen.getByLabelText(`${identityEnglish.moreActions}: a@example.invalid`).parentElement!
+    fireEvent.click(within(more).getByRole('button', { name: identityEnglish.remove }))
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'LAST_LOGIN_METHOD' }), { status: 409 }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: identityEnglish.complete }))
+    await screen.findByText(identityEnglish.lastPathProtection)
+    await waitFor(() => expect(identityOperationStore(client).getSnapshot().error).toMatchObject({ code: 'LAST_LOGIN_METHOD' }))
+    expect(screen.getAllByText('a@example.invalid').length).toBeGreaterThan(0)
+    expect(identityOperationStore(client).getSnapshot().uncertainCreate).toBeNull()
+  })
+  it('keeps a definitively range-rejected binding editable instead of requiring uncertain-create recovery', async () => {
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByText('a@example.invalid')
+    const additions = openAdd()
+    const input = within(additions).getByLabelText(identityEnglish.EMAIL)
+    fireEvent.change(input, { target: { value: 'outside@other.invalid' } })
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'IDENTIFIER_RANGE_REJECTED' }), { status: 403 }))
+    fireEvent.click(within(additions).getByRole('button', { name: identityEnglish.add }))
+    await screen.findByText('This address or phone region cannot be used here. Choose another identifier or contact support.')
+    expect(screen.queryByText(identityEnglish.createUnconfirmed)).toBeNull()
+    expect(screen.queryByRole('button', { name: identityEnglish.recoverCreate })).toBeNull()
+    expect(input.matches(':disabled')).toBe(false)
+    expect(within(additions).getByRole('button', { name: identityEnglish.add }).matches(':disabled')).toBe(false)
+    expect(input.getAttribute('value')).toBe('outside@other.invalid')
+  })
+
+  it('does not use anonymous signup regions to grant or hide authenticated management actions', async () => {
+    vi.mocked(client.getPublicAuthMethods).mockResolvedValue({
+      ...flowCapabilities,
+      identifierRestrictions: {
+        signup: { email: { restricted: false }, phone: { restricted: true, allowedRegions: ['CA'] } },
+        login: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } },
+      },
+    })
+    render(<IamUiProvider locale="en"><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByText('a@example.invalid')
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.addPhone }))
+    const region = screen.getByRole('combobox', { name: identityEnglish.phoneCountry })
+    expect(within(region).getAllByRole('option').length).toBeGreaterThan(2)
+    expect(within(region).getByRole('option', { name: 'Canada (+1)' })).toBeTruthy()
+    expect(within(region).getByRole('option', { name: 'China (+86)' })).toBeTruthy()
+    expect(client.getPublicAuthMethods).not.toHaveBeenCalled()
+    expect(screen.getByText('a@example.invalid')).toBeTruthy()
+  })
+
   it.each(['en', 'zh-CN'] as const)('locks edits and dialog close while %s recovers the exact original create', async locale => {
     const l = locale === 'en' ? identityEnglish : identityZhCN
     const close = vi.fn()
@@ -236,7 +374,7 @@ async function controlOperation() {
   const previous = fetchMock.getMockImplementation()!
   fetchMock.mockImplementation(async (url, init) => {
     if (String(url).includes('/identity-operations')) return response({
-      ...operation(), requiredProofs: [{ purpose: 'CURRENT_ACCOUNT', methods: ['STEP_UP_PROOF', 'PROVIDER'], strength: 'POLICY', satisfied: false }],
+      ...operation(), proofOptions: [{ method: 'STEP_UP_PROOF', availableMethods: ['TOTP', 'WEBAUTHN'] }, { method: 'PROVIDER', methodId: 'opaque-provider', displayName: 'Provider One' }], requiredProofs: [{ purpose: 'CURRENT_ACCOUNT', methods: ['STEP_UP_PROOF', 'PROVIDER'], strength: 'POLICY', satisfied: false }],
     })
     return previous(url, init)
   })
@@ -244,27 +382,25 @@ async function controlOperation() {
 }
 describe('SDK-C01 mounted identity form isolation', () => {
   it.each(['REPLACE', 'TRANSFER'] as const)('discards the old %s draft before new facts arrive on the same mounted client', async type => {
-    const identifiers = vi.spyOn(client.identity, 'identifiers').mockResolvedValue({
-      loginMethodVersion: 3, items: [
+    const identifiers = vi.spyOn(client.identity, 'identifiers').mockResolvedValue(managedIdentifiers([
         { id: 'old-id', kind: 'EMAIL', displayValue: 'old@example.invalid', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: true },
         { id: 'old-primary', kind: 'EMAIL', displayValue: 'other@example.invalid', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: false },
-      ],
-    })
+      ], 3))
     const tree = () => <IamUiProvider><ConnectedAccounts /></IamUiProvider>
     const view = render(tree())
-    const oldItem = (await screen.findByText('old@example.invalid')).parentElement!
+    await screen.findByText('old@example.invalid')
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.manageEmails }))
+    const oldItem = screen.getAllByText('old@example.invalid').find(item => item.tagName === 'STRONG')!.parentElement!
     const root = screen.getByRole('region', { name: identityEnglish.title })
     expect(screen.queryByLabelText(identityEnglish.operationId)).toBeNull()
     fireEvent.click(within(oldItem).getByText(identityEnglish.moreActions))
     fireEvent.click(within(oldItem).getByRole('button', { name: type === 'REPLACE' ? identityEnglish.replace : identityEnglish.transfer }))
     if (type === 'REPLACE') {
-      fireEvent.change(screen.getByLabelText(identityEnglish.kind), { target: { value: 'PHONE' } })
-      fireEvent.change(screen.getByLabelText(identityEnglish.region), { target: { value: 'CN' } })
-      fireEvent.change(screen.getByLabelText(identityEnglish.kind), { target: { value: 'EMAIL' } })
+      expect(screen.getByLabelText(identityEnglish.kind).matches(':disabled')).toBe(true)
       fireEvent.change(screen.getByLabelText(identityEnglish.value), { target: { value: 'old-draft@example.invalid' } })
       fireEvent.click(screen.getByLabelText(identityEnglish.removeOld))
     } else fireEvent.change(screen.getByLabelText(identityEnglish.targetUser), { target: { value: 'old-recipient' } })
-    fireEvent.change(screen.getByLabelText(identityEnglish.replacementPrimary), { target: { value: 'old-primary' } })
+    if (type === 'TRANSFER') fireEvent.change(screen.getByLabelText(identityEnglish.replacementPrimary), { target: { value: 'old-primary' } })
     const newFacts = deferred<Awaited<ReturnType<typeof client.identity.identifiers>>>()
     identifiers.mockReturnValue(newFacts.promise)
     vi.spyOn(client.identity, 'loginMethods').mockResolvedValue({ loginMethodVersion: 4, methods: [] })
@@ -276,19 +412,18 @@ describe('SDK-C01 mounted identity form isolation', () => {
     expect(screen.queryByLabelText(identityEnglish.value)).toBeNull()
     expect(screen.queryByLabelText(identityEnglish.kind)).toBeNull()
     expect(screen.queryByLabelText(identityEnglish.targetUser)).toBeNull()
-    expect((screen.getByRole('button', { name: identityEnglish.addEmail, exact: true }) as HTMLButtonElement).disabled).toBe(true)
-    await act(async () => { newFacts.resolve({ loginMethodVersion: 4, items: [
+    expect(screen.queryByRole('button', { name: identityEnglish.addEmail, exact: true })).toBeNull()
+    await act(async () => { newFacts.resolve(managedIdentifiers([
       { id: 'new-id', kind: 'EMAIL', displayValue: 'new@example.invalid', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: true },
-    ] }) })
+    ], 4)) })
     await screen.findByText('new@example.invalid')
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.manageEmails }))
     fireEvent.click(screen.getByText(identityEnglish.moreActions, { selector: 'summary' }))
     fireEvent.click(screen.getByRole('button', { name: type === 'REPLACE' ? identityEnglish.replace : identityEnglish.transfer }))
-    expect((screen.getByLabelText(identityEnglish.replacementPrimary) as HTMLSelectElement).value).toBe('')
+    expect(screen.queryByLabelText(identityEnglish.replacementPrimary)).toBeNull()
     if (type === 'REPLACE') {
       expect((screen.getByLabelText(identityEnglish.removeOld) as HTMLInputElement).checked).toBe(true)
-      fireEvent.change(screen.getByLabelText(identityEnglish.kind), { target: { value: 'PHONE' } })
-      expect((screen.getByLabelText(identityEnglish.region) as HTMLInputElement).value).toBe('')
-      fireEvent.change(screen.getByLabelText(identityEnglish.kind), { target: { value: 'EMAIL' } })
+      expect(screen.getByLabelText(identityEnglish.kind).matches(':disabled')).toBe(true)
       fireEvent.change(screen.getByLabelText(identityEnglish.value), { target: { value: 'replacement@example.invalid' } })
     } else {
       expect((screen.getByLabelText(identityEnglish.targetUser) as HTMLInputElement).value).toBe('')
@@ -306,8 +441,8 @@ describe('SDK-C01 mounted identity form isolation', () => {
     expect(localStorage.length).toBe(0)
   })
   it.each(['existing', 'late-success', 'late-failure'] as const)('discards %s step-up state across a mounted session switch', async boundary => {
-    const pending = deferred<{ challengeId: string; availableMethods: ('totp' | 'webauthn')[] }>()
-    const start = vi.spyOn(client.identity, 'startStepUp').mockReturnValue(pending.promise)
+    const pending = deferred<{ challengeId: string; availableMethods: ('TOTP' | 'WEBAUTHN')[] }>()
+    const start = vi.spyOn(client.identity, 'startOperationStepUp').mockReturnValue(pending.promise)
     const tree = () => <IamUiProvider><ConnectedAccounts /></IamUiProvider>
     const view = render(tree())
     await screen.findByText('a@example.invalid')
@@ -316,13 +451,13 @@ describe('SDK-C01 mounted identity form isolation', () => {
     fireEvent.click(screen.getByRole('button', { name: identityEnglish.stepUp }))
     await waitFor(() => expect(start).toHaveBeenCalledOnce())
     if (boundary === 'existing') {
-      await act(async () => pending.resolve({ challengeId: 'old-challenge', availableMethods: ['totp'] }))
+      await act(async () => pending.resolve({ challengeId: 'old-challenge', availableMethods: ['TOTP'] }))
       fireEvent.change(await screen.findByLabelText(identityEnglish.otp), { target: { value: '654321' } })
     }
     switchIdentity(view, tree)
     await controlOperation()
     await act(async () => {
-      if (boundary === 'late-success') pending.resolve({ challengeId: 'old-challenge', availableMethods: ['totp'] })
+      if (boundary === 'late-success') pending.resolve({ challengeId: 'old-challenge', availableMethods: ['TOTP'] })
       if (boundary === 'late-failure') pending.reject(new Error('old account failure'))
     })
     expect(screen.getByRole('region', { name: identityEnglish.title })).toBe(root)
@@ -332,9 +467,9 @@ describe('SDK-C01 mounted identity form isolation', () => {
     expect(sessionStorage.length).toBe(0)
   })
   it('does not apply a late TOTP verification to the new identity operation', async () => {
-    vi.spyOn(client.identity, 'startStepUp').mockResolvedValue({ challengeId: 'old-challenge', availableMethods: ['totp'] })
-    const pending = deferred<void>()
-    const verify = vi.spyOn(client.identity, 'verifyStepUp').mockReturnValue(pending.promise)
+    vi.spyOn(client.identity, 'startOperationStepUp').mockResolvedValue({ challengeId: 'old-challenge', availableMethods: ['TOTP'] })
+    const pending = deferred<ReturnType<typeof operation>>()
+    const verify = vi.spyOn(client.identity, 'verifyOperationStepUp').mockReturnValue(pending.promise)
     const reauth = vi.spyOn(client.identity, 'reauthenticate')
     const tree = () => <IamUiProvider><ConnectedAccounts /></IamUiProvider>
     const view = render(tree())
@@ -343,19 +478,19 @@ describe('SDK-C01 mounted identity form isolation', () => {
     fireEvent.click(screen.getByRole('button', { name: identityEnglish.stepUp }))
     fireEvent.change(await screen.findByLabelText(identityEnglish.otp), { target: { value: '654321' } })
     fireEvent.click(screen.getByRole('button', { name: identityEnglish.verifyContinue }))
-    await waitFor(() => expect(verify).toHaveBeenCalledWith('old-challenge', '654321'))
+    await waitFor(() => expect(verify).toHaveBeenCalledWith('op', 'old-challenge', '654321'))
     switchIdentity(view, tree)
     await controlOperation()
-    await act(async () => pending.resolve())
+    await act(async () => pending.resolve(operation('AWAITING_PROOF')))
     expect(reauth).not.toHaveBeenCalled()
     expect(screen.queryByLabelText(identityEnglish.otp)).toBeNull()
   })
   it('discards a late native WebAuthn assertion before verification or reauthentication', async () => {
-    vi.spyOn(client.identity, 'startStepUp').mockResolvedValue({ challengeId: 'old-challenge', availableMethods: ['webauthn'] })
-    vi.spyOn(client.identity, 'startStepUpWebAuthn').mockResolvedValue({ requestId: 'old-request', publicKey: '{}' })
+    vi.spyOn(client.identity, 'startOperationStepUp').mockResolvedValue({ challengeId: 'old-challenge', availableMethods: ['WEBAUTHN'] })
+    vi.spyOn(client.identity, 'startOperationWebAuthn').mockResolvedValue({ requestId: 'old-request', publicKey: '{}' })
     const pending = deferred<string>()
     const assertion = vi.spyOn(webauthn, 'assertIdentityWebAuthn').mockReturnValue(pending.promise)
-    const verify = vi.spyOn(client.identity, 'verifyStepUpWebAuthn')
+    const verify = vi.spyOn(client.identity, 'verifyOperationWebAuthn')
     const reauth = vi.spyOn(client.identity, 'reauthenticate')
     const tree = () => <IamUiProvider><ConnectedAccounts /></IamUiProvider>
     const view = render(tree())
@@ -465,7 +600,7 @@ describe('ui-sdk2 operation action stages', () => {
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/complete'))).toBe(false)
   })
   it('chooses one available account path and clears passwords when switching to a named Provider', async () => {
-    await mounted({ ...operation(), requiredProofs: [
+    await mounted({ ...operation(), proofOptions: [{ method: 'PASSWORD' }, { method: 'STEP_UP_PROOF', availableMethods: ['TOTP'] }, { method: 'PROVIDER', methodId: 'opaque-provider', displayName: 'Provider One' }], requiredProofs: [
       { purpose: 'CURRENT_ACCOUNT', methods: ['PASSWORD', 'STEP_UP_PROOF', 'PROVIDER'], strength: 'POLICY', satisfied: false },
     ] })
     fireEvent.change(screen.getByLabelText(identityEnglish.password), { target: { value: 'discard-me' } })

@@ -40,11 +40,16 @@ const googleProvider: IdentityProviderOption = {
 }
 
 const publicAuthPolicy: PublicAuthPolicyResponse = {
+  identifierRestrictions: { signup: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } }, login: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } } },
   defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
   allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
   allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
   passwordLoginEnabled: true,
-  passwordlessEnabled: true,
+  emailMagicLinkEnabled: true,
+  emailOtpEnabled: false,
+  smsOtpEnabled: false,
+  socialLoginEnabled: true,
+  smsAutoProvisioningEnabled: false,
   minPasswordLength: 8,
   requireUppercase: false,
   requireLowercase: false,
@@ -67,6 +72,7 @@ const publicAuthPolicy: PublicAuthPolicyResponse = {
 }
 
 const publicAuthMethods: PublicAuthMethodsResponse = {
+  identifierRestrictions: { signup: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } }, login: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } } },
   clientId: 'my-app',
   passwordLoginEnabled: true,
   emailMagicLinkEnabled: true,

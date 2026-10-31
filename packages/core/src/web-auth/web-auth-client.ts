@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
+import { IdTokenVerifier, IdTokenValidationError } from '../jwt/id-token-verifier.js'
 
 export type WebAuthErrorCode =
   | 'CONFIGURATION_INVALID'
@@ -11,6 +12,7 @@ export type WebAuthErrorCode =
   | 'CALLBACK_OAUTH_ERROR'
   | 'TOKEN_REQUEST_FAILED'
   | 'TOKEN_RESPONSE_INVALID'
+  | 'ID_TOKEN_INVALID'
   | 'SESSION_STORE_FAILED'
   | 'SESSION_NOT_FOUND'
   | 'SESSION_EXPIRED'
@@ -28,6 +30,7 @@ const ERROR_MESSAGES: Record<WebAuthErrorCode, string> = {
   CALLBACK_OAUTH_ERROR: 'Authorization was not completed',
   TOKEN_REQUEST_FAILED: 'Token endpoint request failed',
   TOKEN_RESPONSE_INVALID: 'Token endpoint response is invalid',
+  ID_TOKEN_INVALID: 'OpenID ID Token validation failed',
   SESSION_STORE_FAILED: 'Web session store operation failed',
   SESSION_NOT_FOUND: 'Web session was not found',
   SESSION_EXPIRED: 'Web session has expired',
@@ -52,6 +55,8 @@ export class WebAuthError extends Error {
 export interface WebAuthTransaction {
   state: string
   codeVerifier: string
+  /** Present only for transactions requesting OpenID Connect. */
+  nonce?: string
   createdAt: number
   expiresAt: number
 }
@@ -171,6 +176,7 @@ interface ValidatedConfig {
 export class WebAuthClient {
   private readonly config: ValidatedConfig
   private discovery?: Promise<DiscoveryMetadata>
+  private idTokens?: IdTokenVerifier
 
   constructor(config: WebAuthClientConfig) {
     this.config = validateConfig(config)
@@ -195,6 +201,7 @@ export class WebAuthClient {
       codeVerifier,
       createdAt: now,
       expiresAt: now + this.config.transactionTtlMs,
+      ...(this.config.scopes.includes('openid') ? { nonce: opaqueIdentifier() } : {}),
     }
     try {
       await this.config.transactionStore.save(transactionId, transaction)
@@ -208,6 +215,7 @@ export class WebAuthClient {
     url.searchParams.set('redirect_uri', this.config.redirectUri)
     url.searchParams.set('scope', this.config.scopes.join(' '))
     url.searchParams.set('state', state)
+    if (transaction.nonce) url.searchParams.set('nonce', transaction.nonce)
     url.searchParams.set('code_challenge', createHash('sha256').update(codeVerifier).digest('base64url'))
     url.searchParams.set('code_challenge_method', 'S256')
     if (this.config.audience) url.searchParams.set('audience', this.config.audience)
@@ -237,6 +245,21 @@ export class WebAuthClient {
       redirect_uri: this.config.redirectUri,
       code_verifier: transaction.codeVerifier,
     }), 'TOKEN_REQUEST_FAILED')
+    if (this.config.scopes.includes('openid')) {
+      if (!transaction.nonce) throw new WebAuthError('ID_TOKEN_INVALID')
+      this.idTokens ??= new IdTokenVerifier({
+        issuer: metadata.issuer,
+        clientId: this.config.clientId,
+        jwksUri: metadata.jwksUri,
+        now: this.config.now,
+      })
+      try {
+        await this.idTokens.verify(tokens.idToken, transaction.nonce)
+      } catch (error) {
+        if (error instanceof IdTokenValidationError) throw new WebAuthError('ID_TOKEN_INVALID')
+        throw error
+      }
+    }
     const now = this.config.now()
     const sessionId = opaqueIdentifier()
     const session: WebAuthSession = {

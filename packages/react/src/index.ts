@@ -1,7 +1,9 @@
 export type { AuthCapabilities, DefaultLogin, IdentifierMethods, SignupIdentifierKind } from '@axis-iam/vertex'
+export type { IdentifierManagement, IdentifierManagementAction, IdentifierManagementCapability, IdentifierManagementDenial, IdentifierManagementRequirement, IdentityProviderTarget } from '@axis-iam/vertex'
 export { phoneCountries, parsePhoneIdentifier, normalizePhoneIdentifier, PhoneIdentifierError } from './components/sign-in/phone-identifier'
 export type { PhoneCountryOption, PhoneParseResult } from './components/sign-in/phone-identifier'
 export { useAuthFlow, AuthFlowStateError } from './hooks/useAuthFlow'
+export { AuthProviderWindow } from './core/auth-provider-window'
 export type { AuthFlowState, AuthFlowActions, AuthFlowIntent, AuthCredentialMethod, UseAuthFlowOptions, UseAuthFlowResult } from './hooks/useAuthFlow'
 // --- Provider ---
 export { IamProvider } from './provider/IamProvider'
@@ -36,8 +38,10 @@ export { useAccountOrganizations } from './hooks/useAccountOrganizations'
 export type { UseAccountOrganizationsOptions, UseAccountOrganizationsResult } from './hooks/useAccountOrganizations'
 export { useOrganizationSwitcher } from './hooks/useOrganizationSwitcher'
 export type { UseOrganizationSwitcherOptions, UseOrganizationSwitcherResult } from './hooks/useOrganizationSwitcher'
-export { useOrganizationInvitation } from './hooks/useOrganizationInvitation'
-export type { UseOrganizationInvitationOptions, UseOrganizationInvitationResult } from './hooks/useOrganizationInvitation'
+export { useInvitationJourney } from './hooks/useInvitationJourney'
+export type { UseInvitationJourneyOptions } from './hooks/useInvitationJourney'
+export type { InvitationJourney, InvitationState, InvitationRegistration, InvitationAuthentication, InvitationJourneyApi, InvitationRegistrationInput } from '@axis-iam/vertex'
+export { consumeInvitationContinuation } from '@axis-iam/vertex'
 export { useLinkableIdentityProviders } from './hooks/useLinkableIdentityProviders'
 export type { UseLinkableIdentityProvidersOptions, UseLinkableIdentityProvidersResult } from './hooks/useLinkableIdentityProviders'
 // --- Permission ---
@@ -124,9 +128,6 @@ export type {
   OrganizationSwitchResponse,
   ProviderAuthorizationOptions,
   ProviderAuthorizationResponse,
-  PublicOrganizationInvitationAcceptResponse,
-  PublicOrganizationInvitationAcceptStatus,
-  PublicOrganizationInvitationPreview,
   PublicAuthMethodsResponse,
   PublicAuthPolicyResponse,
   SignupMode,
@@ -143,7 +144,6 @@ export type {
   ResetPasswordInput,
   SendEmailVerificationInput,
   VerifyEmailInput,
-  SocialProviderConfig,
 } from './core/types'
 export { IamApiError, IamNetworkError, IamConfigurationError, IamTokenRefreshError, isIamApiError, isStepUpRequiredError } from './core/types'
 export type { TokenRefreshFailureReason } from './core/types'
@@ -169,3 +169,15 @@ export type { AuthClient } from './core/auth-client'
 export { CookieSessionTransport, UnsupportedOperationError, SessionTransportError } from '@axis-iam/vertex'
 export type { SessionTransport, SessionRequest } from '@axis-iam/vertex'
 export { useServerSession } from './hooks/useServerSession'
+
+export { AccountSecurityPanel } from './components/AccountSecurityPanel'
+export type { AccountSecurityPanelProps } from './components/AccountSecurityPanel'
+export { AccountSecurityDialog } from './components/AccountSecurityDialog'
+export type { AccountSecurityDialogProps } from './components/AccountSecurityDialog'
+export { AccountSecurityOperations } from './core/account-security-operations'
+export { accountSecurityStore, AccountSecurityStore } from './core/account-security-store'
+export type { AccountSecurityOperationState } from './core/account-security-store'
+export type { AccountSecurityReceipt } from './core/account-security-receipt'
+export { securityEnglish, securityZhCN } from './security-localization'
+export type { SecurityLocalization } from './security-localization'
+export type { MfaOperation, MfaOperationClient, MfaOperationType, MfaCapabilities, MfaProofOption, MfaOperationState, MfaSessionImpact, MfaTotpBeginResult, MfaCompletionResult, MfaOperationReauthentication } from '@axis-iam/vertex'

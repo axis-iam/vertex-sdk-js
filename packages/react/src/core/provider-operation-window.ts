@@ -13,8 +13,9 @@ export class ProviderOperationWindow {
     operationId: string
     authorizationId: string
     expiresAt: number
+    family?: 'mfa_operation' | 'identity_operation'
   } | null = null
-  private serverReturn: { url: string; expiresAt: number } | null = null
+  private serverReturn: { url: string; expiresAt: number; family: 'mfa_operation' | 'identity_operation' } | null = null
   constructor(private readonly assertOwner: () => void) {
     this.assertOwner()
     const popup = window.open('about:blank', '_blank')
@@ -30,6 +31,7 @@ export class ProviderOperationWindow {
     authorizationId: string
     expiresAt: string
     authorizationUrl: string
+    family?: 'mfa_operation' | 'identity_operation'
   }): void {
     this.assertActive()
     const target = new URL(binding.authorizationUrl),
@@ -58,7 +60,8 @@ export class ProviderOperationWindow {
       if (Date.now() >= this.serverReturn.expiresAt) { this.close(); throw new SessionInvalidatedError() }
       let url: string
       try { url = this.popup.location.href } catch { throw new IamConfigurationError('Provider has not returned') }
-      if (url !== this.serverReturn.url) throw new IamConfigurationError('Provider has not returned')
+      const params = authorizationCallback(url, this.serverReturn.url, ['operation_id', 'authorization_id', this.serverReturn.family])
+      if (params.get(this.serverReturn.family) !== 'proof_pending' || !params.get('operation_id') || !params.get('authorization_id')) throw new IamConfigurationError('Provider confirmation failed')
       return url
     }
     const binding = this.binding
@@ -77,24 +80,24 @@ export class ProviderOperationWindow {
     const params = authorizationCallback(url, binding.redirectUri, [
       'operation_id',
       'authorization_id',
-      'identity_operation',
+      binding.family ?? 'identity_operation',
     ])
     if (
       params.get('operation_id') !== binding.operationId ||
       params.get('authorization_id') !== binding.authorizationId ||
-      params.get('identity_operation') !== 'proof_pending'
+      params.get(binding.family ?? 'identity_operation') !== 'proof_pending'
     )
       throw new IamConfigurationError('Provider operation callback mismatch')
     return url
   }
-  navigateServer(authorizationUrl: string, returnUri: string, expiresAt: string) {
+  navigateServer(authorizationUrl: string, returnUri: string, expiresAt: string, family: 'mfa_operation' | 'identity_operation') {
     this.assertActive()
     const url = new URL(authorizationUrl), returned = new URL(returnUri, window.location.href)
     const expiry = Date.parse(expiresAt)
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
       returned.origin !== window.location.origin || returned.search || returned.hash ||
       !Number.isFinite(expiry) || expiry <= Date.now()) throw new IamConfigurationError('Invalid provider authorization')
-    this.serverReturn = { url: returned.href, expiresAt: expiry }
+    this.serverReturn = { url: returned.href, expiresAt: expiry, family }
     this.popup.location.href = url.href
   }
   private assertActive(): void {

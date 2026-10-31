@@ -10,6 +10,7 @@ export interface AccountCenterLocalization {
   sectionsAria: string
   menu: string
   back: string
+  securitySection: string
   profileSection: string
   passwordSection: string
   sessionsSection: string
@@ -99,7 +100,7 @@ export interface AccountCenterLocalization {
 
 export const accountCenterEnglish: AccountCenterLocalization = {
   title: 'Account center', close: 'Close account center', sectionsAria: 'Account sections', menu: 'Account', back: 'Menu',
-  profileSection: 'Profile', passwordSection: 'Password', sessionsSection: 'Sessions', permissionsSection: 'Permissions', retry: 'Retry', retrying: 'Retrying',
+  securitySection: 'Security', profileSection: 'Profile', passwordSection: 'Password', sessionsSection: 'Sessions', permissionsSection: 'Permissions', retry: 'Retry', retrying: 'Retrying',
   profileAria: 'Account profile', profileDescription: 'Identity and account', accountFallback: 'Account',
   profileLoading: 'Loading profile', emailVerified: 'Email verified', emailNotVerified: 'Email not verified',
   profileSaved: 'Profile saved', displayName: 'Display name', username: 'Username', avatarUrl: 'Avatar URL', saveProfile: 'Save profile', savingProfile: 'Saving profile',
@@ -132,7 +133,7 @@ export const accountCenterEnglish: AccountCenterLocalization = {
   },
 }
 
-type LegacyLabels = Partial<Record<'profile' | 'password' | 'sessions' | 'permissions' | 'title' | 'close' | 'menu' | 'back', string>>
+type LegacyLabels = Partial<Record<'profile' | 'password' | 'security' | 'sessions' | 'permissions' | 'title' | 'close' | 'menu' | 'back', string>>
 
 export function resolveAccountCenterLocalization(localization?: Partial<AccountCenterLocalization>, labels?: LegacyLabels, base: AccountCenterLocalization = accountCenterEnglish): AccountCenterLocalization {
   const resolved = { ...base }
@@ -143,10 +144,11 @@ export function resolveAccountCenterLocalization(localization?: Partial<AccountC
     }
   }
   if (labels) {
-    const { profile, password, sessions, permissions, ...outer } = labels
+    const { profile, password, security, sessions, permissions, ...outer } = labels
     for (const [key, value] of Object.entries(outer)) {
       if (value !== undefined) Object.assign(resolved, { [key]: value })
     }
+    if (security !== undefined) resolved.securitySection = security
     if (profile !== undefined) resolved.profileSection = profile
     if (password !== undefined) resolved.passwordSection = password
     if (sessions !== undefined) resolved.sessionsSection = sessions

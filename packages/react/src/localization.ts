@@ -1,3 +1,5 @@
+import { securityEnglish, securityZhCN } from './security-localization'
+import type { SecurityLocalization } from './security-localization'
 import { identityEnglish, identityZhCN } from './identity-localization'
 import type { IdentityLocalization } from './identity-localization'
 import type { AccountCenterLocalization } from './components/accountCenterConfig'
@@ -11,6 +13,7 @@ type ErrorCode =
   | 'EMAIL_ALREADY_EXISTS'
   | 'PASSWORD_RESET_INVALID'
   | 'PASSWORD_RESET_EXPIRED'
+  | 'REGISTRATION_IDENTIFIER_REJECTED'
   | 'REGISTRATION_GRANT_INVALID'
   | 'REGISTRATION_GRANT_REQUIRED'
   | 'REGISTRATION_GRANT_TYPE_NOT_ALLOWED'
@@ -24,6 +27,7 @@ type ErrorCode =
   | 'FORBIDDEN'
 
 export interface IamLocalization {
+  security: SecurityLocalization
   identity: IdentityLocalization
   accountCenter: AccountCenterLocalization
   auth: {
@@ -203,6 +207,28 @@ export interface IamLocalization {
     accepting: string
     accepted: string
     loginRequired: string
+    invalidEntry: string
+    unknownResult: string
+    retryPreparation: string
+    preparationNotSubmitted: string
+    navigationFailed: string
+    accountKept: string
+    applicationLabel: string
+    roleLabel: string
+    recipientLabel: string
+    enrollmentRequired: string
+    explicitConfirmation: string
+    reviewChanges: string
+    cancel: string
+    checkResult: string
+    checkRegistration: string
+    navigate: string
+    switchAccount: string
+    loginCompleted: string
+    mfaMethod: string
+    recoveryCode: string
+    useSession: string
+    terminal: (state: string) => string
   }
   errors: {
     generic: string
@@ -227,6 +253,7 @@ type DeepPartial<T> = T extends (...args: never[]) => unknown
     : T
 
 export const iamLocalizationEnglish: IamLocalization = {
+  security: securityEnglish,
   identity: identityEnglish,
   accountCenter: { ...accountCenterEnglish, profileStatus: (status) => formatProfileStatus(status, 'en') },
   auth: {
@@ -270,17 +297,18 @@ export const iamLocalizationEnglish: IamLocalization = {
   userButton: { menuAria: 'User menu', fallbackUser: 'User', organization: (slug) => `Org: ${slug}`, signOut: 'Sign out' },
   userProfile: { title: 'Profile', account: 'Account', email: 'Email', username: 'Username', name: 'Name', organization: 'Organization', roles: 'Roles', devices: 'Devices', lastSeen: (value) => `Last seen: ${value}`, revoke: 'Revoke', unavailable: '—' },
   organization: { select: 'Select organization', switching: 'Switching organization...', switchUnavailable: 'Organization could not be switched', role: (role) => formatOrganizationRole(role, 'en') },
-  invitation: { aria: 'Organization invitation', title: 'Organization invitation', join: (organization) => `Join ${organization}`, detail: (application, email, role) => `${application} invited ${email} as ${role}.`, loading: 'Loading invitation...', expires: (value) => `Expires ${value}`, accept: 'Accept invitation', accepting: 'Accepting', accepted: 'Invitation accepted.', loginRequired: 'Login or register, then retry this invitation link.' },
+  invitation: { aria: 'Organization invitation', title: 'Organization invitation', join: (organization) => `Join ${organization}`, detail: (application, email, role) => `${application} invited ${email} as ${role}.`, loading: 'Loading invitation...', expires: (value) => `Expires ${value}`, accept: 'Accept invitation', accepting: 'Accepting', accepted: 'Invitation accepted.', loginRequired: 'Sign in or create an account to continue.', invalidEntry: 'This invitation entry is invalid. Open the original invitation again.', unknownResult: 'The response was lost. Check the result before trying another action.', retryPreparation: 'Retry loading invitation', preparationNotSubmitted: 'The entry has not been exchanged. Retry loading it to continue.', navigationFailed: 'Your invitation is complete, but the next page could not be opened.', accountKept: 'Your account is kept. You have not joined the organization.', applicationLabel: 'Application', roleLabel: 'Role', recipientLabel: 'Invited email', enrollmentRequired: 'Set up an allowed authenticator to verify this account. You will still confirm the invitation separately.', explicitConfirmation: 'Creating an account does not accept this invitation. Confirm separately after verification.', reviewChanges: 'Review updated invitation', cancel: 'Cancel invitation', checkResult: 'Check invitation result', checkRegistration: 'Check registration status', navigate: 'Continue to application', switchAccount: 'Switch account', loginCompleted: 'I have signed in', mfaMethod: 'Verification method', recoveryCode: 'Recovery code', useSession: 'Use current signed-in account', terminal: (state) => ({ CANCELLED: 'Invitation cancelled.', EXPIRED: 'Invitation expired.', REVOKED: 'Invitation revoked.', UNAVAILABLE: 'Invitation unavailable.' })[state] ?? 'Invitation unavailable.' },
   errors: {
     generic: 'Something went wrong. Please try again.', signInOptionsUnavailable: 'Sign-in options are unavailable right now.', signInFailed: 'Sign-in failed. Please try again.', signUpFailed: 'We could not create your account. Please try again.', resetRequestFailed: 'We could not request a password reset. Please try again.', resetFailed: 'We could not reset your password. Please try again.', invitationFailed: 'We could not process this invitation. Please try again.', organizationSwitchFailed: 'We could not switch organizations. Please try again.', accountLinkFailed: 'We could not connect this account. Please try again.', accountUnlinkFailed: 'We could not disconnect this account. Please try again.',
-    codes: { INVALID_CREDENTIALS: 'The email, phone number, or password is incorrect.', EMAIL_VERIFICATION_REQUIRED: 'Verify your email before signing in.', EMAIL_ALREADY_EXISTS: 'An account already exists for this email address.', PASSWORD_RESET_INVALID: 'This password reset link is invalid.', PASSWORD_RESET_EXPIRED: 'This password reset link has expired.', REGISTRATION_GRANT_INVALID: 'This registration invitation or access code is invalid.', REGISTRATION_GRANT_REQUIRED: 'An invitation or registration access code is required.', REGISTRATION_GRANT_TYPE_NOT_ALLOWED: 'This registration invitation or access code is unavailable.', REGISTRATION_GRANT_HOSTED_UNSUPPORTED: 'This registration invitation or access code is unavailable.', REGISTRATION_DISABLED: 'This registration invitation or access code is unavailable.', INVITATION_INVALID: 'This invitation is invalid.', INVITATION_EXPIRED: 'This invitation has expired.', STEP_UP_REQUIRED: 'Verify again to continue.', RATE_LIMITED: 'Too many requests. Please try again later.', UNAUTHORIZED: 'Please sign in and try again.', FORBIDDEN: 'You do not have permission to do that.' },
+    codes: { REGISTRATION_IDENTIFIER_REJECTED: 'This address cannot be used to register here. Choose another address or contact support.', INVALID_CREDENTIALS: 'The email, phone number, or password is incorrect.', EMAIL_VERIFICATION_REQUIRED: 'Verify your email before signing in.', EMAIL_ALREADY_EXISTS: 'An account already exists for this email address.', PASSWORD_RESET_INVALID: 'This password reset link is invalid.', PASSWORD_RESET_EXPIRED: 'This password reset link has expired.', REGISTRATION_GRANT_INVALID: 'This registration invitation or access code is invalid.', REGISTRATION_GRANT_REQUIRED: 'An invitation or registration access code is required.', REGISTRATION_GRANT_TYPE_NOT_ALLOWED: 'This registration invitation or access code is unavailable.', REGISTRATION_GRANT_HOSTED_UNSUPPORTED: 'This registration invitation or access code is unavailable.', REGISTRATION_DISABLED: 'This registration invitation or access code is unavailable.', INVITATION_INVALID: 'This invitation is invalid.', INVITATION_EXPIRED: 'This invitation has expired.', STEP_UP_REQUIRED: 'Verify again to continue.', RATE_LIMITED: 'Too many requests. Please try again later.', UNAUTHORIZED: 'Please sign in and try again.', FORBIDDEN: 'You do not have permission to do that.' },
   },
 }
 
 export const iamLocalizationZhCN: IamLocalization = {
+  security: securityZhCN,
   identity: identityZhCN,
   accountCenter: {
-    title: '账户中心', close: '关闭账户中心', sectionsAria: '账户栏目', menu: '账户', back: '菜单', profileSection: '个人资料', passwordSection: '密码', sessionsSection: '会话', permissionsSection: '权限', retry: '重试', retrying: '正在重试',
+    title: '账户中心', close: '关闭账户中心', sectionsAria: '账户栏目', menu: '账户', back: '菜单', securitySection: '安全验证', profileSection: '个人资料', passwordSection: '密码', sessionsSection: '会话', permissionsSection: '权限', retry: '重试', retrying: '正在重试',
     profileAria: '账户资料', profileDescription: '身份与账户信息', accountFallback: '账户', profileLoading: '正在加载个人资料', emailVerified: '邮箱已验证', emailNotVerified: '邮箱未验证', profileSaved: '资料已保存', displayName: '显示名称', username: '用户名', avatarUrl: '头像地址', saveProfile: '保存资料', savingProfile: '正在保存资料', securityOverview: '安全概览', securityLoading: '正在加载安全信息', configured: '已配置', notConfigured: '未配置', multiFactorAuthentication: '多因素认证', enabled: '已启用', notEnabled: '未启用', activeSessions: '活跃会话', securityUnavailable: '无法获取安全详情', profileEmptyTitle: '个人资料不可用', profileEmptyDetail: '无法加载账户详情',
     passwordAria: '修改密码', passwordDescription: '修改您的密码', passwordRequiredError: '请输入当前密码和新密码', passwordMismatchError: '两次输入的新密码不一致', passwordChanged: '密码已修改', currentPassword: '当前密码', newPassword: '新密码', confirmPassword: '确认新密码', passwordHelp: '密码仅会在提交时发送', changePassword: '修改密码', changingPassword: '正在修改密码',
     sessionsAria: '账户会话', sessionsDescription: '已登录设备', sessionsLoading: '正在加载会话', noSessionsTitle: '没有活跃会话', noSessionsDetail: '未找到已登录设备', unknownDevice: '未知设备', currentDevice: '当前设备', ipAddress: 'IP 地址', unknownValue: '未知', lastActive: '最近活跃', signedIn: '登录时间', revokeCurrentSession: '撤销当前会话', revokeSession: '撤销会话', sessionControls: '会话控制', sessionControlsDetail: '已撤销的设备需要重新登录。', revokeOtherSessions: '撤销其他会话', revokingOtherSessions: '正在撤销其他会话', logOut: '退出登录', loggingOut: '正在退出登录',
@@ -304,8 +332,8 @@ export const iamLocalizationZhCN: IamLocalization = {
   userButton: { menuAria: '用户菜单', fallbackUser: '用户', organization: (slug) => `组织：${slug}`, signOut: '退出登录' },
   userProfile: { title: '个人资料', account: '账户', email: '邮箱', username: '用户名', name: '姓名', organization: '组织', roles: '角色', devices: '设备', lastSeen: (value) => `最近活跃：${value}`, revoke: '撤销', unavailable: '—' },
   organization: { select: '选择组织', switching: '正在切换组织…', switchUnavailable: '无法切换组织', role: (role) => formatOrganizationRole(role, 'zh-CN') },
-  invitation: { aria: '组织邀请', title: '组织邀请', join: (organization) => `加入 ${organization}`, detail: (application, email, role) => `${application} 邀请 ${email} 以 ${role} 身份加入。`, loading: '正在加载邀请…', expires: (value) => `过期时间：${value}`, accept: '接受邀请', accepting: '正在接受', accepted: '已接受邀请。', loginRequired: '请登录或注册后，再重试此邀请链接。' },
-  errors: { generic: '发生了错误，请重试。', signInOptionsUnavailable: '暂时无法使用登录选项。', signInFailed: '登录失败，请重试。', signUpFailed: '无法创建账户，请重试。', resetRequestFailed: '无法请求密码重置，请重试。', resetFailed: '无法重置密码，请重试。', invitationFailed: '无法处理此邀请，请重试。', organizationSwitchFailed: '无法切换组织，请重试。', accountLinkFailed: '无法关联此账户，请重试。', accountUnlinkFailed: '无法解除此账户关联，请重试。', codes: { INVALID_CREDENTIALS: '邮箱、手机号或密码不正确。', EMAIL_VERIFICATION_REQUIRED: '请先验证邮箱再登录。', EMAIL_ALREADY_EXISTS: '该邮箱地址已存在账户。', PASSWORD_RESET_INVALID: '此密码重置链接无效。', PASSWORD_RESET_EXPIRED: '此密码重置链接已过期。', REGISTRATION_GRANT_INVALID: '此注册邀请或访问码无效。', REGISTRATION_GRANT_REQUIRED: '注册需要邀请或注册访问码。', REGISTRATION_GRANT_TYPE_NOT_ALLOWED: '此注册邀请或访问码不可用。', REGISTRATION_GRANT_HOSTED_UNSUPPORTED: '此注册邀请或访问码不可用。', REGISTRATION_DISABLED: '此注册邀请或访问码不可用。', INVITATION_INVALID: '此邀请无效。', INVITATION_EXPIRED: '此邀请已过期。', STEP_UP_REQUIRED: '请再次验证后继续。', RATE_LIMITED: '请求过于频繁，请稍后重试。', UNAUTHORIZED: '请登录后重试。', FORBIDDEN: '您没有执行此操作的权限。' } },
+  invitation: { aria: '组织邀请', title: '组织邀请', join: (organization) => `加入 ${organization}`, detail: (application, email, role) => `${application} 邀请 ${email} 以 ${role} 身份加入。`, loading: '正在加载邀请…', expires: (value) => `过期时间：${value}`, accept: '接受邀请', accepting: '正在接受', accepted: '已接受邀请。', loginRequired: '请登录或创建账户后继续。', invalidEntry: '邀请入口无效，请重新打开原始邀请。', unknownResult: '提交响应丢失，请先查询结果，不要重复提交。', retryPreparation: '重新加载邀请', preparationNotSubmitted: '尚未交换邀请入口，请重新加载后继续。', navigationFailed: '邀请已完成，但无法打开后续页面。', accountKept: '账户已保留，您尚未加入组织。', applicationLabel: '应用', roleLabel: '角色', recipientLabel: '受邀邮箱', enrollmentRequired: '请设置允许的验证器以验证本账户，之后仍需单独确认邀请。', explicitConfirmation: '创建账户不会接受邀请。完成验证后，仍需单独确认。', reviewChanges: '查看更新后的邀请', cancel: '取消邀请', checkResult: '查询邀请结果', checkRegistration: '查询注册状态', navigate: '前往应用', switchAccount: '切换账户', loginCompleted: '我已完成登录', mfaMethod: '验证方式', recoveryCode: '恢复码', useSession: '使用当前登录账户', terminal: (state) => ({ CANCELLED: '邀请已取消。', EXPIRED: '邀请已过期。', REVOKED: '邀请已撤销。', UNAVAILABLE: '邀请不可用。' })[state] ?? '邀请不可用。' },
+  errors: { generic: '发生了错误，请重试。', signInOptionsUnavailable: '暂时无法使用登录选项。', signInFailed: '登录失败，请重试。', signUpFailed: '无法创建账户，请重试。', resetRequestFailed: '无法请求密码重置，请重试。', resetFailed: '无法重置密码，请重试。', invitationFailed: '无法处理此邀请，请重试。', organizationSwitchFailed: '无法切换组织，请重试。', accountLinkFailed: '无法关联此账户，请重试。', accountUnlinkFailed: '无法解除此账户关联，请重试。', codes: { REGISTRATION_IDENTIFIER_REJECTED: '此地址不能用于注册。请更换地址或联系支持人员。', INVALID_CREDENTIALS: '邮箱、手机号或密码不正确。', EMAIL_VERIFICATION_REQUIRED: '请先验证邮箱再登录。', EMAIL_ALREADY_EXISTS: '该邮箱地址已存在账户。', PASSWORD_RESET_INVALID: '此密码重置链接无效。', PASSWORD_RESET_EXPIRED: '此密码重置链接已过期。', REGISTRATION_GRANT_INVALID: '此注册邀请或访问码无效。', REGISTRATION_GRANT_REQUIRED: '注册需要邀请或注册访问码。', REGISTRATION_GRANT_TYPE_NOT_ALLOWED: '此注册邀请或访问码不可用。', REGISTRATION_GRANT_HOSTED_UNSUPPORTED: '此注册邀请或访问码不可用。', REGISTRATION_DISABLED: '此注册邀请或访问码不可用。', INVITATION_INVALID: '此邀请无效。', INVITATION_EXPIRED: '此邀请已过期。', STEP_UP_REQUIRED: '请再次验证后继续。', RATE_LIMITED: '请求过于频繁，请稍后重试。', UNAUTHORIZED: '请登录后重试。', FORBIDDEN: '您没有执行此操作的权限。' } },
 }
 
 export function resolveIamLocalization(locale: IamLocale | undefined, overrides?: PartialIamLocalization): { locale: 'en' | 'zh-CN'; localization: IamLocalization; unsupported: boolean } {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { parseAuthCapabilities, parseSignupIdentifierKinds, AuthCapabilitiesError } from './auth-capabilities.js'
-const source = () => ({ identifierMethods: [{ kind: 'PHONE', methods: ['SMS_OTP', 'PASSWORD'] }, { kind: 'EMAIL', methods: ['EMAIL_OTP', 'PASSWORD', 'EMAIL_MAGIC_LINK'] }, { kind: 'USERNAME', methods: ['PASSWORD'] }], defaultIdentifierKind: 'PHONE', defaultLogin: { identifierKind: 'PHONE', method: 'SMS_OTP' }, allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'], allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'] })
+const source = () => ({ identifierRestrictions: { signup: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } }, login: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } } }, identifierMethods: [{ kind: 'PHONE', methods: ['SMS_OTP', 'PASSWORD'] }, { kind: 'EMAIL', methods: ['EMAIL_OTP', 'PASSWORD', 'EMAIL_MAGIC_LINK'] }, { kind: 'USERNAME', methods: ['PASSWORD'] }], defaultIdentifierKind: 'PHONE', defaultLogin: { identifierKind: 'PHONE', method: 'SMS_OTP' }, allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'], allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'] })
 describe('producer-resolved authentication experience', () => {
   it('accepts disabled empty password policy without inventing a password capability', () => {
     expect(parseAuthCapabilities({ ...source(), passwordLoginEnabled: false,

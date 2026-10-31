@@ -1,4 +1,7 @@
 // Server-only exports for confidential Node.js, CLI, and backend runtimes.
+export { InvitationBff, ConfidentialInvitationClient } from './web-auth/invitation-bff.js'
+export { InvitationError } from './client/invitation-journeys.js'
+export type { InvitationBffConfig, InvitationBffSession } from './web-auth/invitation-bff.js'
 export type { IamSdkConfig } from './config.js'
 
 export { WebAuthClient, WebAuthError } from './web-auth/web-auth-client.js'
@@ -101,6 +104,8 @@ export type {
   RegistrationGrantStatus,
   CreateRegistrationGrantInput,
   CreatedRegistrationGrant,
+  RegistrationGrantDeliveryInput,
+  RegistrationGrantDelivery,
   RegistrationGrantListOptions,
   RegistrationGrantPage,
   RegistrationGrantRedemption,

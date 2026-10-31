@@ -1,3 +1,4 @@
+import { flowCapabilities, flowPolicy } from '../core/auth-flow-fixtures.test-support'
 import { createHash, webcrypto } from 'node:crypto'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
@@ -86,6 +87,7 @@ const unavailableSamlAuthProvider: AuthMethodIdpProviderResponse = {
 }
 
 const defaultAuthMethods: PublicAuthMethodsResponse = {
+  identifierRestrictions: flowCapabilities.identifierRestrictions,
   clientId: 'test-app',
   passwordLoginEnabled: true,
   emailMagicLinkEnabled: false,
@@ -151,6 +153,13 @@ function setupFetchMock(
       return {
         ok: true,
         json: async () => ({
+          ...flowPolicy,
+          emailMagicLinkEnabled: false,
+          emailOtpEnabled: false,
+          smsOtpEnabled: false,
+          socialLoginEnabled: false,
+          smsAutoProvisioningEnabled: false,
+          identifierRestrictions: flowCapabilities.identifierRestrictions,
           signupMode: 'OPEN',
           passwordLoginEnabled: overrides.authMethods?.passwordLoginEnabled ?? true,
           defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
@@ -629,34 +638,12 @@ describe('SignIn', () => {
   })
 
   describe('embedded mode — multi-method', () => {
-    function renderEmbeddedWithConfig(
-      config: { authMethods?: string[]; socialProviders?: Array<{ provider: string; displayName?: string }> },
-      fetchOverrides: Parameters<typeof setupFetchMock>[0] = {},
-    ) {
-      setupFetchMock(fetchOverrides)
-      const props = {
-        ...testProviderProps(),
-        authMethods: config.authMethods,
-        socialProviders: config.socialProviders,
-      }
-      return render(createElement(IamProvider, props, createElement(SignIn, { mode: 'embedded' })))
-    }
-
     function renderEmbeddedWithAuthMethods(
       authMethods: PublicAuthMethodsResponse,
-      config: {
-        authMethods?: string[]
-        socialProviders?: Array<{ provider: string; displayName?: string }>
-      } = {},
       fetchOverrides: Omit<Parameters<typeof setupFetchMock>[0], 'authMethods'> = {},
     ) {
       setupFetchMock({ ...fetchOverrides, authMethods })
-      const props = {
-        ...testProviderProps(),
-        authMethods: config.authMethods,
-        socialProviders: config.socialProviders,
-      }
-      return render(createElement(IamProvider, props, createElement(SignIn, { mode: 'embedded' })))
+      return render(createElement(IamProvider, testProviderProps(), createElement(SignIn, { mode: 'embedded' })))
     }
 
     it('uses Chinese catalog copy for the logo alt text and SMS phone placeholder', async () => {
@@ -745,7 +732,7 @@ describe('SignIn', () => {
     it('sends SMS code with client_id and no application context header', async () => {
       const fetchMock = setupFetchMock({authMethods:authMethodsWith({sms:true})})
 
-      const props = { ...testProviderProps(), authMethods: ['password'] as string[] }
+      const props = { ...testProviderProps() }
       render(createElement(IamProvider, props, createElement(SignIn, { mode: 'embedded' })))
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10)
@@ -780,7 +767,6 @@ describe('SignIn', () => {
 
       const props = {
         ...testProviderProps(),
-        authMethods: ['password'] as string[],
         tokenStorage: 'sessionStorage' as const,
       }
       render(createElement(IamProvider, props, createElement(SignIn, { mode: 'embedded', onSuccess })))
@@ -890,7 +876,7 @@ describe('SignIn', () => {
     })
 
     it('renders magic link form', async () => {
-      renderEmbeddedWithAuthMethods(authMethodsWith({ magicLink: true }), { authMethods: ['password'] })
+      renderEmbeddedWithAuthMethods(authMethodsWith({ magicLink: true }))
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10)
       })
@@ -904,7 +890,7 @@ describe('SignIn', () => {
     it('sends magic link with client_id and no application context header', async () => {
       const fetchMock = setupFetchMock({authMethods:authMethodsWith({magicLink:true})})
 
-      const props = { ...testProviderProps(), authMethods: ['password'] as string[] }
+      const props = { ...testProviderProps() }
       render(createElement(IamProvider, props, createElement(SignIn, { mode: 'embedded' })))
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10)
@@ -997,37 +983,20 @@ describe('SignIn', () => {
       })
     })
 
-    it('does not create clickable providers from deprecated static config', async () => {
-      renderEmbeddedWithConfig(
-        {
-          socialProviders: [{ provider: 'google', displayName: 'Google' }],
-        },
-        {
-          authMethods: authMethodsWith({ password: true, providers: [] }),
-        },
-      )
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(10)
-      })
-
+    it('does not invent providers when current discovery is empty', async () => {
+      renderEmbeddedWithAuthMethods(authMethodsWith({ password: true, providers: [] }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
       expect(screen.queryByText(/Continue with Google/)).toBeNull()
     })
 
-    it('uses deprecated static config only as a display override for discovered providers', async () => {
-      renderEmbeddedWithConfig(
-        {
-          socialProviders: [{ provider: 'google', displayName: 'Acme Google' }],
-        },
-        {
-          authMethods: authMethodsWith({ password: true, providers: [googleAuthProvider] }),
-        },
-      )
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(10)
-      })
-
-      expect(screen.getByText(/Continue with Acme Google/)).toBeTruthy()
-      expect(screen.queryByText(/Continue with Google$/)).toBeNull()
+    it('preserves exact backend labels for discovered providers with the same type', async () => {
+      renderEmbeddedWithAuthMethods(authMethodsWith({ password: true, providers: [
+        googleAuthProvider,
+        { ...googleAuthProvider, id: 'idp-google-work', displayName: 'Google Workspace' },
+      ] }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      expect(screen.getByRole('button', { name: 'Continue with Google', exact: true })).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Continue with Google Workspace', exact: true })).toBeTruthy()
     })
 
     it('supports custom provider button rendering', async () => {
@@ -1061,16 +1030,10 @@ describe('SignIn', () => {
     })
 
     it('shows a sanitized auth-methods discovery error', async () => {
-      renderEmbeddedWithConfig(
-        {},
-        {
-          authMethods: {
-            ok: false,
-            status: 500,
-            json: async () => ({ message: 'raw provider backend details' }),
-          },
-        },
-      )
+      setupFetchMock({
+        authMethods: { ok: false, status: 500, json: async () => ({ message: 'raw provider backend details' }) },
+      })
+      render(createElement(IamProvider, testProviderProps(), createElement(SignIn, { mode: 'embedded' })))
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10)
       })
@@ -1094,10 +1057,8 @@ describe('SignIn', () => {
       expect(screen.getByRole('button', { name: 'Email code', exact: true })).toBeTruthy()
     })
 
-    it('does not create visible methods from deprecated IamConfig authMethods', async () => {
-      renderEmbeddedWithAuthMethods(authMethodsWith({ password: true }), {
-        authMethods: ['password', 'sms', 'magic_link'],
-      })
+    it('shows only backend-discovered credential methods', async () => {
+      renderEmbeddedWithAuthMethods(authMethodsWith({ password: true }))
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10)
       })
@@ -1126,7 +1087,6 @@ describe('SignIn', () => {
 
       const props = {
         ...testProviderProps(),
-        authMethods: ['password'] as string[],
         tokenStorage: 'sessionStorage' as const,
       }
       render(createElement(IamProvider, props, createElement(SignIn, { mode: 'embedded', onSuccess })))

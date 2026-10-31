@@ -1,4 +1,4 @@
-import type { AuthCapabilities, DefaultLogin, SignupIdentifierKind, LoginIdentifier } from '@axis-iam/vertex'
+import type { AuthCapabilities, IdentifierRestrictions, DefaultLogin, SignupIdentifierKind, LoginIdentifier } from '@axis-iam/vertex'
 /** OIDC Discovery document (subset of fields we use) */
 export interface OIDCConfiguration {
   issuer: string
@@ -172,12 +172,17 @@ export interface LogoutOptions extends LogoutUrlOptions {
 
 /** Resolved public auth policy for browser login/signup flows. */
 export interface PublicAuthPolicyResponse {
+  identifierRestrictions: IdentifierRestrictions
   /** Effective preference, not the resolved capability default. */
   defaultLogin: DefaultLogin
   allowedSignupIdentifierKinds: SignupIdentifierKind[]
   allowedPasswordIdentifierKinds: LoginIdentifier['kind'][]
   passwordLoginEnabled: boolean
-  passwordlessEnabled: boolean
+  emailMagicLinkEnabled: boolean
+  emailOtpEnabled: boolean
+  smsOtpEnabled: boolean
+  socialLoginEnabled: boolean
+  smsAutoProvisioningEnabled: boolean
   minPasswordLength: number
   requireUppercase: boolean
   requireLowercase: boolean
@@ -369,51 +374,12 @@ export interface OrganizationSwitchResponse {
   message: string | null
 }
 
-export interface PublicOrganizationInvitationPreview {
-  applicationId: string
-  applicationName: string
-  organizationId: string
-  organizationName: string
-  inviteeEmail: string
-  role: string
-  status: string
-  expiresAt: string
-}
-
-export type PublicOrganizationInvitationAcceptStatus =
-  | 'ACCEPTED'
-  | 'LOGIN_REQUIRED'
-  | (string & {})
-
-export interface PublicOrganizationInvitationAcceptResponse {
-  status: PublicOrganizationInvitationAcceptStatus
-  continuation: string | null
-  applicationId: string
-  organizationId: string
-  organizationName: string
-  role: string
-  acceptedAt: string | null
-}
-
-/** Social identity provider configuration */
-export interface SocialProviderConfig {
-  /**
-   * @deprecated Embedded provider buttons are discovered from IAM via
-   * GET /api/v1/apps/{clientId}/identity-providers. This field is now only
-   * used as a legacy display override for matching backend-enabled providers.
-   */
-  provider: string
-  /** @deprecated Browser embedded login never uses provider client IDs. */
-  clientId?: string
-  displayName?: string
-}
-
 /** SDK configuration */
 export interface IamConfig {
   sessionMode?: 'oauth_tokens' | 'server_session'
   /** Required only in server_session mode; never inferred from issuer or token availability. */
-  /** Exact same-origin HTML return path after server-owned identity Provider confirmation. */
   sessionLoginUri?: string
+  /** Exact same-origin BFF provider callback path, without query/hash; BFF owns PKCE and upstream IDs. */
   sessionProviderReturnUri?: string
   sessionTransport?: import('@axis-iam/vertex').SessionTransport
   /** SPA/NATIVE public ApplicationClient.clientId. Browser SDK config must not include a secret. */
@@ -430,18 +396,7 @@ export interface IamConfig {
    * and should be enabled only when the app deliberately accepts that risk.
    */
   tokenStorage?: 'memory' | 'sessionStorage'
-  /**
-   * @deprecated Embedded SignIn/SignUp visibility is resolved from
-   * GET /api/v1/apps/{clientId}/auth-methods. This field no longer creates
-   * visible password, SMS, or magic-link methods at runtime.
-   */
-  authMethods?: Array<'password' | 'sms' | 'magic_link'>
-  /**
-   * @deprecated Embedded login discovers provider buttons from IAM. Static
-   * entries can only override display names for matching backend-enabled
-   * providers; they do not create clickable providers by themselves.
-   */
-  socialProviders?: SocialProviderConfig[]
+
 }
 
 /** Canonical current-user authorization projection from GET /api/v1/auth/me/permissions. */

@@ -4,6 +4,7 @@ import type { AuthFlowActions, AuthFlowState } from '../../core/auth-flow-types'
 import { flowCapabilities, flowPolicy } from '../../core/auth-flow-fixtures.test-support'
 import { validateFlowMetadata } from '../../core/auth-flow-client'
 import { IamUiProvider } from '../../provider/IamUiProvider'
+import { getAvailableProviderOptions } from './sign-in-flow'
 import { AuthFlowForm } from './AuthFlowForm'
 import { resolveAppearance } from '../styles'
 
@@ -26,6 +27,35 @@ function setup(patch: Partial<AuthFlowState> = {}, locale: 'en' | 'zh-CN' = 'en'
 }
 afterEach(() => { cleanup(); vi.useRealTimers() })
 describe('approved SDK UI contracts', () => {
+  it('renders exact backend provider labels and binds each action to its ID', () => {
+    const first = { ...flowCapabilities.idpProviders[0]!, displayName: 'Backend identity' }
+    const second = { ...first, id: 'other-provider' }
+    const disabled = { ...first, id: 'disabled', displayName: 'Unavailable provider', clickable: false }
+    const h = setup({ providers: getAvailableProviderOptions({ ...flowCapabilities, idpProviders: [first, second, disabled] }) })
+    vi.mocked(h.actions.startProvider).mockRejectedValue(new Error('No navigation in component contract'))
+    const buttons = screen.getAllByRole('button', { name: 'Continue with Backend identity', exact: true })
+    fireEvent.click(buttons[0]!)
+    fireEvent.click(buttons[1]!)
+    expect(h.actions.startProvider).toHaveBeenNthCalledWith(1, first.id, undefined)
+    expect(h.actions.startProvider).toHaveBeenNthCalledWith(2, second.id, undefined)
+    expect(screen.queryByRole('button', { name: /Unavailable provider/ })).toBeNull()
+  })
+
+  it('keeps configured primary appearance and custom provider button composition', () => {
+    const actions = { startProvider: vi.fn().mockRejectedValue(new Error('No navigation in component contract')) } as unknown as AuthFlowActions
+    const provider = flowCapabilities.idpProviders[0]!
+    const h = render(<IamUiProvider colorScheme="dark" appearance={{ primaryColor: '#164e63' }}>
+      <AuthFlowForm flow={{ state: { ...common, providers: [provider] }, actions }} appearance={resolveAppearance({ primaryColor: '#164e63' })}
+        renderProviderButton={({ provider: value, label, disabled, onClick }) => <button type="button" disabled={disabled} onClick={() => void onClick()} data-testid={value.id}>{label}</button>} />
+    </IamUiProvider>)
+    const primary = screen.getByRole('button', { name: 'Sign in', exact: true })
+    expect(primary.style.backgroundColor).toBe('rgb(22, 78, 99)')
+    expect(screen.getByTestId(provider.id).textContent).toBe('Continue with Test provider')
+    fireEvent.click(screen.getByTestId(provider.id))
+    expect(actions.startProvider).toHaveBeenCalledWith(provider.id, undefined)
+    expect(h.container.querySelector('form')).toBeTruthy()
+  })
+
   it('uses the explicit default with compact keyboard segments and clears kind-specific drafts', () => {
     const h = setup({ capabilities: { ...flowCapabilities, defaultIdentifierKind: 'PHONE' } })
     const phone = screen.getByLabelText('Phone number')

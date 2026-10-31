@@ -115,7 +115,6 @@ export function useAuthFlow(
       base.policy.signupMode !== 'DISABLED'
     const providers = getAvailableProviderOptions(
       base.capabilities,
-      client.config.socialProviders,
       intent,
     ).filter((x) => intent === 'sign-in' || (signup && x.availableForSignup))
     const hasMethod = intent === 'sign-in' ? base.capabilities.identifierMethods.length > 0 : signup && hasLocalRegistration(base.capabilities)

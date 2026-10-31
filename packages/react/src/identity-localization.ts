@@ -1,4 +1,11 @@
 export const identityEnglish = {
+  description: 'Manage the identifiers and connected accounts you use to sign in.',
+  providerTargetTitle: 'External account to connect', confirmProviderTarget: 'Confirm connection', providerTargetPending: 'Waiting for the verified external account. Authorize with the provider before confirming the connection.', providerTargetPrivate: 'The provider confirmed an account without a display name or email.',
+  managementRequirements: 'Requirements for this change', managementProofs: 'Available current-account confirmation',
+  managementRequirement: { CURRENT_ACCOUNT_PROOF: 'Confirm control of your current account.', NEW_IDENTIFIER: 'The new identifier must meet the current application policy.', TARGET_EMAIL_OTP: 'Verify the target email with a code.', TARGET_PHONE_OTP: 'Verify the target phone number with a code.', REPLACEMENT_PRIMARY: 'Choose an eligible replacement primary identifier.', REMOVE_OLD: 'Remove the old identifier after verification.', COUNTERPART_CONFIRMATION: 'The receiving account must also confirm.', REMAINING_LOGIN_PATH: 'Keep another complete, usable sign-in path.' },
+  sendAccountCode: 'Send current-account code', relogin: 'Your change succeeded. Sign in again to continue.', signIn: 'Sign in again', lastPathProtection: 'You must keep a usable sign-in method. This is checked again when you save.',
+  noPrimaryEmail: 'No primary email', emailCount: (count: number) => `${count} email addresses`, manageEmails: 'Manage emails', emailOverview: 'Back to email overview', emailPages: 'Email pages', previous: 'Previous', next: 'Next', page: (page: number, count: number) => `Page ${page} of ${count}`,
+  connectProvider: 'Connect a provider', providerSelection: 'Choose a provider, confirm your current account, then authorize the external account. Its identity is confirmed only after you return.',
   otherMethods: 'Use another sign-in method', useKind: (kind: string) => `Sign in with ${kind.toLowerCase()}`,
   didNotReceive: "Didn't receive an email?", cancelRegistration: 'Cancel registration', verifyRegistration: 'Verify email',
   moreActions: 'More actions', change: 'Change', verificationUnknown: 'Verification status unavailable',
@@ -30,13 +37,20 @@ export const identityEnglish = {
   AWAITING_REAUTH: 'Confirm account control', AWAITING_PROOF: 'Complete the required proofs', READY: 'Ready to complete',
   COMMITTED: 'Change completed', CANCELLED: 'Operation cancelled', EXPIRED: 'Operation expired; start again', REJECTED: 'Transfer rejected',
   CURRENT_ACCOUNT: 'Current account', TARGET_OWNERSHIP: 'Target ownership', TRANSFER_COUNTERPART: 'Receiving account',
-  error: 'This change could not be completed. Refresh the operation and try again.', unavailable: 'Unavailable under the current policy or provider configuration',
+  error: 'This change could not be completed. Refresh the operation and try again.', unavailable: 'This action is not available. Try another method or contact support.',
   restart: 'Registration control is missing. Start again and choose your own password.',
   registrationPending: 'Verify your email to create your account. No account or session exists yet.',
   registrationComplete: 'Registration completed. You can now sign in.', restartRegistration: 'Start registration again',
 }
 export type IdentityLocalization = typeof identityEnglish
 export const identityZhCN: IdentityLocalization = {
+  description: '管理用于登录的账号标识和已连接的第三方账号。',
+  providerTargetTitle: '即将绑定的第三方账号', confirmProviderTarget: '确认绑定此账号', providerTargetPending: '等待第三方返回已验证的账号，请先完成授权，再确认绑定。', providerTargetPrivate: '第三方已确认账号，但未提供可展示的名称或邮箱。',
+  managementRequirements: '此次变更的要求', managementProofs: '可用的当前账号确认方式',
+  managementRequirement: { CURRENT_ACCOUNT_PROOF: '确认当前账号的控制权。', NEW_IDENTIFIER: '新标识必须符合应用当前策略。', TARGET_EMAIL_OTP: '使用验证码验证目标邮箱。', TARGET_PHONE_OTP: '使用验证码验证目标手机号。', REPLACEMENT_PRIMARY: '选择符合条件的替代主标识。', REMOVE_OLD: '验证成功后移除旧标识。', COUNTERPART_CONFIRMATION: '接收账号也必须确认。', REMAINING_LOGIN_PATH: '保留另一条完整、可用的登录路径。' },
+  sendAccountCode: '发送当前账号验证码', relogin: '变更已成功，请重新登录后继续。', signIn: '重新登录', lastPathProtection: '必须保留可用的登录方式，保存时会再次检查。',
+  noPrimaryEmail: '尚无主邮箱', emailCount: (count) => `${count} 个邮箱`, manageEmails: '管理邮箱', emailOverview: '返回邮箱概览', emailPages: '邮箱分页', previous: '上一页', next: '下一页', page: (page, count) => `第 ${page} / ${count} 页`,
+  connectProvider: '绑定第三方账号', providerSelection: '请选择提供商，确认当前账号后前往第三方授权，返回后才能确认实际关联的身份。',
   otherMethods: '使用其他方式登录', useKind: (kind: string) => `使用${kind}登录`,
   didNotReceive: '没有收到邮件？', cancelRegistration: '取消注册', verifyRegistration: '验证邮箱',
   moreActions: '更多操作', change: '更改', verificationUnknown: '暂时无法获取验证状态',
@@ -63,14 +77,16 @@ export const identityZhCN: IdentityLocalization = {
   webauthn: '通过安全密钥确认', providerAuth: '通过 Provider 确认', providerDone: '已完成 Provider 确认', stepUp: '通过验证器确认', status: '操作状态', expires: '到期时间', retry: '重试',
   AWAITING_REAUTH: '请确认账号控制权', AWAITING_PROOF: '请完成所需证明', READY: '可以完成变更', COMMITTED: '变更已完成',
   CANCELLED: '操作已取消', EXPIRED: '操作已到期，请重新开始', REJECTED: '转移已拒绝', CURRENT_ACCOUNT: '当前账号', TARGET_OWNERSHIP: '目标归属',
-  TRANSFER_COUNTERPART: '接收账号', error: '无法完成变更。请刷新操作后重试。', unavailable: '当前策略或 Provider 配置不支持此操作',
+  TRANSFER_COUNTERPART: '接收账号', error: '无法完成变更。请刷新操作后重试。', unavailable: '暂时无法进行此操作，请使用其他方式或联系支持。',
   restart: '注册流程控制权已丢失。请重新开始并设置自己的密码。', registrationPending: '请验证邮箱后创建账号。此时尚无账号或登录会话。',
   registrationComplete: '注册已完成，现在可以登录。', restartRegistration: '重新注册',
 }
 
 const englishErrors: Record<string, string> = {
+  ACCOUNT_INACTIVE: 'This account is not active.', TARGET_PROOF_UNAVAILABLE: 'Verification delivery for this identifier is unavailable.', IDENTIFIER_ALREADY_EXISTS: 'This identifier kind already exists.', NOT_APPLICABLE: 'This action does not apply to this identifier.', ALREADY_VERIFIED: 'This identifier is already verified.', ALREADY_PRIMARY: 'This identifier is already primary.', PRIMARY_REPLACEMENT_UNAVAILABLE: 'No eligible replacement primary identifier is available.', PROVIDER_TARGET_REQUIRED: 'Authorize the external account and check its returned identity before connecting.',
   CREATE_UNCONFIRMED: identityEnglish.createUnconfirmed,
   CREATE_NOT_PENDING: 'There is no uncertain request to recover.',
+  IDENTIFIER_RANGE_REJECTED: 'This address or phone region cannot be used here. Choose another identifier or contact support.',
   INVALID_IDENTIFIER_KIND: 'Choose an identifier type.', INVALID_IDENTIFIER: 'Check the identifier and phone region.',
   INVALID_OPERATION_PAYLOAD: 'Review the requested change.', REAUTH_REQUIRED: 'Confirm account control first.',
   REAUTH_METHOD_UNAVAILABLE: 'Choose another available account confirmation method.', MANAGED_IDENTIFIER: 'Your organization manages this identifier.',
@@ -83,8 +99,10 @@ const englishErrors: Record<string, string> = {
   IDENTIFIER_UNAVAILABLE: 'A verified sign-in identifier is required.', PROVIDER_UNAVAILABLE: 'This provider is unavailable.',
 }
 const chineseErrors: Record<string, string> = {
+  ACCOUNT_INACTIVE: '此账号未处于启用状态。', TARGET_PROOF_UNAVAILABLE: '此标识的验证消息投递暂不可用。', IDENTIFIER_ALREADY_EXISTS: '此类型的标识已存在。', NOT_APPLICABLE: '此操作不适用于该标识。', ALREADY_VERIFIED: '此标识已验证。', ALREADY_PRIMARY: '此标识已是主标识。', PRIMARY_REPLACEMENT_UNAVAILABLE: '没有符合条件的替代主标识。', PROVIDER_TARGET_REQUIRED: '请先授权第三方账号并核对返回的身份，再进行绑定。',
   CREATE_UNCONFIRMED: identityZhCN.createUnconfirmed,
   CREATE_NOT_PENDING: '当前没有需要恢复的不确定请求。',
+  IDENTIFIER_RANGE_REJECTED: '此地址或手机号地区不能用于新增身份。请更换标识或联系支持人员。',
   INVALID_IDENTIFIER_KIND: '请选择标识类型。', INVALID_IDENTIFIER: '请检查标识与手机号地区。', INVALID_OPERATION_PAYLOAD: '请检查本次变更内容。',
   REAUTH_REQUIRED: '请先确认账号控制权。', REAUTH_METHOD_UNAVAILABLE: '请选择其他可用的账号确认方式。', MANAGED_IDENTIFIER: '此标识由组织管理。',
   MANAGED_AUTHENTICATION_REQUIRED: '组织策略限制了此变更。', METHOD_UNAVAILABLE: '此方式当前不可用。', IDENTITY_CONFLICT: '无法添加此标识，现有登录方式仍然可用。',

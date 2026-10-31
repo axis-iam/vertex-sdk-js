@@ -1,3 +1,4 @@
+import { managedIdentifiers } from './identity-management-fixtures.test-support'
 import { createElement } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -12,6 +13,7 @@ import { useServerSession } from '../hooks/useServerSession'
 import { ServerSessionClient } from './server-session-client'
 import { makeTestUser } from '../test-utils'
 import { flowCapabilities, flowPolicy } from './auth-flow-fixtures.test-support'
+import { invitationProof, invitationView, invitationRef } from './invitation-fixtures.test-support'
 
 const ref = 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc'
 const expiry = () => new Date(Date.now()+600000).toISOString()
@@ -32,16 +34,19 @@ function fixture(initial:unknown=pending(), capabilities:unknown=flowCapabilitie
     if(path==='/console/auth-methods')return send(capabilities)
     if(path==='/console/auth-policy')return send(policy)
     if(path==='/console/session/bootstrap'||path==='/console/session')return send(view)
+    if(path.startsWith('/console/invitation-journeys/'))return send(invitationView(path.endsWith('/confirm')?'COMMITTED':undefined))
     if(path.endsWith('/login')){view=pending('AUTHENTICATING');return send(view)}
     if(path.endsWith('/authenticate')){view=pending('MFA_REQUIRED');return send(view)}
     if(path.endsWith('/mfa')){view=pending('AUTHENTICATED');return send(view)}
     if(path.endsWith('/complete')){view=authenticated();return send(view)}
     if(path.endsWith('/cancel')){view=pending();return send({state:'CANCELLED'})}
     if(path.endsWith('/logout'))return new Response(null,{status:204})
-    if(path.endsWith('/self/identifiers'))return send({loginMethodVersion:1,items:[]})
+    if(path.endsWith('/self/identifiers'))return send(managedIdentifiers([], 1))
     if(path.endsWith('/self/login-methods'))return send({loginMethodVersion:1,methods:[]})
     if(path.endsWith('/self/linkable-identity-providers'))return send([])
     if(path.endsWith('/self/profile'))return send({userId:'user-1',applicationId:'app-test',globalIdentityId:null,email:'test@example.com',emailVerified:true,username:null,displayName:'BFF user',avatarUrl:null,status:'ACTIVE',createdAt:'2026-10-01T00:00:00Z',updatedAt:'2026-10-01T00:00:00Z',currentOrganization:null})
+    if (path.endsWith('/mfa/capabilities')) return send({ loginMethodVersion: 4, totpEnroll: { allowed: true, proofRequirement: 'SESSION', proofOptions: [], reasonCode: null }, totpDisable: { allowed: false, proofRequirement: 'SESSION', proofOptions: [], reasonCode: 'METHOD_UNAVAILABLE' }, recoveryCodesGenerate: { allowed: true, proofRequirement: 'SESSION', proofOptions: [], reasonCode: null } })
+    if (path.endsWith('/mfa/recovery-codes/remaining')) return send({ remaining: 0 })
     if(path.endsWith('/self/security'))return send({emailVerified:true,passwordCredentialPresent:true,mfaEnrolled:false,totpEnrolled:false,webAuthnEnrolled:false,activeSessionCount:1})
     throw new Error('Unexpected '+path)
   }))
@@ -61,6 +66,26 @@ it.each(['Embedded','Dialog'])('renders %s login and original MFA with only Cook
   expect(f.calls.filter(c=>c.path.endsWith('/complete'))).toHaveLength(1)
   expect(sessionStorage.length).toBe(0)
   expect(document.body.innerHTML).not.toMatch(/fixture-password|controlSecret|access_token/)
+})
+it('uses the finite invitation allowlist through the real Cookie transport without unsupported token-only methods', async () => {
+  const f = fixture(authenticated())
+  const client = new ServerSessionClient(config())
+  await client.restoreSession()
+  expect((await client.invitations.exchange(invitationProof)).ref).toBe(invitationRef)
+  expect((await client.invitations.get(invitationRef)).state).toBe('CONFIRM_REQUIRED')
+  expect((await client.invitations.confirm(invitationRef, { expectedInvitationVersion: 5, expectedRole: 'MEMBER' }, 'one-explicit-confirm')).state).toBe('COMMITTED')
+  await client.invitations.cancel(invitationRef)
+  const calls = f.calls.filter(c => c.path.includes('/invitation-journeys/'))
+  expect(calls.map(c => c.path)).toEqual([
+    '/console/invitation-journeys/continuations/exchange',
+    '/console/invitation-journeys/' + invitationRef,
+    '/console/invitation-journeys/' + invitationRef + '/confirm',
+    '/console/invitation-journeys/' + invitationRef + '/cancel',
+  ])
+  expect(calls[2].headers.get('Idempotency-Key')).toBe('one-explicit-confirm')
+  expect(calls[2].body).toEqual({ expectedInvitationVersion: 5, expectedRole: 'MEMBER' })
+  expect(sessionStorage.length + localStorage.length).toBe(0)
+  client.dispose()
 })
 it('restores BFF Provider MFA after HTML return without browser control/state/verifier',async()=>{
   fixture(pending('MFA_REQUIRED'))

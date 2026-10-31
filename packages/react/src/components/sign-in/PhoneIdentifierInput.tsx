@@ -5,6 +5,7 @@ import { inputStyle, labelStyle } from '../styles'
 import { parsePhoneIdentifier, phoneCountries } from './phone-identifier'
 
 export function PhoneIdentifierInput({
+  allowedRegions,
   appearance,
   locale,
   prefix,
@@ -16,6 +17,7 @@ export function PhoneIdentifierInput({
   disabled = false,
   error,
 }: {
+  allowedRegions?: readonly string[] | null
   appearance: Required<Appearance>
   locale: string
   prefix: string
@@ -32,7 +34,7 @@ export function PhoneIdentifierInput({
   error?: string | null
 }) {
   const input = useRef<HTMLInputElement>(null)
-  const countries = useMemo(() => phoneCountries(locale), [locale])
+  const countries = useMemo(() => phoneCountries(locale, allowedRegions), [locale, allowedRegions])
   function changeCountry(event: ChangeEvent<HTMLSelectElement>) {
     onCountryChange(event.target.value)
     onValueChange('')
@@ -42,8 +44,8 @@ export function PhoneIdentifierInput({
     const next = event.target.value
     if (next.trim().startsWith('+')) {
       const parsed = parsePhoneIdentifier(next)
-      onCountryChange(parsed?.country ?? '')
-      onValueChange(parsed ? parsed.nationalNumber : next)
+      onCountryChange(parsed && countries.some(option => option.code === parsed.country) ? parsed.country : '')
+      onValueChange(parsed && countries.some(option => option.code === parsed.country) ? parsed.nationalNumber : next)
       return
     }
     onValueChange(next)
@@ -57,7 +59,7 @@ export function PhoneIdentifierInput({
         <select
           id={`${prefix}-country`}
           aria-label={labels.country}
-          value={country}
+          value={countries.some(option => option.code === country) ? country : ''}
           onChange={changeCountry}
           disabled={disabled}
           required

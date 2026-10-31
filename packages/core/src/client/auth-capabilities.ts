@@ -5,7 +5,11 @@ export type SignupIdentifierKind = 'EMAIL' | 'USERNAME'
 export type PasswordIdentifierKind = LoginIdentifier['kind']
 export interface DefaultLogin { identifierKind: LoginIdentifier['kind']; method: LoginMethod }
 export interface IdentifierMethods { kind: LoginIdentifier['kind']; methods: LoginMethod[] }
+export interface PhoneIdentifierRestriction { restricted: boolean; allowedRegions: string[] | null }
+export interface IdentifierPurposeRestrictions { email: { restricted: boolean }; phone: PhoneIdentifierRestriction }
+export interface IdentifierRestrictions { signup: IdentifierPurposeRestrictions; login: IdentifierPurposeRestrictions }
 export interface AuthCapabilities {
+  identifierRestrictions: IdentifierRestrictions
   identifierMethods: IdentifierMethods[]
   defaultIdentifierKind: LoginIdentifier['kind'] | null
   defaultLogin: DefaultLogin | null
@@ -53,10 +57,36 @@ export function parseAuthCapabilities(v: unknown): AuthCapabilities {
   const first = identifierMethods[0]
   if (first ? !defaultLogin || v.defaultIdentifierKind !== first.kind || defaultLogin.identifierKind !== first.kind || defaultLogin.method !== first.methods[0] : defaultLogin !== null || v.defaultIdentifierKind !== null) throw new AuthCapabilitiesError()
   return {
+    identifierRestrictions: parseIdentifierRestrictions(v.identifierRestrictions),
     identifierMethods,
     defaultLogin,
     defaultIdentifierKind: first?.kind ?? null,
     allowedSignupIdentifierKinds: parseSignupIdentifierKinds(v.allowedSignupIdentifierKinds),
     allowedPasswordIdentifierKinds,
   }
+}
+
+// Supported rendering codes from the existing server numbering plan; matching remains server-owned.
+const supportedPhoneRegions = new Set('AC AD AE AF AG AI AL AM AO AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GT GU GW GY HK HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TA TC TD TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG US UY UZ VA VC VE VG VI VN VU WF WS XK YE YT ZA ZM ZW'.split(' '))
+function exactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  return Object.keys(value).length === keys.length && keys.every(key => Object.prototype.hasOwnProperty.call(value, key))
+}
+function parsePurpose(value: unknown): IdentifierPurposeRestrictions {
+  if (!record(value) || !exactKeys(value, ['email', 'phone'])) throw new AuthCapabilitiesError()
+  const { email, phone } = value
+  if (!record(email) || !exactKeys(email, ['restricted']) || typeof email.restricted !== 'boolean' ||
+      !record(phone) || !exactKeys(phone, ['restricted', 'allowedRegions']) || typeof phone.restricted !== 'boolean') throw new AuthCapabilitiesError()
+  let allowedRegions: string[] | null = null
+  if (phone.restricted) {
+    const codes = phone.allowedRegions
+    if (!Array.isArray(codes) || codes.length < 1 || codes.length > 100 ||
+        codes.some(code => typeof code !== 'string' || !supportedPhoneRegions.has(code)) || new Set(codes).size !== codes.length) throw new AuthCapabilitiesError()
+    allowedRegions = codes.map(code => String(code))
+  } else if (phone.allowedRegions !== null) throw new AuthCapabilitiesError()
+  return { email: { restricted: email.restricted }, phone: { restricted: phone.restricted, allowedRegions } }
+}
+/** Strict purpose-specific rendering snapshot. Domain allow-lists are never public. */
+export function parseIdentifierRestrictions(value: unknown): IdentifierRestrictions {
+  if (!record(value) || !exactKeys(value, ['signup', 'login'])) throw new AuthCapabilitiesError()
+  return { signup: parsePurpose(value.signup), login: parsePurpose(value.login) }
 }

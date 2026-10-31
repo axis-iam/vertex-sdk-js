@@ -184,14 +184,14 @@ describe('TokenManager', () => {
   describe('auto-refresh scheduling', () => {
     it('does not refresh or clear an explicit OAuth session at zero delay for a 60-second token', async () => {
       const direct = new TokenManager({ storage: 'sessionStorage' })
-      const refreshHandler = vi.fn().mockRejectedValue(new Error('Direct refresh rejected'))
+      const refreshHandler = vi.fn().mockRejectedValue(new Error('OAuth refresh rejected'))
       direct.setRefreshHandler(refreshHandler)
       const exp = Math.floor(Date.now() / 1000) + 60
 
       direct.store(
         makeTokenSet({ access_token: makeJwt({ sub: 'u', exp }), expires_in: 60 }),
         'OAUTH_AUTHORIZATION_CODE',
-        'OAUTH_AUTHORIZATION_CODE',
+        'OAUTH_TOKEN_ENDPOINT',
       )
 
       expect(sessionStorage.getItem('axis_iam_session')).not.toBeNull()

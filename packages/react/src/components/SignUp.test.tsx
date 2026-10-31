@@ -1,3 +1,4 @@
+import { flowCapabilities } from '../core/auth-flow-fixtures.test-support'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
@@ -39,6 +40,7 @@ type MockResponse = {
 }
 
 const defaultAuthMethods: PublicAuthMethodsResponse = {
+  identifierRestrictions: flowCapabilities.identifierRestrictions,
   clientId: 'test-app',
   passwordLoginEnabled: true,
   emailMagicLinkEnabled: false,
@@ -72,11 +74,16 @@ const defaultAuthMethods: PublicAuthMethodsResponse = {
 }
 
 const defaultAuthPolicy: PublicAuthPolicyResponse = {
+  identifierRestrictions: flowCapabilities.identifierRestrictions,
   defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
   allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
   allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
   passwordLoginEnabled: true,
-  passwordlessEnabled: false,
+  emailMagicLinkEnabled: false,
+  emailOtpEnabled: false,
+  smsOtpEnabled: false,
+  socialLoginEnabled: false,
+  smsAutoProvisioningEnabled: false,
   minPasswordLength: 8,
   requireUppercase: false,
   requireLowercase: false,

@@ -18,6 +18,7 @@ export function SignIn({
   forgotPasswordUrl,
   onForgotPassword,
   renderProviderButton,
+  providerNavigation,
   presentation = 'standalone',
 }: SignInProps) {
   if (mode === 'redirect') {
@@ -39,6 +40,7 @@ export function SignIn({
       forgotPasswordUrl={forgotPasswordUrl}
       onForgotPassword={onForgotPassword}
       renderProviderButton={renderProviderButton}
+      providerNavigation={providerNavigation}
       presentation={presentation}
     />
   )

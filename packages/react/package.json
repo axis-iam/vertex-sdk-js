@@ -1,7 +1,7 @@
 {
   "name": "@axis-iam/vertex-react",
   "version": "0.1.0",
-  "description": "IAM React SDK \u2014 pre-built auth components, RBAC controls, and security hooks",
+  "description": "IAM React SDK — pre-built auth components, RBAC controls, and security hooks",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -30,16 +30,18 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "libphonenumber-js": "1.13.7"
+    "libphonenumber-js": "1.13.7",
+    "qrcode": "1.5.4"
   },
   "peerDependencies": {
+    "@axis-iam/vertex": "workspace:0.1.0",
     "react": "^18.0.0 || ^19.0.0",
-    "react-dom": "^18.0.0 || ^19.0.0",
-    "@axis-iam/vertex": "workspace:0.1.0"
+    "react-dom": "^18.0.0 || ^19.0.0"
   },
   "devDependencies": {
     "@axis-iam/vertex": "workspace:0.1.0",
     "@testing-library/react": "^16.0.0",
+    "@types/qrcode": "1.5.5",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "jsdom": "^26.0.0",

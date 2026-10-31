@@ -7,7 +7,7 @@ import type {
   TargetProofMethod,
 } from '@axis-iam/vertex'
 import { SessionInvalidatedError, SessionTransportError } from '@axis-iam/vertex'
-import { IamApiError } from './types'
+import { IamApiError, IamConfigurationError } from './types'
 import type { AuthClient } from './auth-client'
 import { ProviderOperationWindow } from './provider-operation-window'
 import { generatePKCEPair } from './pkce'
@@ -18,6 +18,7 @@ export interface IdentityOperationSnapshot {
   error: Error | null
   cancelUnconfirmed: boolean
   uncertainCreate: UncertainIdentityCreate | null
+  uncertain: boolean
 }
 export interface UncertainIdentityCreate {
   request: CreateIdentityOperation
@@ -29,6 +30,7 @@ const empty: IdentityOperationSnapshot = {
   error: null,
   cancelUnconfirmed: false,
   uncertainCreate: null,
+  uncertain: false,
 }
 function uncertainCreateError() {
   return new IamApiError(
@@ -46,6 +48,7 @@ function creationRejected(error: unknown) {
         'INVALID_IDENTIFIER_KIND',
         'INVALID_OPERATION_PAYLOAD',
       ].includes(error.code ?? '')) ||
+    (error.status === 403 && error.code === 'IDENTIFIER_RANGE_REJECTED') ||
     (error.status === 409 &&
       [
         'STALE_LOGIN_METHOD_VERSION',
@@ -68,6 +71,7 @@ export function identityOperationStore(
 }
 /** Shared by prebuilt and Custom; retains an uncertain operation until GET resolves it. */
 export class IdentityOperationStore {
+  private targetExpiry: ReturnType<typeof setTimeout> | null = null
   private generation: number
   private value = empty
   private listeners = new Set<() => void>()
@@ -78,10 +82,16 @@ export class IdentityOperationStore {
   } | null = null
   private providerWindow: ProviderOperationWindow | null = null
   private providerRevision = 0
+  private providerExpiry: ReturnType<typeof setTimeout> | null = null
   private savedKey: string | null = null
   private creation: { body: string; key: string } | null = null
   constructor(private readonly client: AuthClient) {
     this.generation = client.state.generation
+    client.state.subscribe(() => {
+      if (this.generation === client.state.generation) return
+      this.getSnapshot()
+      for (const listener of this.listeners) listener()
+    })
   }
   subscribe = (listener: () => void) => {
     this.listeners.add(listener)
@@ -91,6 +101,8 @@ export class IdentityOperationStore {
   }
   getSnapshot = (): IdentityOperationSnapshot => {
     if (this.generation !== this.client.state.generation) {
+      if (this.targetExpiry) clearTimeout(this.targetExpiry)
+      this.targetExpiry = null
       if (this.savedKey && typeof sessionStorage !== 'undefined')
         sessionStorage.removeItem(this.savedKey)
       this.cancelProviderWindow()
@@ -103,12 +115,23 @@ export class IdentityOperationStore {
     return this.value
   }
   private update(value: IdentityOperationSnapshot) {
+    if (this.targetExpiry) clearTimeout(this.targetExpiry)
+    this.targetExpiry = null
+    const op = value.operation
+    if (op?.providerTarget && !['COMMITTED', 'CANCELLED', 'EXPIRED', 'REJECTED'].includes(op.state)) {
+      const remaining = Date.parse(op.expiresAt) - Date.now()
+      if (remaining <= 0) value = { ...value, operation: { ...op, providerTarget: null } }
+      else this.targetExpiry = setTimeout(() => {
+        this.cancelProviderWindow()
+        this.update({ ...this.value, operation: this.value.operation ? { ...this.value.operation, providerTarget: null } : null })
+      }, Math.min(remaining, 2_147_483_647))
+    }
     this.value = value
     for (const listener of this.listeners) listener()
   }
   private async run(
     work: () => Promise<OperationView>,
-    options: { cancelling?: boolean; creating?: boolean } = {},
+    options: { cancelling?: boolean; creating?: boolean; querying?: boolean } = {},
   ) {
     const current = this.getSnapshot()
     if (current.pending)
@@ -118,17 +141,28 @@ export class IdentityOperationStore {
       })
     if (current.uncertainCreate && !options.creating)
       throw uncertainCreateError()
+    if (current.uncertain && !options.querying && !options.cancelling && !options.creating)
+      throw new IamApiError('Query the operation before continuing', { status: 409, code: 'OPERATION_UNCERTAIN' })
+    if (!options.creating && !options.querying && !options.cancelling &&
+      (!current.operation || ['COMMITTED', 'CANCELLED', 'EXPIRED', 'REJECTED'].includes(current.operation.state) || Date.parse(current.operation.expiresAt) <= Date.now()))
+      throw new IamApiError('The operation is not active', { status: 409, code: 'OPERATION_NOT_ACTIVE' })
     const generation = this.generation
     this.update({ ...current, pending: true, error: null })
     try {
       const operation = await work()
       this.client.state.assertCurrent(generation)
+      const previous = current.operation
+      if (previous && !options.creating && !['COMMITTED', 'CANCELLED', 'EXPIRED', 'REJECTED'].includes(previous.state) &&
+        (operationReference(previous) !== operationReference(operation) || previous.type !== operation.type)) throw new IamApiError('Operation receipt mismatch', { code: 'INVALID_IDENTITY_RESPONSE' })
+      if (previous?.providerTarget && operation.providerTarget && operationReference(previous) === operationReference(operation) &&
+        (previous.providerTarget.reference !== operation.providerTarget.reference || previous.providerTarget.providerId !== operation.providerTarget.providerId)) throw new IamApiError('Provider target mismatch', { code: 'INVALID_IDENTITY_RESPONSE' })
       this.update({
         operation,
         pending: false,
         error: null,
         cancelUnconfirmed: false,
         uncertainCreate: null,
+        uncertain: false,
       })
       this.saveOperation(operation)
       if (
@@ -137,8 +171,6 @@ export class IdentityOperationStore {
         )
       )
         this.cancelProviderWindow()
-      if (operation.result?.sessionImpact === 'REAUTHENTICATE')
-        this.client.state.clear()
       return operation
     } catch (error) {
       if (generation !== this.client.state.generation)
@@ -152,6 +184,9 @@ export class IdentityOperationStore {
             : new Error('Identity operation failed'),
         cancelUnconfirmed:
           Boolean(options.cancelling) || this.value.cancelUnconfirmed,
+        uncertain: options.querying ? this.value.uncertain :
+          !((error instanceof IamApiError || error instanceof SessionTransportError) &&
+            error.status !== undefined && error.status >= 400 && error.status < 500 && ![401, 408].includes(error.status)),
       })
       throw error
     }
@@ -199,6 +234,8 @@ export class IdentityOperationStore {
       })
     return operationReference(op)
   }
+  /** The authenticated management snapshot, with the same owner/generation checks as prebuilt UI. */
+  identifiers = () => this.client.identity.identifiers()
   create = (input: CreateIdentityOperation, idempotencyKey?: string) =>
     this.run(
       async () => {
@@ -279,35 +316,70 @@ export class IdentityOperationStore {
           code: 'OPERATION_PENDING',
         })
       return this.client.identity.get(id)
-    })
+    }, { querying: true })
   reauthenticate = (input: OperationReauthentication) =>
     this.run(() => this.client.identity.reauthenticate(this.id(), input))
+  currentAccountChallenge = async (identifierId: string) => {
+    let challengeId: string | null = null
+    await this.run(async () => {
+      const result = await this.client.identity.currentAccountChallenge(this.id(), identifierId)
+      challengeId = result.challengeId
+      return result.operation
+    })
+    if (!challengeId) throw new SessionInvalidatedError()
+    return challengeId
+  }
+  private async proofRequest<T>(work: () => Promise<T>): Promise<T> {
+    const operation = this.getSnapshot().operation
+    if (!operation) throw new SessionInvalidatedError()
+    let result: { value: T } | undefined
+    await this.run(async () => { result = { value: await work() }; return operation })
+    if (!result) throw new SessionInvalidatedError()
+    return result.value
+  }
+  startOperationStepUp = () => this.proofRequest(() => this.client.identity.startOperationStepUp(this.id()))
+  verifyOperationStepUp = (challengeId: string, code: string) => this.run(() => this.client.identity.verifyOperationStepUp(this.id(), challengeId, code))
+  startOperationWebAuthn = (challengeId: string) => this.proofRequest(() => this.client.identity.startOperationWebAuthn(this.id(), challengeId))
+  verifyOperationWebAuthn = (challengeId: string, requestId: string, credential: string) => this.run(() => this.client.identity.verifyOperationWebAuthn(this.id(), challengeId, requestId, credential))
   challenge = (method: TargetProofMethod) =>
     this.run(() => this.client.identity.challenge(this.id(), method))
   complete = (method?: TargetProofMethod, code?: string) =>
-    this.run(() =>
-      this.client.identity.complete(this.id(), {
+    this.run(() => {
+      const op = this.getSnapshot().operation
+      if (op?.type === 'LINK' && !op.providerTarget) throw new IamApiError('Provider target confirmation required', { status: 409, code: 'PROVIDER_TARGET_REQUIRED' })
+      return this.client.identity.complete(this.id(), {
         proofs:
           method && code ? [{ purpose: 'TARGET_OWNERSHIP', method, code }] : [],
-      }),
-    )
+      })
+    })
   cancel = () => {
     this.cancelProviderWindow()
+    if (this.value.operation?.providerTarget) this.update({ ...this.value, operation: { ...this.value.operation, providerTarget: null } })
     return this.run(() => this.client.identity.cancel(this.id()), {
       cancelling: true,
     })
   }
   confirmTransfer = (decision: 'ACCEPT' | 'REJECT') =>
     this.run(() => this.client.identity.confirmTransfer(this.id(), decision))
+  acknowledge = () => {
+    const current = this.getSnapshot(), operation = current.operation
+    if (current.pending || current.uncertain || current.uncertainCreate) throw new IamApiError('Query the operation before continuing', { code: 'OPERATION_UNCERTAIN', status: 409 })
+    if (!operation || !['COMMITTED', 'CANCELLED', 'EXPIRED', 'REJECTED'].includes(operation.state)) throw new SessionInvalidatedError()
+    this.cancelProviderWindow()
+    this.update(empty)
+    if (operation.completion?.sessionImpact === 'REAUTHENTICATE') this.client.state.clear()
+  }
   cancelProviderWindow = () => {
     ++this.providerRevision
+    if (this.providerExpiry) clearTimeout(this.providerExpiry)
+    this.providerExpiry = null
     this.providerWindow?.close()
     this.providerWindow = null
     this.authorization = null
   }
   async openProvider(
     purpose: IdentityProofPurpose,
-    redirectUri: string,
+    redirectUri?: string,
     methodId?: string,
   ) {
     const generation = this.client.state.generation
@@ -333,14 +405,22 @@ export class IdentityOperationStore {
     this.providerWindow = popup
     try {
       if (this.client.mode === 'server_session') {
-        const result = await this.client.identity.openProvider(operationId, purpose, methodId)
+        const callback = this.client.config.sessionProviderReturnUri
+        if (!callback) throw new IamConfigurationError('sessionProviderReturnUri must name the BFF callback')
+        const snapshot = this.getSnapshot()
+        if (snapshot.pending || snapshot.uncertain || snapshot.uncertainCreate) throw uncertainCreateError()
+        const identity = this.client.identity
+        const result = await this.proofRequest(() => identity.openProvider(operationId, purpose, methodId))
         assertOwner()
-        popup.navigateServer(result.authorizationUrl, this.client.config.sessionProviderReturnUri ?? '/settings/security', result.expiresAt)
+        popup.navigateServer(result.authorizationUrl, callback, result.expiresAt, 'identity_operation')
+        this.armProviderExpiry(result.expiresAt)
         return result
       }
+      if (!redirectUri) throw new IamConfigurationError('Provider redirectUri is required')
       const result = await this.authorize(purpose, redirectUri, methodId)
       assertOwner()
       popup.navigate({ ...result, redirectUri, operationId })
+      this.armProviderExpiry(result.expiresAt)
       return result
     } catch (error) {
       popup.close()
@@ -361,12 +441,15 @@ export class IdentityOperationStore {
         code: 'OPERATION_PENDING',
       })
     if (snapshot.uncertainCreate) throw uncertainCreateError()
+    if (snapshot.uncertain) throw new IamApiError('Query the operation before continuing', { code: 'OPERATION_UNCERTAIN', status: 409 })
     const generation = this.client.state.generation
+    const revision = this.providerRevision
     const operationId = this.id()
     this.update({ ...snapshot, pending: true, error: null })
     try {
       const pair = await generatePKCEPair()
       this.client.state.assertCurrent(generation)
+      if (revision !== this.providerRevision) throw new SessionInvalidatedError()
       const result = await this.client.identity.authorize(operationId, {
         purpose,
         redirectUri,
@@ -375,6 +458,7 @@ export class IdentityOperationStore {
         codeChallengeMethod: 'S256',
       })
       this.client.state.assertCurrent(generation)
+      if (revision !== this.providerRevision) throw new SessionInvalidatedError()
       this.authorization = {
         id: result.authorizationId,
         verifier: pair.codeVerifier,
@@ -395,8 +479,11 @@ export class IdentityOperationStore {
       throw error
     }
   }
-  providerCallback = () =>
-    this.run(async () => {
+  providerCallback = async () => {
+    // A window that has not returned is a local precondition, not an unknown remote write.
+    if (!this.providerWindow) throw new IamApiError('Open the original provider window', { status: 400, code: 'PROOF_REVOKED' })
+    this.providerWindow.callbackUrl()
+    return this.run(async () => {
       if (this.client.mode === 'server_session') {
         if (!this.providerWindow) throw new SessionInvalidatedError()
         const revision = this.providerRevision
@@ -443,4 +530,8 @@ export class IdentityOperationStore {
       this.cancelProviderWindow()
       return result
     })
+  }
+  private armProviderExpiry(expiresAt: string) {
+    this.providerExpiry = setTimeout(this.cancelProviderWindow, Math.min(Date.parse(expiresAt) - Date.now(), 2_147_483_647))
+  }
 }

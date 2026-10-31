@@ -415,22 +415,21 @@ or merge a full catalog. The host owns locale/theme state; the SDK adds no i18n 
 
 Current-user permission checks call `GET /api/v1/auth/me/permissions` or `POST /api/v1/auth/me/permissions:check` with the user's bearer token. Wildcard semantics are backend-owned for these remote checks; local wildcard utilities remain offline helpers only.
 
-Public Organization invitation routes can preview without a bearer token and accept with the current bearer token only when one exists:
+Application invitation continuations use the dedicated journey API, not a raw-token preview/accept endpoint:
 
 ```tsx
-function InvitationRoute({ token }: { token: string }) {
-  return (
-    <OrganizationInvitationAccept
-      token={token}
-      onLoginRequired={() => {
-        window.location.assign('/login')
-      }}
-    />
-  )
+function InvitationRoute() {
+  return <OrganizationInvitationAccept loginMode="embedded" />
 }
 ```
 
-`LOGIN_REQUIRED` with `LOGIN_OR_REGISTER_THEN_RETRY_ACCEPT` means the app should login or register the user, then retry the same user-visible invitation link. Do not store raw invitation tokens in browser storage.
+The component synchronously removes `continuation` from the URL, keeps it in memory, and exchanges it only
+with the actual Application Client after ordinary OAuth sign-in, or on the user's explicit registration choice.
+Account creation/verification never accepts an invitation. The user confirms the displayed role separately.
+A lost mutation response requires an authoritative result/status read, not an automatic retry.
+`journeyRef` is the safe result/recovery URL value; a ref never replaces missing registration authority.
+See `packages/react/examples/InvitationJourney.tsx` and the package READMEs for Embedded, Hosted popup,
+Dialog, Custom, Headless, and finite server-session/BFF composition. AccountCenter gains no organization UI.
 
 Generate shared permission constants locally from the same explicit structured manifest:
 
@@ -471,7 +470,7 @@ Do not import `PortalOpenApiClient`, `IamClient`, or `@axis-iam/vertex/server` f
 Registration Grant management is available only from `@axis-iam/vertex/server`. The M2M client must be explicitly allowed `registration_grants:read`, `registration_grants:write`, and `registration_grants:redemptions:read`; legacy `portal:openapi:*` scopes do not grant this capability.
 
 ```ts
-const created = await portal.createRegistrationGrant({ type: 'EMAIL_LINK', allowedEmail: 'new.user@example.test' })
+const created = await portal.createRegistrationGrant({ type: 'EMAIL_LINK', allowedEmail: 'new.user@example.test' }, 'customer-create-command-1')
 if (!created.registrationGrantToken) throw new Error('missing one-time proof')
 // Deliver immediately. Never log, cache, or persist the proof.
 await portal.revokeRegistrationGrant(created.grant.id)
@@ -522,7 +521,7 @@ function CustomProviderLogin() {
 }
 ```
 
-`IamConfig.socialProviders` is deprecated for embedded provider buttons. Static entries are only legacy display-name overrides for matching backend-enabled providers; they cannot create clickable providers that IAM has not enabled for the current `ApplicationClient`.
+Sign-in methods, registration capabilities, provider IDs and labels come from IAM discovery for the current `ApplicationClient`. `IamConfig` does not accept static `authMethods` or `socialProviders`; these retired options fail configuration validation. Customize presentation through `appearance`, `colorScheme`, localization or `renderProviderButton`, without changing the discovered provider identity or availability.
 
 `IamProvider` loads the safe `/api/v1/auth/me` view plus `/me/permissions` under the current owner before reporting authentication. It never decodes Access Tokens or uses callback/profile metadata to establish authority.
 
@@ -736,3 +735,23 @@ No TokenManager is created in this mode; token-only calls reject with UNSUPPORTE
 the finite transport for their own BFF. See packages/react/README.md for configuration, Workspace, operation refs,
 purpose step-up, enrollment and caller-owned recovery-code examples. Ordinary oauth_tokens refresh/logout no longer
 uses Direct routes or provenance branches; legacy Direct browser sessions require reauthentication.
+
+### Confidential WebAuth OpenID callbacks
+
+`WebAuthClient` requests `openid profile email offline_access` by default. Each OpenID transaction stores
+its own random nonce alongside one-use state, S256 verifier and deadline; the authorization URL includes
+that nonce. Before creating a server session, the callback verifies the ID Token's ES256 signature through
+the discovered same-issuer JWKS, issuer, Client audience, subject, lifetime and transaction nonce. Missing,
+invalid or replayed ID Tokens fail with `ID_TOKEN_INVALID` and create no session. Non-OpenID scope sets
+send no nonce and retain OAuth-only callback behavior. Existing pending OpenID transactions without a nonce
+must restart sign-in. Access Tokens remain opaque; ID Token verification is not an API authorization check.
+
+### Invitation first-factor enrollment
+
+`InvitationJourneyClient` and `ConfidentialInvitationClient` expose `enrollment(ref)`,
+`startEnrollment(ref, 'TOTP' | 'WEBAUTHN')`, `completeEnrollment(ref, {enrollmentRef, code | credential})`
+and `cancelEnrollment(ref, enrollmentRef)`. These use the finite invitation authority, never ordinary MFA
+account-management routes. Completion returns an enrollment view, not tokens; call `get(ref)` to read the
+current invitation, then require a separate explicit `confirm`. `InvitationBff` and the server-session
+client bridge only these exact routes with host owner/origin/CSRF protections. Keep one-time setup material
+in the initiating view only, query uncertain results, and explicitly cancel before restarting lost setup.

@@ -59,6 +59,7 @@ export interface IamProviderProps extends IamConfig, IamUiConfig {
 
 export function IamProvider({ children, locale, localization, colorScheme, appearance, darkAppearance, ...config }: IamProviderProps) {
   const clientRef = useRef<AuthClient | null>(null)
+  const lifecycleEpoch = useRef(0)
   const [user, setUser] = useState<IamUser | null>(null)
   const [isLoaded, setIsLoaded] = useState(false)
   const [initializationError, setInitializationError] = useState<Error | null>(null)
@@ -74,6 +75,7 @@ export function IamProvider({ children, locale, localization, colorScheme, appea
 
   // Listen for token changes
   useEffect(() => {
+    const epoch = ++lifecycleEpoch.current
     let active = true
     const update = () => {
       if (!active) return
@@ -94,7 +96,8 @@ export function IamProvider({ children, locale, localization, colorScheme, appea
     return () => {
       active = false
       unsubscribe()
-      client.dispose()
+      // StrictMode immediately resubscribes to the same client; only real unmount disposes it.
+      queueMicrotask(() => { if (lifecycleEpoch.current === epoch) client.dispose() })
     }
   }, [client])
 

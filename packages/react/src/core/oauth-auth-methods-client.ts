@@ -1,4 +1,4 @@
-import { parseDefaultLogin, parseSignupIdentifierKinds, parsePasswordIdentifierKinds, AuthCapabilitiesError } from '@axis-iam/vertex'
+import { parseIdentifierRestrictions, parseDefaultLogin, parseSignupIdentifierKinds, parsePasswordIdentifierKinds, AuthCapabilitiesError } from '@axis-iam/vertex'
 import type {
   PublicAuthMethodsResponse,
   PublicAuthPolicyResponse,
@@ -16,6 +16,13 @@ export async function fetchPublicAuthPolicy(input: {
     `${input.issuer}/api/v1/apps/${encodeURIComponent(input.clientId)}/auth-policy`,
   )
   if (
+    ![
+      data.emailMagicLinkEnabled,
+      data.emailOtpEnabled,
+      data.smsOtpEnabled,
+      data.socialLoginEnabled,
+      data.smsAutoProvisioningEnabled,
+    ].every((value) => typeof value === 'boolean') ||
     typeof data.idpAutoProvisioningEnabled !== 'boolean' ||
     !isSignupMode(data.signupMode) ||
     !isRegistrationGrantTypeArray(data.allowedRegistrationGrantTypes)
@@ -25,6 +32,7 @@ export async function fetchPublicAuthPolicy(input: {
     )
   }
 
+  parseIdentifierRestrictions(data.identifierRestrictions)
   parseDefaultLogin(data.defaultLogin)
   parseSignupIdentifierKinds(data.allowedSignupIdentifierKinds)
   const kinds = parsePasswordIdentifierKinds(data.allowedPasswordIdentifierKinds)

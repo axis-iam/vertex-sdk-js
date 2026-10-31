@@ -1,10 +1,11 @@
+import { managedIdentifiers } from '../core/identity-management-fixtures.test-support'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createElement, useState } from 'react'
 import { renderToString } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AccountPermissionSummary, AccountProfile, AccountSession, OIDCConfiguration } from '../core/types'
 import { IamProvider } from '../provider/IamProvider'
-import { makeTestJwt, storeTestTokens, testProviderProps } from '../test-utils'
+import { makeTestJwt, makeTestUser, storeTestTokens, testProviderProps } from '../test-utils'
 import { AccountPermissionsPanel } from './AccountPermissionsPanel'
 import { AccountCenter } from './AccountCenter'
 import { AccountProfilePanel } from './AccountProfilePanel'
@@ -89,6 +90,15 @@ function setupFetch(options: {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
     const method = init?.method ?? (init?.body ? 'POST' : 'GET')
+    if (url.endsWith('/api/v1/auth/me')) {
+      const user = makeTestUser({ metadata: { displayName: 'Alex Morgan' } })
+      user.authenticationContext.applicationId = 'app-1'
+      user.authenticationContext.organizationId = 'org-1'
+      user.authenticationContext.organizationSlug = 'acme'
+      user.authenticationContext.organizationRole = 'ADMIN'
+      return jsonResponse(user)
+    }
+    if (url.endsWith('/api/v1/auth/me/identifiers')) return jsonResponse(managedIdentifiers([{ id: 'primary-email', kind: 'EMAIL', displayValue: 'alex@example.com', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: true }], 4))
     if (url.includes('/.well-known/openid-configuration')) {
       return jsonResponse(mockOidcConfig)
     }
@@ -106,6 +116,8 @@ function setupFetch(options: {
       const body = JSON.parse(init?.body as string) as Partial<AccountProfile>
       return jsonResponse({ ...profile, ...body })
     }
+    if (url.endsWith('/mfa/capabilities')) return jsonResponse({ loginMethodVersion: 4, totpEnroll: { allowed: true, proofRequirement: 'SESSION', proofOptions: [], reasonCode: null }, totpDisable: { allowed: false, proofRequirement: 'SESSION', proofOptions: [], reasonCode: 'METHOD_UNAVAILABLE' }, recoveryCodesGenerate: { allowed: true, proofRequirement: 'SESSION', proofOptions: [], reasonCode: null } })
+    if (url.endsWith('/mfa/recovery-codes/remaining')) return jsonResponse({ remaining: 0 })
     if (url.endsWith('/api/v1/auth/me/security') && method === 'GET') {
       return jsonResponse({
         emailVerified: true,
@@ -342,6 +354,25 @@ describe('Account Center components', () => {
     rendered.unmount()
   })
 
+  it('AccountCenter recovers hidden navigation focus after responsive changes and releases its listener', () => {
+    const trigger = document.createElement('button')
+    document.body.append(trigger)
+    trigger.focus()
+    const onOpenChange = vi.fn()
+    const rendered = renderWithProvider(createElement(AccountCenter, { open: true, onOpenChange, initialSection: 'password' }))
+    const navigation = screen.getByRole('button', { name: 'Password', exact: true })
+    navigation.focus()
+    fireEvent(window, new Event('resize'))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close account center' }))
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    expect(onOpenChange).toHaveBeenCalledWith(false)
+    rendered.unmount()
+    expect(document.activeElement).toBe(trigger)
+    fireEvent(window, new Event('resize'))
+    expect(document.activeElement).toBe(trigger)
+    trigger.remove()
+  })
+
   it('AccountProfilePanel prioritizes identity and verification, supports shared composition, and updates profile fields', async () => {
     const fetchMock = setupFetch()
     const onUpdated = vi.fn()
@@ -373,6 +404,7 @@ describe('Account Center components', () => {
     const fetchMock = setupFetch()
     const onChanged = vi.fn()
     const { container } = renderWithProvider(createElement(PasswordChangeForm, { onChanged }))
+    await act(async () => {})
 
     fireEvent.change(screen.getByLabelText('Current password'), { target: { value: 'old-pass' } })
     fireEvent.change(screen.getByLabelText('New password'), { target: { value: 'new-pass' } })
@@ -466,7 +498,9 @@ describe('Account Center components', () => {
 
     await waitFor(() => expect(onLoggedOut).toHaveBeenCalled())
     const request = fetchMock.mock.calls.find((call) => String(call[0]).endsWith('/api/v1/auth/logout'))
-    expect(JSON.parse(request?.[1]?.body as string)).toEqual({ refresh_token: 'rt-test' })
+    expect(request?.[1]?.method).toBe('POST')
+    expect(request?.[1]?.body).toBeUndefined()
+    expect(new Headers(request?.[1]?.headers).get('Authorization')).toMatch(/^Bearer /)
     expect(container.textContent).not.toContain('rt-test')
   })
 

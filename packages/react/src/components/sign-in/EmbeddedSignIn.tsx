@@ -19,6 +19,7 @@ export function EmbeddedSignIn({
   | 'forgotPasswordUrl'
   | 'onForgotPassword'
   | 'renderProviderButton'
+  | 'providerNavigation'
   | 'presentation'
 >) {
   const flow = useAuthFlow({ onSignInSuccess: onSuccess, onError })

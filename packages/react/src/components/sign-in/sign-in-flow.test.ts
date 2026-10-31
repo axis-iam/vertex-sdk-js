@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { IamUser, PublicAuthMethodsResponse } from '../../core/types'
+import { flowCapabilities } from '../../core/auth-flow-fixtures.test-support'
 import {
   type CredentialMethod,
   getAvailableCredentialMethods,
+  getAvailableProviderOptions,
   initialSignInFlowState,
   nextMethodForIdentifier,
   signInFlowReducer,
@@ -96,6 +98,32 @@ describe('signInFlowReducer', () => {
 })
 
 describe('credential method helpers', () => {
+  it('preserves email-only password and independent email/SMS OTP discovery', () => {
+    const capabilities: PublicAuthMethodsResponse = {
+      ...flowCapabilities,
+      allowedPasswordIdentifierKinds: ['EMAIL'],
+      identifierMethods: [
+        { kind: 'EMAIL', methods: ['PASSWORD', 'EMAIL_OTP'] },
+        { kind: 'PHONE', methods: ['SMS_OTP'] },
+      ],
+    }
+    expect(getAvailableCredentialMethods(capabilities, 'email')).toEqual([{ id: 'password' }, { id: 'email_otp' }])
+    expect(getAvailableCredentialMethods(capabilities, 'phone')).toEqual([{ id: 'sms' }])
+    expect(getAvailableCredentialMethods(capabilities, 'username')).toEqual([])
+    const withoutPassword = { ...capabilities, passwordLoginEnabled: false,
+      identifierMethods: [{ kind: 'EMAIL', methods: ['EMAIL_OTP'] }, { kind: 'PHONE', methods: ['SMS_OTP'] }] } satisfies PublicAuthMethodsResponse
+    expect(getAvailableCredentialMethods(withoutPassword, 'email')).toEqual([{ id: 'email_otp' }])
+    expect(getAvailableCredentialMethods(withoutPassword, 'phone')).toEqual([{ id: 'sms' }])
+  })
+
+  it('takes signup intent directly and never matches a provider by name or type', () => {
+    const first = { ...flowCapabilities.idpProviders[0]!, availableForSignup: false }
+    const second = { ...first, id: 'other-exact-id', displayName: 'Backend second', availableForSignup: true }
+    const capabilities = { ...flowCapabilities, idpProviders: [first, second] }
+    expect(getAvailableProviderOptions(capabilities)).toEqual([first, second])
+    expect(getAvailableProviderOptions(capabilities, 'sign-up')).toEqual([second])
+  })
+
   it('keeps the current method only when it is compatible and available', () => {
     const methods: CredentialMethod[] = ['password', 'email_otp', 'sms']
 

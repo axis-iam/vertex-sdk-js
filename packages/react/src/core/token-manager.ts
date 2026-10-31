@@ -1,7 +1,7 @@
 import { SessionLifecycle, SessionInvalidatedError } from '@axis-iam/vertex'
 import { IamApiError, IamConfigurationError, IamNetworkError, IamTokenRefreshError } from './types'
 import type { TokenSet } from './types'
-import type { CurrentUser } from '@axis-iam/vertex'
+import type { CurrentUser, SessionInvalidationReason } from '@axis-iam/vertex'
 import type { IamUser } from './types'
 import { InvalidTokenResponseError, parseTokenResponse } from './token-response'
 
@@ -98,20 +98,22 @@ export class TokenManager {
   get generation(): number {
     return this.lifecycle.generation
   }
+  get invalidationReason() { return this.lifecycle.invalidationReason }
 
   assertCurrent(generation: number, accessToken?: string): void {
     this.lifecycle.assertCurrent(generation)
     if (accessToken !== undefined && accessToken !== this.getAccessToken()) throw new SessionInvalidatedError()
   }
 
-  pause(): void {
+  pause(reason: SessionInvalidationReason = 'cleared'): void {
     this.paused = true
     this.expiry.invalidate()
     if (this.refreshTransportGeneration === this.generation) {
       // The server may already have consumed this RT. Never replay it after resuming.
-      this.endSession(new IamTokenRefreshError('SESSION_UNAVAILABLE', false))
+      this.endSession(new IamTokenRefreshError('SESSION_UNAVAILABLE', false), reason)
     } else {
-      this.lifecycle.invalidate()
+      this.lifecycle.invalidate(reason)
+      this.notifyChange()
     }
   }
 
@@ -124,7 +126,7 @@ export class TokenManager {
     this.onTokensChanged = null
     this.onPermissionErrorChanged = null
     this.onRefreshErrorChanged = null
-    this.pause()
+    this.pause('disposed')
   }
 
   /** Store tokens with explicit authentication and refresh contracts. */
@@ -149,7 +151,7 @@ export class TokenManager {
       expiresAt: tokenDeadline(parsed),
     }
     this.saveSessionToStorage(session)
-    this.lifecycle.invalidate()
+    this.lifecycle.invalidate('replaced')
     this.session = session
     this.user = null
     this.viewStatus = 'loading'
@@ -253,12 +255,12 @@ export class TokenManager {
 
   getUser(): IamUser | null { return this.isAuthenticated() ? structuredClone(this.user) : null }
 
-  clear(): void {
-    this.endSession(null)
+  clear(reason: SessionInvalidationReason = 'cleared'): void {
+    this.endSession(null, reason)
   }
 
-  private endSession(refreshError: IamTokenRefreshError | null): void {
-    this.lifecycle.invalidate()
+  private endSession(refreshError: IamTokenRefreshError | null, reason: SessionInvalidationReason = 'cleared'): void {
+    this.lifecycle.invalidate(reason)
     this.expiry.invalidate()
     this.session = null
     this.user = null

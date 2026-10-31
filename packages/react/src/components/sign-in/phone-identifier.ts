@@ -24,9 +24,11 @@ for (const country of countries) {
   callingCodeCounts.set(code, (callingCodeCounts.get(code) ?? 0) + 1)
 }
 
-export function phoneCountries(locale: string): PhoneCountryOption[] {
+export function phoneCountries(locale: string, allowedRegions?: readonly string[] | null): PhoneCountryOption[] {
   const names = new Intl.DisplayNames([locale, 'en'], { type: 'region' })
+  if (allowedRegions?.some(code => !countries.some(country => country === code))) throw new PhoneIdentifierError('PHONE_INVALID')
   return countries
+    .filter(code => allowedRegions == null || allowedRegions.includes(code))
     .map((code) => ({
       code,
       callingCode: `+${getCountryCallingCode(code)}`,
@@ -63,8 +65,10 @@ export function parsePhoneIdentifier(
 export function normalizePhoneIdentifier(
   value: string,
   country?: string,
+  allowedRegions?: readonly string[] | null,
 ): PhoneParseResult {
   const parsed = parsePhoneIdentifier(value, country)
+  if (parsed && allowedRegions != null && !allowedRegions.includes(parsed.country)) throw new PhoneIdentifierError('PHONE_INVALID')
   if (!parsed)
     throw new PhoneIdentifierError(
       country ? 'PHONE_INVALID' : 'PHONE_REGION_REQUIRED',

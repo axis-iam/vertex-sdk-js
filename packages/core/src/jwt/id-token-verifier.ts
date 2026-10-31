@@ -17,6 +17,7 @@ export class IdTokenVerifier {
       issuer: string
       clientId: string
       jwksUri: string
+      now?: () => number
     },
   ) {
     const issuer = new URL(config.issuer)
@@ -40,18 +41,20 @@ export class IdTokenVerifier {
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(expectedNonce))
       throw new IdTokenValidationError()
     try {
+      const now = this.config.now?.() ?? Date.now()
       const { payload } = await jwtVerify(token, this.keys, {
         issuer: this.config.issuer,
         audience: this.config.clientId,
         algorithms: ['ES256'],
         requiredClaims: ['sub', 'exp', 'iat', 'nonce'],
+        currentDate: new Date(now),
       })
       if (
         typeof payload.sub !== 'string' ||
         !payload.sub ||
         payload.nonce !== expectedNonce ||
         typeof payload.iat !== 'number' ||
-        payload.iat > Date.now() / 1000 ||
+        payload.iat > now / 1000 ||
         (Array.isArray(payload.aud) &&
           payload.aud.length > 1 &&
           payload.azp !== this.config.clientId) ||

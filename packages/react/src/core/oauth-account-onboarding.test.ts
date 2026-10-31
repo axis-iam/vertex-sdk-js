@@ -202,7 +202,7 @@ describe('OAuthClient account organization onboarding surface', () => {
     const sessions = await client.listAccountSessions()
     await client.revokeAccountSession('sid-current')
     await client.revokeOtherAccountSessions()
-    await client.logoutAccount({ refreshToken: 'refresh-token' })
+    await client.logoutAccount()
 
     expect(sessions[0]?.current).toBe(true)
     expect(fetchMock.mock.calls[1]?.[0]).toBe(`${ISSUER}/api/v1/auth/password/change`)
@@ -217,7 +217,7 @@ describe('OAuthClient account organization onboarding surface', () => {
     expect(fetchMock.mock.calls[4]?.[0]).toBe(`${ISSUER}/api/v1/auth/sessions`)
     expect(fetchMock.mock.calls[4]?.[1]?.method).toBe('DELETE')
     expect(fetchMock.mock.calls[5]?.[0]).toBe(`${ISSUER}/api/v1/auth/logout`)
-    expect(JSON.parse(fetchMock.mock.calls[5]?.[1]?.body as string)).toEqual({ refresh_token: 'refresh-token' })
+    expect(fetchMock.mock.calls[5]?.[1]?.body).toBeUndefined()
   })
 
   it('checks organization membership locally and remote current-user permissions', async () => {
@@ -263,80 +263,6 @@ describe('OAuthClient account organization onboarding surface', () => {
       permission: 'orders:write',
       organizationId: 'org-1',
     })
-  })
-
-  it('previews public organization invitation without bearer auth', async () => {
-    fetchMock
-      .mockResolvedValueOnce({ ok: true, json: async () => mockOidcConfig })
-      .mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify({
-          applicationId: 'app-1',
-          applicationName: 'Example App',
-          organizationId: 'org-1',
-          organizationName: 'Acme',
-          inviteeEmail: 'u***@example.com',
-          role: 'MEMBER',
-          status: 'PENDING',
-          expiresAt: '2026-07-07T00:00:00Z',
-        }),
-      })
-
-    await client.previewOrganizationInvitation('public-token')
-
-    const request = fetchMock.mock.calls.at(-1)
-    expect(request?.[0]).toBe(`${ISSUER}/api/v1/auth/organization-invitations/public-token`)
-    expect(request?.[1]?.headers).toEqual({})
-  })
-
-  it('accepts unauthenticated invitation as login-required continuation', async () => {
-    fetchMock
-      .mockResolvedValueOnce({ ok: true, json: async () => mockOidcConfig })
-      .mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify({
-          status: 'LOGIN_REQUIRED',
-          continuation: 'LOGIN_OR_REGISTER_THEN_RETRY_ACCEPT',
-          applicationId: 'app-1',
-          organizationId: 'org-1',
-          organizationName: 'Acme',
-          role: 'MEMBER',
-          acceptedAt: null,
-        }),
-      })
-
-    const response = await client.acceptOrganizationInvitation('public-token')
-
-    expect(response.status).toBe('LOGIN_REQUIRED')
-    expect(response.continuation).toBe('LOGIN_OR_REGISTER_THEN_RETRY_ACCEPT')
-    const request = fetchMock.mock.calls.at(-1)
-    expect(request?.[0]).toBe(`${ISSUER}/api/v1/auth/organization-invitations/public-token/accept`)
-    expect(request?.[1]?.headers).toEqual({})
-  })
-
-  it('accepts authenticated invitation with current bearer token', async () => {
-    const tokens = makeTokenSet()
-    storeOAuthTokens(client.tokenManager, tokens)
-    fetchMock
-      .mockResolvedValueOnce({ ok: true, json: async () => mockOidcConfig })
-      .mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify({
-          status: 'ACCEPTED',
-          continuation: null,
-          applicationId: 'app-1',
-          organizationId: 'org-1',
-          organizationName: 'Acme',
-          role: 'MEMBER',
-          acceptedAt: '2026-07-06T00:00:00Z',
-        }),
-      })
-
-    const response = await client.acceptOrganizationInvitation('public-token')
-
-    expect(response.status).toBe('ACCEPTED')
-    const request = fetchMock.mock.calls.at(-1)
-    expect(request?.[1]?.headers).toMatchObject({ Authorization: `Bearer ${tokens.access_token}` })
   })
 
   it('sends and verifies email verification tokens through public action helpers', async () => {

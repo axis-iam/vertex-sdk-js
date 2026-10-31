@@ -26,7 +26,7 @@ function oidc(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 }
 
-function fixture() {
+function fixture(openid = false) {
   const transactionStore = new TransactionStore()
   const sessionStore = new SessionStore()
   const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -54,6 +54,7 @@ function fixture() {
     sessionStore,
     fetch,
     now: () => 1_800_000_000_000,
+    ...(openid ? {} : { scopes: ['profile', 'email', 'offline_access'] }),
   })
   return { auth, transactionStore, sessionStore }
 }
@@ -68,6 +69,19 @@ function reqRes(cookie = '', query: Record<string, unknown> = {}) {
 }
 
 describe('createWebAuth', () => {
+  it('does not set a session cookie when the default OpenID ID Token is invalid', async () => {
+    const { auth, transactionStore, sessionStore } = fixture(true)
+    const login = reqRes(); await auth.login(login.req, login.res, login.next)
+    const transactionId = String(vi.mocked(login.res.cookie).mock.calls[0]![1])
+    const transaction = transactionStore.values.get(transactionId)!
+    expect(transaction.nonce).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    const callback = reqRes(`__Secure-axis_vertex_tx=${transactionId}`, { state: transaction.state, code: 'code' })
+    await auth.callback(callback.req, callback.res, callback.next)
+    expect(callback.res.status).toHaveBeenCalledWith(400)
+    expect(callback.res.json).toHaveBeenCalledWith({ error: 'ID_TOKEN_INVALID' })
+    expect(callback.res.cookie).not.toHaveBeenCalled()
+    expect(sessionStore.values.size).toBe(0)
+  })
   it('login stores a transaction and emits only a secure opaque cookie', async () => {
     const { auth, transactionStore } = fixture()
     const { req, res, next } = reqRes()

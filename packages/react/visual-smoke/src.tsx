@@ -139,6 +139,7 @@ window.fetch = async (input, init) => {
       identifierMethods: [{ kind: 'EMAIL', methods: ['PASSWORD', 'EMAIL_OTP'] }, { kind: 'PHONE', methods: ['PASSWORD'] }, { kind: 'USERNAME', methods: ['PASSWORD'] }],
       defaultIdentifierKind: 'EMAIL',
       defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
+      identifierRestrictions: {signup:{email:{restricted:false},phone:{restricted:false,allowedRegions:null}},login:{email:{restricted:false},phone:{restricted:false,allowedRegions:null}}},
       allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
       allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
       idpProviders: [{ id: 'idp-github', providerType: 'GITHUB', displayName: 'GitHub', enabled: true, configured: true, clickable: true, availableForLogin: true, availableForSignup: true, unavailableReason: null, authorizationUrl: `${issuer}/provider` }],
@@ -146,14 +147,7 @@ window.fetch = async (input, init) => {
     })
   }
   if (url.includes('/api/v1/apps/visual-smoke-public-client/auth-policy')) {
-    return response({ defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' }, allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'], allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'], passwordLoginEnabled: true, passwordlessEnabled: false, minPasswordLength: 8, requireUppercase: false, requireLowercase: false, requireDigit: false, requireSpecialChar: false, breachedPasswordCheck: false, totpEnabled: false, webauthnEnabled: false, mfaEnforcement: 'OPTIONAL', stepUpEnabled: false, stepUpTriggers: [], deviceTrustDays: 0, maxTrustedDevices: 0, maxLoginAttempts: 5, lockoutDurationMinutes: 15, progressiveLockout: false, idpAutoProvisioningEnabled: false, signupMode: 'OPEN', allowedRegistrationGrantTypes: ['ACCESS_CODE'] })
-  }
-  if (url.endsWith('/api/v1/auth/organization-invitations/visual-invitation')) {
-    return response({
-      applicationId: 'app-visual-smoke', applicationName: 'Visual Smoke App', organizationId: 'org-visual-smoke',
-      organizationName: 'Visual Organization', inviteeEmail: 'alex.morgan@example.com', role: 'MEMBER', status: 'PENDING',
-      expiresAt: '2026-12-31T00:00:00Z',
-    })
+    return response({ identifierRestrictions: {signup:{email:{restricted:false},phone:{restricted:false,allowedRegions:null}},login:{email:{restricted:false},phone:{restricted:false,allowedRegions:null}}}, defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' }, allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'], allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'], passwordLoginEnabled: true, emailMagicLinkEnabled: false, emailOtpEnabled: true, smsOtpEnabled: false, socialLoginEnabled: true, smsAutoProvisioningEnabled: false, minPasswordLength: 8, requireUppercase: false, requireLowercase: false, requireDigit: false, requireSpecialChar: false, breachedPasswordCheck: false, totpEnabled: false, webauthnEnabled: false, mfaEnforcement: 'OPTIONAL', stepUpEnabled: false, stepUpTriggers: [], deviceTrustDays: 0, maxTrustedDevices: 0, maxLoginAttempts: 5, lockoutDurationMinutes: 15, progressiveLockout: false, idpAutoProvisioningEnabled: false, signupMode: 'OPEN', allowedRegistrationGrantTypes: ['ACCESS_CODE'] })
   }
   if (url.endsWith('/api/v1/auth/me/login-methods') && method !== 'DELETE') {
     return response({ loginMethodVersion: 1, methods: [{
@@ -258,7 +252,7 @@ function App() {
             <SignUp />
             <ForgotPassword />
             <ResetPassword token="visual-reset-token" />
-            <OrganizationInvitationAccept token="visual-invitation" />
+            <OrganizationInvitationAccept continuation={'c'.repeat(43)} />
           </IamProvider>
           <ConnectedAccounts redirectUri="/callback" />
         </main>

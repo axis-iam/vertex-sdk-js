@@ -1,3 +1,5 @@
+import { validateIamConfig } from './iam-config'
+import { AccountSecurityOperations } from './account-security-operations'
 import type { AuthenticationFlow } from '@axis-iam/vertex'
 import { registrationGrantBody } from './auth-flow-client'
 import { IdentityClient } from './identity-client'
@@ -22,8 +24,6 @@ import type {
   OIDCConfiguration,
   OrganizationSwitchResponse,
   ProviderAuthorizationOptions,
-  PublicOrganizationInvitationAcceptResponse,
-  PublicOrganizationInvitationPreview,
   PublicAuthMethodsResponse,
   PublicAuthPolicyResponse,
   RegistrationGrantInput,
@@ -44,6 +44,7 @@ import {
   PendingAuthorizationStore,
   authorizationCallback,
   parseCurrentUser,
+  InvitationJourneyClient,
 } from '@axis-iam/vertex'
 import { requestJson } from './http-client'
 import type { AuthorizationState } from './token-manager'
@@ -85,12 +86,48 @@ export class OAuthClient {
   private readonly accountOnboarding: OAuthAccountOnboardingClient
   private readonly userActions: OAuthUserActionsClient
   private readonly registrationGrants: RegistrationGrantClient
+  getRecoveryCodesRemaining = () => this.accountSecurity.getRecoveryCodesRemaining()
+  readonly accountSecurity: AccountSecurityOperations
+  getMfaCapabilities = (...args: Parameters<AccountSecurityOperations['getMfaCapabilities']>) => this.accountSecurity.getMfaCapabilities(...args)
+  createMfaOperation = (...args: Parameters<AccountSecurityOperations['createMfaOperation']>) => this.accountSecurity.createMfaOperation(...args)
+  getMfaOperation = (...args: Parameters<AccountSecurityOperations['getMfaOperation']>) => this.accountSecurity.getMfaOperation(...args)
+  reauthenticateMfaOperation = (...args: Parameters<AccountSecurityOperations['reauthenticateMfaOperation']>) => this.accountSecurity.reauthenticateMfaOperation(...args)
+  challengeMfaOperation = (...args: Parameters<AccountSecurityOperations['challengeMfaOperation']>) => this.accountSecurity.challengeMfaOperation(...args)
+  authorizeMfaOperation = (...args: Parameters<AccountSecurityOperations['authorizeMfaOperation']>) => this.accountSecurity.authorizeMfaOperation(...args)
+  completeMfaProviderAuthorization = (...args: Parameters<AccountSecurityOperations['completeMfaProviderAuthorization']>) => this.accountSecurity.completeMfaProviderAuthorization(...args)
+  startMfaOperationStepUp = (...args: Parameters<AccountSecurityOperations['startMfaOperationStepUp']>) => this.accountSecurity.startMfaOperationStepUp(...args)
+  verifyMfaOperationStepUp = (...args: Parameters<AccountSecurityOperations['verifyMfaOperationStepUp']>) => this.accountSecurity.verifyMfaOperationStepUp(...args)
+  startMfaOperationWebAuthn = (...args: Parameters<AccountSecurityOperations['startMfaOperationWebAuthn']>) => this.accountSecurity.startMfaOperationWebAuthn(...args)
+  verifyMfaOperationWebAuthn = (...args: Parameters<AccountSecurityOperations['verifyMfaOperationWebAuthn']>) => this.accountSecurity.verifyMfaOperationWebAuthn(...args)
+  beginTotpEnrollmentOperation = (...args: Parameters<AccountSecurityOperations['beginTotpEnrollmentOperation']>) => this.accountSecurity.beginTotpEnrollmentOperation(...args)
+  completeMfaOperation = (...args: Parameters<AccountSecurityOperations['completeMfaOperation']>) => this.accountSecurity.completeMfaOperation(...args)
+  cancelMfaOperation = (...args: Parameters<AccountSecurityOperations['cancelMfaOperation']>) => this.accountSecurity.cancelMfaOperation(...args)
   readonly identity: IdentityClient
   readonly tokenManager: TokenManager
+  private invitationClient?: InvitationJourneyClient
+  private invitationUnsubscribe?: () => void
+  get invitations(): InvitationJourneyClient {
+    if (this.invitationClient) return this.invitationClient
+    const owner = () => {
+      const u = this.tokenManager.getUser()
+      return u ? JSON.stringify([u.authenticationContext.applicationId, u.authenticationContext.clientId, u.id]) : null
+    }
+    let previous = owner()
+    this.invitationUnsubscribe = this.tokenManager.subscribe(() => {
+      const current = owner()
+      if (previous !== null && previous !== current) this.invitationClient?.clear()
+      previous = current
+    })
+    return this.invitationClient = new InvitationJourneyClient({
+      issuer: this.config.issuerUri, clientId: this.clientId,
+      getAccessToken: () => this.tokenManager.hasUsableToken() ? this.tokenManager.getAccessToken() : null,
+    })
+  }
   private authentication: AuthenticationTransaction | null = null
   private authenticationRevision = 0
 
   constructor(config: IamConfig, options: { startPaused?: boolean } = {}) {
+    validateIamConfig(config)
     if (config.sessionMode === 'server_session' || config.sessionTransport)
       throw new IamConfigurationError(
         'Use ServerSessionClient for server_session',
@@ -103,6 +140,7 @@ export class OAuthClient {
       startPaused: options.startPaused,
     })
     this.identity = new IdentityClient(this)
+    this.accountSecurity = new AccountSecurityOperations(this)
     this.tokenManager.setRefreshHandler(() => this.requestTokenRefresh())
     this.tokenManager.setPermissionsRefreshHandler(() =>
       this.fetchAuthorizationState(),
@@ -463,18 +501,6 @@ export class OAuthClient {
     return await this.accountOnboarding.checkAccountPermission(input)
   }
 
-  async previewOrganizationInvitation(
-    token: string,
-  ): Promise<PublicOrganizationInvitationPreview> {
-    return await this.accountOnboarding.previewOrganizationInvitation(token)
-  }
-
-  async acceptOrganizationInvitation(
-    token: string,
-  ): Promise<PublicOrganizationInvitationAcceptResponse> {
-    return await this.accountOnboarding.acceptOrganizationInvitation(token)
-  }
-
   async handleCallback(code: string, state: string): Promise<TokenSet> {
     if (this.tokenManager.getAccessToken()) {
       PendingAuthorizationStore.discard({
@@ -756,6 +782,7 @@ export class OAuthClient {
   }
 
   async logout(options: LogoutOptions = {}): Promise<void> {
+    this.invitationClient?.clear()
     ++this.authenticationRevision
     this.authentication?.invalidate()
     this.authentication = null
@@ -817,6 +844,10 @@ export class OAuthClient {
   }
 
   dispose(): void {
+    this.invitationClient?.clear()
+    this.invitationUnsubscribe?.()
+    this.invitationUnsubscribe = undefined
+    this.invitationClient = undefined
     ++this.authenticationRevision
     this.authentication?.invalidate(true)
     this.authentication = null

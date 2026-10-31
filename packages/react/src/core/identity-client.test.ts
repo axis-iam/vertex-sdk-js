@@ -1,13 +1,15 @@
+import { managedIdentifiers } from './identity-management-fixtures.test-support'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { OAuthClient } from './oauth-client'
 import { makeTestJwt, makeTestUser } from '../test-utils'
 import * as pkce from './pkce'
 import { IdentityOperationStore } from './identity-operation-store'
-import { parseIdentifiers, parseMethods } from './identity-client'
+import { parseIdentifiers, parseMethods, parseOperation } from './identity-client'
+import { securityFixture, securityRef, securityId } from './account-security-fixtures.test-support'
 
 const issuer = 'https://auth.test.com'
 const operation = (state = 'AWAITING_REAUTH', type = 'ADD') => ({ id: 'op-1', type, state, expiresAt: new Date(Date.now()+600000).toISOString(),
-  requiredProofs: [{ purpose: 'CURRENT_ACCOUNT', methods: ['PASSWORD'], strength: 'POLICY', satisfied: false }], result: null })
+  proofOptions: [{ method: 'PASSWORD' }], completion: null, requiredProofs: [{ purpose: 'CURRENT_ACCOUNT', methods: ['PASSWORD'], strength: 'POLICY', satisfied: false }], result: null })
 const registration = (status = 'PENDING_VERIFICATION') => ({ registrationId: 'registration-1', status,
   expiresAt: new Date(Date.now()+600000).toISOString(), nextAction: status === 'COMPLETED' ? 'LOGIN' : 'VERIFY_EMAIL', controlSecret: null })
 const response = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status })
@@ -23,6 +25,85 @@ afterEach(() => { client.dispose(); sessionStorage.clear(); vi.restoreAllMocks()
 function login() { client.tokenManager.store({ access_token: makeTestJwt(), expires_in: 3600, token_type: 'Bearer' }, 'OAUTH_AUTHORIZATION_CODE', null) }
 function body(index = 0) { return JSON.parse(String(fetchMock.mock.calls[index][1]?.body)) }
 function headers(index = 0) { return new Headers(fetchMock.mock.calls[index][1]?.headers) }
+
+const verifiedProviderTarget = { providerId: securityId, maskedDisplayName: 'A*** A***', maskedEmail: 'a***@verified.invalid', reference: 'a'.repeat(64) }
+describe('round02 authenticated management and provider target', () => {
+  it('requires the complete management wire and exact eligible identifiers without anonymous metadata fallback', () => {
+    expect(() => parseIdentifiers({ loginMethodVersion: 4, items: [] })).toThrow()
+    const snapshot = managedIdentifiers([
+      { id: 'primary', kind: 'EMAIL', displayValue: 'old@outside.invalid', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: true },
+      { id: 'eligible', kind: 'EMAIL', displayValue: 'other@outside.invalid', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: false },
+    ])
+    expect(parseIdentifiers(snapshot).items[0].capabilities.REMOVE.replacementPrimaryIds).toEqual(['eligible'])
+    snapshot.items[0].capabilities.REMOVE.replacementPrimaryIds = ['missing']
+    expect(() => parseIdentifiers(snapshot)).toThrow()
+    expect(() => parseOperation({ ...operation('CANCELLED', 'LINK'), providerTarget: verifiedProviderTarget })).toThrow()
+    expect(() => parseOperation({ ...operation('READY', 'ADD'), providerTarget: verifiedProviderTarget })).toThrow()
+  })
+  it.each(['oauth_tokens', 'server_session'] as const)('%s maps management and verified target; retains committed replay and rejects changed identity', async mode => {
+    const f = await securityFixture(mode)
+    try {
+      const receipt = mode === 'server_session' ? securityRef : securityId
+      const wire = (state: string, providerTarget: typeof verifiedProviderTarget | null) => ({ ...operation(state, 'LINK'), [mode === 'server_session' ? 'ref' : 'id']: receipt, ...(mode === 'server_session' ? { id: undefined } : {}), providerTarget })
+      const store = new IdentityOperationStore(f.client)
+      f.fetchMock.mockResolvedValueOnce(response(managedIdentifiers()))
+      expect((await store.identifiers()).management.add.PHONE.allowed).toBe(true)
+      f.fetchMock.mockResolvedValueOnce(response(wire('READY', null)))
+      await store.reopen(receipt)
+      const before = f.fetchMock.mock.calls.length
+      await expect(store.complete()).rejects.toMatchObject({ code: 'PROVIDER_TARGET_REQUIRED' })
+      expect(f.fetchMock.mock.calls.length).toBe(before)
+      f.fetchMock.mockResolvedValueOnce(response(wire('READY', verifiedProviderTarget)))
+      await store.reopen()
+      expect(store.getSnapshot().operation?.providerTarget).toEqual(verifiedProviderTarget)
+      f.fetchMock.mockResolvedValueOnce(response(wire('READY', { ...verifiedProviderTarget, reference: 'b'.repeat(64) })))
+      await expect(store.reopen()).rejects.toMatchObject({ code: 'INVALID_IDENTITY_RESPONSE' })
+      expect(store.getSnapshot().operation?.providerTarget).toEqual(verifiedProviderTarget)
+      f.fetchMock.mockResolvedValueOnce(response(wire('COMMITTED', verifiedProviderTarget)))
+      await store.reopen()
+      f.fetchMock.mockResolvedValueOnce(response(wire('COMMITTED', verifiedProviderTarget)))
+      await store.reopen()
+      expect(store.getSnapshot().operation?.providerTarget).toEqual(verifiedProviderTarget)
+      f.client.state.clear()
+      expect(store.getSnapshot().operation).toBeNull()
+    } finally { f.client.dispose() }
+  })
+  it.each(['oauth_tokens', 'server_session'] as const)('%s cannot restore a late target after owner generation invalidation', async mode => {
+    const f = await securityFixture(mode)
+    try {
+      const store = new IdentityOperationStore(f.client), receipt = mode === 'server_session' ? securityRef : securityId
+      let finish!: (response: Response) => void
+      f.fetchMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+      const pending = store.reopen(receipt), rejected = expect(pending).rejects.toMatchObject({ code: 'SESSION_INVALIDATED' })
+      await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+      f.client.state.clear()
+      finish(response({ ...operation('READY', 'LINK'), id: mode === 'server_session' ? undefined : receipt, ...(mode === 'server_session' ? { ref: receipt } : {}), providerTarget: verifiedProviderTarget }))
+      await rejected
+      expect(store.getSnapshot().operation).toBeNull()
+    } finally { f.client.dispose() }
+  })
+  it.each(['cancel', 'expiry', 'dispose'] as const)('clears the returned target on %s without preserving it in tab storage', async boundary => {
+    login()
+    const store = new IdentityOperationStore(client)
+    fetchMock.mockResolvedValueOnce(response({ ...operation('READY', 'LINK'), providerTarget: verifiedProviderTarget }))
+    await store.reopen('op-1')
+    expect(sessionStorage.getItem('providerTarget')).toBeNull()
+    if (boundary === 'cancel') {
+      fetchMock.mockRejectedValueOnce(new TypeError('cancel response lost'))
+      await expect(store.cancel()).rejects.toThrow()
+      expect(store.getSnapshot().cancelUnconfirmed).toBe(true)
+    } else if (boundary === 'expiry') {
+      vi.useFakeTimers()
+      try {
+        fetchMock.mockResolvedValueOnce(response({ ...operation('READY', 'LINK'), providerTarget: verifiedProviderTarget }))
+        await store.reopen()
+        await vi.advanceTimersByTimeAsync(600_001)
+      } finally { vi.useRealTimers() }
+    } else client.dispose()
+    expect(store.getSnapshot().operation?.providerTarget ?? null).toBeNull()
+    expect([...Object.values(sessionStorage)].join(' ')).not.toContain(verifiedProviderTarget.reference)
+  })
+})
 
 describe('identity public wire and registration control', () => {
   it('sends typed signup, separates memory-only control from email proof, exposes no User/session', async () => {
@@ -53,7 +134,7 @@ describe('identity public wire and registration control', () => {
     await expect(client.identity.registrationAction('registration-1', 'complete', '123456')).rejects.toMatchObject({ code: 'REGISTRATION_RESTART_REQUIRED' })
   })
   it('preserves version envelope/capabilities and rejects malformed remote facts', () => {
-    expect(parseIdentifiers({ loginMethodVersion: 4, items: [] })).toEqual({ loginMethodVersion: 4, items: [] })
+    expect(parseIdentifiers(managedIdentifiers())).toEqual(managedIdentifiers())
     expect(parseMethods({ loginMethodVersion: 4, methods: [{ methodId: 'opaque-id', kind: 'PROVIDER', roles: ['FIRST_FACTOR'], status: 'UNAVAILABLE', capabilities: { unlink: false }, unavailableReasons: ['MANAGED_AUTHENTICATION_REQUIRED'] }] }).methods[0].capabilities.unlink).toBe(false)
     expect(() => parseMethods([])).toThrow()
     expect(() => parseIdentifiers({ loginMethodVersion: -1, items: [] })).toThrow()
@@ -300,6 +381,23 @@ describe('durable public operation state shared by React and Custom', () => {
 })
 
 describe('provider window public operation protection',()=>{
+ it('blocks Headless mutation replay after a lost completion until status reconciliation', async () => {
+  login()
+  const store = new IdentityOperationStore(client)
+  fetchMock.mockResolvedValueOnce(response(operation('READY')))
+  await store.reopen('op-1')
+  fetchMock.mockRejectedValueOnce(new TypeError('reply lost'))
+  await expect(store.complete()).rejects.toThrow()
+  const before = fetchMock.mock.calls.length
+  await expect(store.complete()).rejects.toMatchObject({ code: 'OPERATION_UNCERTAIN' })
+  await expect(store.startOperationStepUp()).rejects.toMatchObject({ code: 'OPERATION_UNCERTAIN' })
+  expect(fetchMock.mock.calls.length).toBe(before)
+  fetchMock.mockResolvedValueOnce(response({ ...operation('COMMITTED'), completion: { completedAt: new Date().toISOString(), finalLoginMethodVersion: 5, sessionImpact: 'REAUTHENTICATE' } }))
+  await store.reopen()
+  expect(client.getAccessToken()).not.toBeNull()
+  store.acknowledge()
+  expect(client.getAccessToken()).toBeNull()
+ })
  it.each(['LINK','TRANSFER'] as const)('keeps %s owner tokens in original window and checks protected GET before PKCE consumption',async type=>{
   login();const token=client.getAccessToken()
   const popup={closed:false,location:{href:'about:blank'},close:vi.fn()}

@@ -100,6 +100,8 @@ function fixture(overrides: Record<string, unknown> = {}) {
     sessionStore: sessions,
     fetch,
     now: () => 1_800_000_000_000,
+    // Non-OIDC fixture tokens are intentionally opaque; real signed OIDC coverage is separate.
+    scopes: ['profile', 'email', 'offline_access'],
     ...overrides,
   })
   return { client, transactions, sessions, fetch }
@@ -134,6 +136,8 @@ describe('WebAuthClient', () => {
       createHash('sha256').update(transaction?.codeVerifier ?? '').digest('base64url'),
     )
     expect(result.transactionId).not.toBe(transaction?.state)
+    expect(url.searchParams.has('nonce')).toBe(false)
+    expect(transaction).not.toHaveProperty('nonce')
   })
 
   it('consumes the transaction before confidential Basic code exchange and creates a session', async () => {

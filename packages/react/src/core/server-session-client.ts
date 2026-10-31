@@ -1,9 +1,12 @@
+import { validateIamConfig } from './iam-config'
+import { AccountSecurityOperations } from './account-security-operations'
 import {
   ServerSession, SessionLogin, UnsupportedOperationError, SessionTransportError,
-  sessionRecord as record, sessionText as text, SessionInvalidatedError,
+  parseMfaStepUpResult, parseMfaWebAuthnStartResult, sessionRecord as record, sessionText as text, SessionInvalidatedError,
+  SessionInvitationJourneyClient,
 } from '@axis-iam/vertex'
 import type {
-  AuthenticationFlow, SessionRequest, ServerSessionView,
+  AuthenticationFlow, SessionRequest, ServerSessionView, SessionInvalidationReason,
   CreateIdentityOperation, CompleteIdentityOperation, OperationReauthentication,
   IdentityOperation, TargetProofMethod, StartRegistration, RegistrationOperation,
 } from '@axis-iam/vertex'
@@ -42,8 +45,25 @@ function profile(value: unknown): T.AccountProfile {
 
 /** An independent Cookie client. It has no TokenManager or browser OAuth material. */
 export class ServerSessionClient {
+  readonly invitations: SessionInvitationJourneyClient
   readonly mode = 'server_session' as const
   readonly session: ServerSession
+  getRecoveryCodesRemaining = () => this.accountSecurity.getRecoveryCodesRemaining()
+  readonly accountSecurity: AccountSecurityOperations
+  getMfaCapabilities = (...args: Parameters<AccountSecurityOperations['getMfaCapabilities']>) => this.accountSecurity.getMfaCapabilities(...args)
+  createMfaOperation = (...args: Parameters<AccountSecurityOperations['createMfaOperation']>) => this.accountSecurity.createMfaOperation(...args)
+  getMfaOperation = (...args: Parameters<AccountSecurityOperations['getMfaOperation']>) => this.accountSecurity.getMfaOperation(...args)
+  reauthenticateMfaOperation = (...args: Parameters<AccountSecurityOperations['reauthenticateMfaOperation']>) => this.accountSecurity.reauthenticateMfaOperation(...args)
+  challengeMfaOperation = (...args: Parameters<AccountSecurityOperations['challengeMfaOperation']>) => this.accountSecurity.challengeMfaOperation(...args)
+  authorizeMfaOperation = (...args: Parameters<AccountSecurityOperations['authorizeMfaOperation']>) => this.accountSecurity.authorizeMfaOperation(...args)
+  completeMfaProviderAuthorization = (...args: Parameters<AccountSecurityOperations['completeMfaProviderAuthorization']>) => this.accountSecurity.completeMfaProviderAuthorization(...args)
+  startMfaOperationStepUp = (...args: Parameters<AccountSecurityOperations['startMfaOperationStepUp']>) => this.accountSecurity.startMfaOperationStepUp(...args)
+  verifyMfaOperationStepUp = (...args: Parameters<AccountSecurityOperations['verifyMfaOperationStepUp']>) => this.accountSecurity.verifyMfaOperationStepUp(...args)
+  startMfaOperationWebAuthn = (...args: Parameters<AccountSecurityOperations['startMfaOperationWebAuthn']>) => this.accountSecurity.startMfaOperationWebAuthn(...args)
+  verifyMfaOperationWebAuthn = (...args: Parameters<AccountSecurityOperations['verifyMfaOperationWebAuthn']>) => this.accountSecurity.verifyMfaOperationWebAuthn(...args)
+  beginTotpEnrollmentOperation = (...args: Parameters<AccountSecurityOperations['beginTotpEnrollmentOperation']>) => this.accountSecurity.beginTotpEnrollmentOperation(...args)
+  completeMfaOperation = (...args: Parameters<AccountSecurityOperations['completeMfaOperation']>) => this.accountSecurity.completeMfaOperation(...args)
+  cancelMfaOperation = (...args: Parameters<AccountSecurityOperations['cancelMfaOperation']>) => this.accountSecurity.cancelMfaOperation(...args)
   readonly identity: SessionIdentityClient
   private loginFlow: SessionLogin | null = null
   private disposed = false
@@ -54,17 +74,21 @@ export class ServerSessionClient {
     const session = this.session
     return {
       get generation() { return session.generation },
+      get invalidationReason() { return session.invalidationReason },
       assertCurrent: (generation: number) => session.assertCurrent(generation),
-      clear: () => { this.purposeRefs.clear(); session.clear() },
+      clear: (reason?: SessionInvalidationReason) => { this.purposeRefs.clear(); session.clear(reason) },
       getUser: () => this.getUser(), getViewState: () => session.getViewState(),
       subscribe: session.subscribe, isAuthenticated: () => session.isAuthenticated(),
     }
   }
   constructor(readonly config: T.IamConfig) {
+    validateIamConfig(config)
     if (config.sessionMode !== 'server_session' || !config.sessionTransport || config.tokenStorage !== undefined)
       throw new IamConfigurationError('server_session requires an explicit SessionTransport and no tokenStorage')
     this.session = new ServerSession(config.sessionTransport, config.clientId)
+    this.invitations = new SessionInvitationJourneyClient(request => this.session.action(request))
     this.identity = new SessionIdentityClient(this)
+    this.accountSecurity = new AccountSecurityOperations(this)
   }
   private getUser(): T.IamUser | null {
     const v = this.session.getSnapshot()
@@ -98,8 +122,6 @@ export class ServerSessionClient {
   }
   async getAppContinuation(): Promise<never> { throw new UnsupportedOperationError() }
   async previewRegistrationGrant(_input: T.RegistrationGrantInput): Promise<never> { throw new UnsupportedOperationError() }
-  async previewOrganizationInvitation(_token: string): Promise<never> { throw new UnsupportedOperationError() }
-  async acceptOrganizationInvitation(_token: string): Promise<never> { throw new UnsupportedOperationError() }
   async sendEmailVerification(_input: T.SendEmailVerificationInput): Promise<never> { throw new UnsupportedOperationError() }
   async verifyEmail(_input: T.VerifyEmailInput): Promise<never> { throw new UnsupportedOperationError() }
   async getPublicAuthMethods(): Promise<T.PublicAuthMethodsResponse> {
@@ -151,11 +173,12 @@ export class ServerSessionClient {
     return (await flow.authorizeProvider(found.id, registrationGrantBody(options.registrationGrant))).authorizationUrl
   }
   async logout(_options?: T.LogoutOptions) {
+    this.accountSecurity.cancelProviderWindow()
     this.loginFlow?.invalidate(); this.loginFlow = null; this.purposeRefs.clear()
     await this.session.logout()
   }
   async logoutAccount() { await this.logout() }
-  dispose() { this.disposed = true; this.loginFlow?.invalidate(); this.session.dispose(); this.purposeRefs.clear() }
+  dispose() { this.accountSecurity.cancelProviderWindow(); this.disposed = true; this.loginFlow?.invalidate(); this.session.dispose(); this.purposeRefs.clear() }
   async request(request: SessionRequest) {
     if (this.disposed) throw new SessionInvalidatedError()
     return this.session.action(request)
@@ -233,12 +256,7 @@ export class ServerSessionClient {
       startWebAuthn: async () => { this.state.assertCurrent(generation); return this.request({ action: 'stepUpWebAuthn', body: { ref } }) },
       verifyWebAuthn: async (credential: string) => { this.state.assertCurrent(generation); apply(await this.request({ action: 'stepUpWebAuthnVerify', body: { ref, credential } })) } }
   }
-  async enrollmentReauthenticate(method: 'totp' | 'webauthn', password: string) { await this.request({ action: 'enrollmentReauth', body: { method, password } }) }
-  async enrollTotp() {
-    const v = record(await this.request({ action: 'totpEnroll' }))
-    return { ref: text(v.ref), expiresAt: text(v.expiresAt), secret: text(v.secret), qrCodeUri: text(v.qrCodeUri), issuer: text(v.issuer) }
-  }
-  async verifyTotpEnrollment(ref: string, code: string) { if (record(await this.request({ action: 'totpVerify', body: { ref, code } })).verified !== true) throw new IamConfigurationError('Enrollment failed') }
+  async enrollmentReauthenticate(method: 'webauthn', password: string) { await this.request({ action: 'enrollmentReauth', body: { method, password } }) }
   async enrollWebAuthn() {
     const v = record(await this.request({ action: 'webauthnEnroll' }))
     return { ref: text(v.ref), expiresAt: text(v.expiresAt), publicKeyCredentialCreationOptions: text(v.publicKeyCredentialCreationOptions) }
@@ -246,15 +264,7 @@ export class ServerSessionClient {
   async verifyWebAuthnEnrollment(ref: string, credential: string) { return this.request({ action: 'webauthnVerify', body: { ref, credential } }) }
   async mfaStatus() { return this.request({ action: 'mfaStatus' }) }
   async credentials() { return this.request({ action: 'credentials' }) }
-  async removeTotp() { await this.request({ action: 'removeTotp', purposeRef: this.consumePurpose('MFA_CHANGE') }) }
   async removeCredential(id: string) { await this.request({ action: 'removeCredential', id, purposeRef: this.consumePurpose('MFA_CHANGE') }) }
-  /** Returned only to the initiating caller, never session state or persistence. */
-  async generateRecoveryCodes() {
-    const v = record(await this.request({ action: 'generateRecoveryCodes', purposeRef: this.consumePurpose('MFA_CHANGE') }))
-    const codes = strings(v.codes)
-    if (number(v.count) !== codes.length) throw new IamConfigurationError('Invalid recovery codes response')
-    return { codes, count: codes.length }
-  }
   async recoveryCodesRemaining() { return number(record(await this.request({ action: 'recoveryRemaining' })).remaining) }
   async verifyRecoveryCode(code: string) { return boolean(record(await this.request({ action: 'recoveryVerify', body: { code } })).verified) }
 }
@@ -267,8 +277,26 @@ class SessionIdentityClient {
   async get(ref: string) { return safeOperation(await this.client.request({ action: 'identityGet', ref })) }
   async transfers() { return array(await this.client.request({ action: 'transfers' })).map(safeOperation) }
   async reauthenticate(ref: string, input: OperationReauthentication) {
-    const body = input.method === 'PASSWORD' ? input : { method: 'STEP_UP_PROOF' as const, ref: this.client.consumePurpose('LOGIN_METHOD_CHANGE') }
+    const body = input.method === 'PASSWORD' ? input : { method: 'EMAIL_OTP' as const, challengeRef: input.challengeId, code: input.code }
     return safeOperation(await this.client.request({ action: 'identityReauthenticate', ref, body }))
+  }
+  async currentAccountChallenge(ref: string, identifierId: string) {
+    const v = record(await this.client.request({ action: 'identityCurrentChallenge', ref, body: { identifierId } }))
+    return { operation: safeOperation(v.operation), challengeId: text(v.challengeRef), nextChallengeAt: text(v.nextChallengeAt) }
+  }
+  async startOperationStepUp(ref: string) {
+    const v = parseMfaStepUpResult(await this.client.request({ action: 'identityStepUpStart', ref }))
+    return { challengeId: v.challengeRef, availableMethods: v.availableMethods }
+  }
+  async verifyOperationStepUp(ref: string, challengeRef: string, code: string) {
+    return safeOperation(await this.client.request({ action: 'identityStepUpVerify', ref, body: { challengeRef, code } }))
+  }
+  async startOperationWebAuthn(ref: string, challengeRef: string) {
+    const v = parseMfaWebAuthnStartResult(await this.client.request({ action: 'identityWebAuthnStart', ref, body: { challengeRef } }))
+    return { requestId: v.requestRef, publicKey: v.publicKey }
+  }
+  async verifyOperationWebAuthn(ref: string, challengeRef: string, requestRef: string, credential: string) {
+    return safeOperation(await this.client.request({ action: 'identityWebAuthnVerify', ref, body: { challengeRef, requestRef, credential } }))
   }
   async challenge(ref: string, targetProofMethod: TargetProofMethod) { return safeOperation(await this.client.request({ action: 'identityChallenge', ref, body: { targetProofMethod } })) }
   async complete(ref: string, body: CompleteIdentityOperation) { return safeOperation(await this.client.request({ action: 'identityComplete', ref, body })) }

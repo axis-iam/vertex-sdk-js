@@ -1,5 +1,17 @@
 # @axis-iam/vertex-react
 
+## Discovered Authentication Options
+
+`IamProvider` discovers methods and registration capabilities from `/api/v1/apps/{clientId}/auth-methods`.
+Provider IDs, labels and availability remain backend-owned; `useIdentityProviders` also preserves exact discovery
+identities. Retired `IamConfig.authMethods`, `IamConfig.socialProviders` and `SocialProviderConfig` are not public
+options. Passing retired options from untyped JavaScript throws `IamConfigurationError`, rather than enabling or
+renaming a provider. The browser `clientId` and resource `audience` remain supported and distinct.
+
+Host presentation stays configurable through `appearance`, `darkAppearance`, `colorScheme`, `locale`,
+`localization`, component container styles and `renderProviderButton`; custom buttons must use the supplied
+provider ID/action and respect disabled state.
+
 ## Explicit Server Sessions
 
 Choose a mode deliberately. `sessionMode: 'oauth_tokens'` (default) uses public-client OAuth and memory-default tokens.
@@ -385,3 +397,182 @@ same authoritative capability/default/registration state. PHONE hosts may reuse 
 `phoneCountries`, `parsePhoneIdentifier` and `normalizePhoneIdentifier` helpers; no country is
 inferred from locale. `allowSignUp` only controls presentation; it cannot enable server-disabled
 registration and is not a substitute for the effective allowed set.
+
+### Purpose-specific identity ranges
+
+Embedded and Dialog use `capabilities.identifierRestrictions.login.phone.allowedRegions`; a
+signup-only restriction does not narrow existing phone sign-in. Headless Custom consumers may
+pass that same value to `phoneCountries(locale, allowedRegions)` and to the optional third
+argument of `normalizePhoneIdentifier(value, region, allowedRegions)`. Binding consumers use
+`identifierRestrictions.signup`, retain existing identifier facts, and handle the stable
+`IDENTIFIER_RANGE_REJECTED` error. Registration uses `REGISTRATION_IDENTIFIER_REJECTED`.
+No browser consumer receives an email-domain allow-list. The server rechecks current policy
+when accepting/consuming proofs; these UI helpers do not grant permission or revoke sessions.
+
+### Account Security: Embedded, Dialog, AccountCenter And Headless
+
+`AccountCenter` has six sections: `profile`, `methods`, `password`, `security`,
+`sessions`, `permissions`. Use `initialSection="security"` for a direct entry;
+`securityProps` forwards supported panel customization. `AccountSecurityPanel`
+is the embedded surface; `AccountSecurityDialog` wraps the same content/store in
+protected modal focus and exact server cancellation. Do not mount competing
+editors for one operation. An uncertain cancellation stays open for status recovery.
+
+All surfaces use the existing `IamProvider` `colorScheme="light" | "dark" | "system"`,
+`appearance`, `darkAppearance`, `locale="en" | "zh-CN"` and `localization.security`.
+Runtime theme changes do not alter the host document theme. Setup QR generation
+is local; it does not send the enrollment URI to an image service. Existing
+WebAuthn credentials can confirm an operation; this does not add WebAuthn enrollment UI.
+
+`useAccountSecurity()` returns summary, action-specific capabilities, recovery-code
+count, `state`, `actions`, `refetch`, loading and typed errors. Both `OAuthClient`
+and `ServerSessionClient` expose the typed `MfaOperationClient` methods directly.
+Shared actions include create/retryCreate/query, current password/email proof,
+scoped TOTP/WebAuthn, provider authorization/callback, begin/complete/cancel,
+`clearSensitive()` and `acknowledge()`. Custom hosts must render only the offered
+proof options and action capabilities; public signup/login metadata is not an
+identity-management permission grant.
+
+```tsx
+import { AccountSecurityPanel, IamProvider } from '@axis-iam/vertex-react'
+
+<IamProvider clientId={publicClientId} issuerUri={issuerUri}
+  redirectUri={registeredCallback} colorScheme="system" locale="en">
+  <AccountSecurityPanel />
+</IamProvider>
+```
+
+For BFF, explicitly configure `sessionMode="server_session"`, a finite
+`sessionTransport` (for example Core's `CookieSessionTransport`) and
+`sessionProviderReturnUri` equal to the actual same-origin BFF provider callback
+path, with no query/hash. No OAuth redirect is required by the identity-provider
+operation action in BFF mode; do not substitute a guessed settings page. OAuth
+retains its registered exact callback and in-memory PKCE. Open provider actions
+directly from a gesture. The MFA BFF callback posts `{}` after the server callback;
+identity BFF uses GET because its server callback already exchanges the proof.
+The BFF owns upstream operation IDs/verifiers; they are not SDK method parameters.
+
+`examples/AccountSecurity.tsx` contains executable public-package examples for
+OAuth, BFF, controllable theme, all three prebuilt entries and a Custom/Headless
+editor, including offered proofs and safe receipt recovery. It uses no internal
+imports, bare fetch or type assertions to bypass a missing public action.
+
+Safety rules for Custom consumers:
+
+- Lost create: retain `state.uncertainCreate` and invoke `retryCreate()` with its
+  original request ID/version. Do not create another operation.
+- Lost mutation/cancel: `state.uncertain` blocks mutation replay. Query the exact
+  receipt; do not use `totpEnrolled=false` to infer that begin never ran.
+- Missing setup material: cancel/query the original operation before a new setup.
+  Missing recovery-code delivery: a committed set cannot be shown again; a fresh
+  generation requires a new deliberate confirmation.
+- Keep material/codes only in authorized ephemeral UI memory. `clearSensitive()`
+  handles close/unmount, and owner changes/disposal/expiry clear operation memory.
+  Never put password/OTP/QR/codes/verifiers into URLs, storage, logs or analytics.
+- Present `result.sessionImpact === 'REAUTHENTICATE'` as success requiring sign-in,
+  not as a failed write. Then `acknowledge()` clears local session state. Prebuilt
+  `onReauthenticate(receipt)` lets the host choose the legal sign-in continuation.
+
+Identity operations now expose authoritative `proofOptions` and typed `completion`
+separately from the legacy string-map `result`. Their shared Headless state also
+blocks unknown-result replay and supports current-account email/scoped factor
+proofs. `actions.identifiers()` returns the authenticated `{loginMethodVersion,
+items, management}` snapshot in both OAuth and BFF modes. `management.add` supplies
+USERNAME/EMAIL/PHONE capabilities; each identifier supplies VERIFY/SET_PRIMARY/
+REMOVE/REPLACE/TRANSFER capabilities. Render their exact `allowed`,
+`unavailableReasons`, `requirements` and `replacementPrimaryIds`; do not select the
+first verified identifier or infer permission from anonymous login/signup metadata.
+`management.proofOptions` describes the available current-account confirmation;
+the operation's proof options remain authoritative after creation. Missing or
+contradictory management wire fails closed. Existing out-of-range identifiers may
+still be verified/set primary/removed; new values are revalidated by the server.
+Capability snapshots are not grants: every write rechecks ownership, policy,
+version, proof and the last usable sign-in path.
+
+For a new Provider LINK, `operation.providerTarget` is null until verified target
+proof returns. Its `providerId`, nullable `maskedDisplayName`/`maskedEmail` and opaque
+64-lowercase-hex `reference` come from the actual adapter-bound target, not the
+provider directory or an existing connection. AccountCenter shows that returned
+presentation and requires an explicit **Confirm connection**. A READY view without
+a target cannot be completed by the shared Headless store. The reference is not a
+proof or a new request field; completion still sends the declared `{proofs:[]}`.
+Committed receipt/status retains the same target. Cancel/expiry/owner change and
+acknowledgement clear the local presentation; unknown-result completion is recovered
+with the exact operation GET, never an automatic mutation replay. No provider raw
+subject, token, claims, PKCE verifier or opaque target reference is displayed or stored.
+
+## Invitation journey entry
+
+`OrganizationInvitationAccept` is independent of AccountCenter. Mount inside the same `IamProvider` throughout
+login. It reads and scrubs URL `continuation` synchronously before I/O, then retains it only in component memory.
+Alternatively pass `continuation` from a host that already scrubbed the URL, or `journeyRef` for an authorized
+result read; do not pass both. The retired `token`, `onLoginRequired`, `useOrganizationInvitation`, and raw-token
+preview/accept methods are no longer exported.
+
+- Embedded: `<OrganizationInvitationAccept />`; existing-account/Provider authentication stays normal Client
+  OAuth. Provider popups preserve the opener; verification still requires explicit invitation confirmation.
+- Hosted: `<OrganizationInvitationAccept loginMode="hosted" />` opens ordinary Client login in a bounded popup.
+  The registered callback route must be passive; click "I have signed in" in the opener. No top-level navigation
+  fallback, proof storage, issuer Cookie, or continuation in Provider/OAuth parameters is used.
+- Dialog: `renderLogin={() => <AuthDialog ... allowSignUp={false} signInProps={{providerNavigation:'popup'}} />}`.
+- Custom: host-owned `useAuthFlow` markup can use exported `AuthProviderWindow` around ordinary `startProvider`
+  and `resumeProviderCallback`. Keep its exact registered same-origin callback passive and close on unmount.
+- Headless: `useInvitationJourney({continuation,ref})` exposes safe snapshots, explicit registration/verification,
+  finite authentication/MFA, continue/confirm/cancel and authoritative result/status reads. It also exposes
+  `startHostedLogin` / `completeHostedLogin` for proof-preserving ordinary login. Examples are in
+  `examples/InvitationJourney.tsx`; all use published package exports.
+
+The browser owns no BFF upstream context/token. `server_session` requires an explicit `SessionTransport`, a real
+host prelogin/bootstrap and CSRF, plus the finite `/server` `InvitationBff` adapter or equivalent host routes.
+The host can preserve its logical prelogin owner through first OAuth login, but must replace it when user,
+Application or Client changes. BFF Hosted callbacks finish server-side and return to `config.redirectUri` with
+no query/hash. A callback route must not independently consume the opener's public OAuth pending state.
+
+The registration form uses the invitation's private finite context, not ordinary token storage. Password/OTP
+inputs clear after submission. Successful registration leaves membership unchanged; the displayed current role
+must be explicitly confirmed. Finite MFA verifies an already enrolled TOTP/recovery credential. For a genuinely new, SMTP-verified
+invitation signup that requires MFA, the component offers only the server-permitted TOTP/WebAuthn first-factor
+enrollment. TOTP setup is generated locally as a QR/manual key; WebAuthn requires user verification and the
+registered Application origin. Setup material is delivered once and remains local to the initiating view,
+not the journey store, BFF session, URL or browser storage. Completion establishes only invitation-bound MFA
+proof: no ordinary session/token or organization membership. Explicit invitation confirmation remains separate.
+Headless hosts use `enrollment`, `startEnrollment(method)`, `completeEnrollment(input)`, `cancelEnrollment()`
+and `recoverEnrollment()`. After an uncertain begin/completion, query enrollment status; never automatically
+repeat a write or redeliver a key. Lost material requires explicit cancellation before restarting. Expired/revoked/cancelled
+states cannot be confirmed. Lost response disables mutation and offers result/registration status lookup even
+when the first registration response never arrived. Role/version conflict requires a fresh read, the explicit
+"Review updated invitation" action, and a separate confirmation of the refreshed role.
+`useAuthenticatedSession()` is an explicit authority transition after ordinary login, never a silent fallback.
+After a full reload without finite context, restart from the original invitation or use an authorized terminal
+result read; do not persist proof/context in URL, localStorage, sessionStorage, analytics, or a global cache.
+
+`onAccepted` receives the safe committed journey, not an access token. Host navigation/callback failure is shown
+separately and does not undo success. No automatic success navigation occurs; any configured destination has an
+explicit button. The component uses existing appearance/locale/light/dark/system conventions.
+
+### Recovering a security result after sign-in expires
+
+If a known MFA operation has an uncertain result and a status request returns 401, the shared
+AccountCenter/Dialog/Panel/Headless store clears authentication, proofs, setup keys, codes and pending
+authorizations immediately. Only `state.recoveryReceipt` remains: a read-only reference bound to the
+issuer, mode, user, Application and Client, expiring at the original operation deadline. It is not an
+operation or permission to write. Explicit logout, client disposal, a different authenticated owner or
+expiry discards it.
+
+The panel offers **Sign in again**, then **Check this operation**. `onReauthenticate` receives only
+`{ref, type}`; without that callback the normal configured login runs. For a navigation handoff, this
+explicit action stores only the safe receipt in a scoped `sessionStorage` key. A new client can recover
+it after navigation, but never automatically queries or repeats a write. Normal in-memory usage does
+not persist it. A host that deliberately disposes the old client discards the receipt, including this
+handoff; ordinary full-page navigation is supported without retaining a disposed client.
+If browser policy blocks session storage, ordinary in-memory operation and cleanup still work;
+`prepareReauthentication()` fails explicitly instead of starting navigation with a lost receipt.
+The host may sign in within the same live client and explicitly query its in-memory receipt.
+
+Headless hosts call `actions.prepareReauthentication()` before their explicit login, then
+`actions.query()` after the same owner's current-user view is authenticated. Only a matching terminal
+response is adopted; fresh-session pending results cannot restore write authority. All mutation
+actions remain blocked until acknowledgement or `actions.discardReceipt()`. Discard only forgets
+local tracking; it does not cancel the server operation. Acknowledging a recovered old
+`REAUTHENTICATE` result does not sign out the newly authenticated session. Lost recovery-code
+plaintext remains unavailable; a status read never redelivers secrets.

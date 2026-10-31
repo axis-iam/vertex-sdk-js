@@ -1,5 +1,5 @@
 import type { LoginIdentifier, MfaProofMethod } from '@axis-iam/vertex'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { SessionInvalidatedError } from '@axis-iam/vertex'
 import { useIamUi } from '../../provider/IamUiProvider'
@@ -20,11 +20,14 @@ import { getAvailableCredentialMethods } from './sign-in-flow'
 import { hasLocalRegistration } from '../../core/auth-flow-client'
 import { PhoneIdentifierInput } from './PhoneIdentifierInput'
 import { normalizePhoneIdentifier, PhoneIdentifierError } from './phone-identifier'
+import { AuthProviderWindow } from '../../core/auth-provider-window'
+import { useIamContext } from '../../provider/IamProvider'
 
 export function AuthFlowForm({
   flow,
   appearance: a,
   renderProviderButton,
+  providerNavigation = 'redirect',
   onForgotPassword,
   forgotPasswordUrl,
   showIntentSwitch = true,
@@ -35,6 +38,7 @@ export function AuthFlowForm({
   flow: UseAuthFlowResult
   appearance: Required<Appearance>
   renderProviderButton?: (props: SignInProviderButtonRenderProps) => ReactNode
+  providerNavigation?: 'redirect' | 'popup'
   onForgotPassword?: () => void
   forgotPasswordUrl?: string
   showIntentSwitch?: boolean
@@ -44,6 +48,10 @@ export function AuthFlowForm({
 }) {
   const { state: s, actions } = flow
   const { localization: l, locale } = useIamUi()
+  const { client } = useIamContext()
+  const providerPopup = useMemo(() => new AuthProviderWindow(client.config.redirectUri), [client])
+  const [providerWindowStarted, setProviderWindowStarted] = useState(false)
+  useEffect(() => () => providerPopup.close(), [providerPopup])
   const prefix = useId()
   const root = useRef<HTMLDivElement>(null)
   const mounted = useRef(true)
@@ -62,7 +70,7 @@ export function AuthFlowForm({
   const [region, setRegion] = useState('')
   const typedIdentifier = (): LoginIdentifier => {
     if (kind === null) throw new Error('Identifier capability is unavailable')
-    if (kind === 'PHONE') return { kind, value: normalizePhoneIdentifier(identifier, region || undefined).e164 }
+    if (kind === 'PHONE') return { kind, value: normalizePhoneIdentifier(identifier, region || undefined, s.capabilities?.identifierRestrictions.login.phone.allowedRegions).e164 }
     return { kind, value: identifier }
   }
   const [password, setPassword] = useState('')
@@ -271,11 +279,18 @@ export function AuthFlowForm({
         const onClick = async () => {
           const revision = ownership.current.revision
           try {
-            const url = await actions.startProvider(provider.id, s.intent === 'sign-up' && acceptsAccessCode && accessCode.trim() ? { type: 'ACCESS_CODE', registrationAccessCode: accessCode } : undefined)
+            const authorize = () => actions.startProvider(provider.id, s.intent === 'sign-up' && acceptsAccessCode && accessCode.trim() ? { type: 'ACCESS_CODE', registrationAccessCode: accessCode } : undefined)
+            if (providerNavigation === 'popup') {
+              await providerPopup.start(authorize)
+              if (mounted.current) setProviderWindowStarted(true)
+              return
+            }
+            const url = await authorize()
             if (mounted.current && ownership.current.revision === revision)
               window.location.href = url
           } catch (error) {
             if (error instanceof SessionInvalidatedError) return
+            if (mounted.current) setValidation(localizeError(error, l, 'signInFailed'))
           }
         }
         const props = {
@@ -312,6 +327,14 @@ export function AuthFlowForm({
     >
       <style>{`.axis-iam-auth-form input,.axis-iam-auth-form select,.axis-iam-auth-form button{font-family:inherit;letter-spacing:normal;text-transform:none}.axis-iam-auth-form input::placeholder{color:inherit;opacity:.72}.axis-iam-auth-form input:focus-visible,.axis-iam-auth-form select:focus-visible,.axis-iam-auth-form button:focus-visible,.axis-iam-auth-form a:focus-visible{outline:2px solid var(--axis-auth-focus);outline-offset:3px}.axis-iam-auth-form button:disabled{cursor:not-allowed}.axis-iam-auth-form button:not(:disabled):hover{filter:brightness(.95)}.axis-iam-auth-form .axis-auth-text-action{text-decoration:none}.axis-iam-auth-form .axis-auth-text-action:not(:disabled):hover{text-decoration:underline;text-underline-offset:3px}.axis-iam-auth-form{min-width:0;overflow-wrap:anywhere}@media(prefers-reduced-motion:reduce){.axis-iam-auth-form *{transition:none!important}}`}</style>
       {s.step === 'loading' && <p role="status">{l.auth.loadingOptions}</p>}
+      {providerWindowStarted && <button type="button" disabled={busy} style={buttonStyle(a, 'ghost')} onClick={() => {
+        try {
+          const callback = providerPopup.callback()
+          void actions.resumeProviderCallback(callback).then(() => {
+            providerPopup.close(); if (mounted.current) setProviderWindowStarted(false)
+          }).catch(error => { if (mounted.current) setValidation(localizeError(error, l, 'signInFailed')) })
+        } catch (error) { setValidation(localizeError(error, l, 'signInFailed')) }
+      }}>{l.invitation.loginCompleted}</button>}
       {s.step === 'unavailable' && (
         <div><p role="status">
           {s.intent === 'sign-up'
@@ -341,7 +364,7 @@ export function AuthFlowForm({
             if (s.step === 'method') consume(actions.back(), switchKind)
             else switchKind()
           }, entry => l.identity[entry], l.identity.kind)}
-          {kind === 'PHONE' ? <PhoneIdentifierInput appearance={a} locale={locale} prefix={prefix} value={identifier} country={region}
+          {kind === 'PHONE' ? <PhoneIdentifierInput allowedRegions={s.capabilities?.identifierRestrictions.login.phone.allowedRegions} appearance={a} locale={locale} prefix={prefix} value={identifier} country={region}
             onValueChange={value => { setIdentifier(value); setValidation(null) }} onCountryChange={value => { setRegion(value); setValidation(null) }}
             labels={{ country: l.identity.phoneCountry, chooseCountry: l.identity.choosePhoneCountry, number: l.identity.phoneNumber }} disabled={busy} error={validation} />
             : field('identifier', l.identity[kind], kind === 'EMAIL' ? 'email' : 'text', identifier, setIdentifier, { autoComplete: 'username', disabled: busy, placeholder: kind === 'EMAIL' ? l.auth.emailPlaceholder : l.signUp.usernamePlaceholder })}

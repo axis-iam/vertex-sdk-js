@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useIamContext } from '../provider/IamProvider'
 import type { IdentityProviderOption } from '../core/types'
-import { applyLegacySocialProviderOverrides, isClickableIdentityProvider } from '../core/identity-providers'
+import { isClickableIdentityProvider } from '../core/identity-providers'
 
 export interface UseIdentityProvidersOptions {
   /** Include SAML, disabled, or otherwise unsupported providers in the result. */
@@ -29,13 +29,9 @@ export function useIdentityProviders(options: UseIdentityProvidersOptions = {}):
     setError(null)
     try {
       const discovered = await client.listIdentityProviders()
-      const withOverrides = applyLegacySocialProviderOverrides(
-        discovered,
-        client.config.socialProviders,
-      )
       const visibleProviders = includeUnsupported
-        ? withOverrides
-        : withOverrides.filter(isClickableIdentityProvider)
+        ? discovered
+        : discovered.filter(isClickableIdentityProvider)
       setProviders(visibleProviders)
       return visibleProviders
     } catch (err) {
@@ -61,11 +57,7 @@ export function useIdentityProviders(options: UseIdentityProvidersOptions = {}):
     client.listIdentityProviders()
       .then((discovered) => {
         if (cancelled) return
-        const withOverrides = applyLegacySocialProviderOverrides(
-          discovered,
-          client.config.socialProviders,
-        )
-        setProviders(includeUnsupported ? withOverrides : withOverrides.filter(isClickableIdentityProvider))
+        setProviders(includeUnsupported ? discovered : discovered.filter(isClickableIdentityProvider))
       })
       .catch((err: unknown) => {
         if (cancelled) return

@@ -68,6 +68,7 @@ export type RegistrationGrantStatus = 'ACTIVE' | 'PAUSED' | 'REDEEMED' | 'EXPIRE
 
 export interface RegistrationGrant {
   id: string
+  version: number
   type: RegistrationGrantType
   status: RegistrationGrantStatus
   displayName: string | null
@@ -96,6 +97,29 @@ export interface CreatedRegistrationGrant {
   grant: RegistrationGrant
   registrationGrantToken?: string
   registrationAccessCode?: string
+  registrationInvitationUrl?: string
+  secretAlreadyIssued: boolean
+}
+
+export interface RegistrationGrantDeliveryInput {
+  recipient: string
+  locale?: string
+  variant: 'LINK' | 'CODE'
+}
+
+export interface RegistrationGrantDelivery {
+  id: string
+  grantId: string
+  recipient: string
+  variant: 'LINK' | 'CODE'
+  status: 'QUEUED' | 'SENDING' | 'DELIVERED' | 'FAILED' | 'UNKNOWN'
+  failureCode: string | null
+  attemptCount: number
+  maxAttempts: number | null
+  nextAttemptAt: string | null
+  retryable: boolean
+  expiresAt: string
+  createdAt: string
 }
 
 export interface RegistrationGrantListOptions {
@@ -411,15 +435,49 @@ export class PortalOpenApiClient {
     )
   }
 
-  async createRegistrationGrant(input: CreateRegistrationGrantInput): Promise<CreatedRegistrationGrant> {
-    const response = await this.requestRegistrationGrantJson<unknown>(
-      'POST', '/open/v1/registration-grants', REGISTRATION_GRANTS_WRITE_SCOPE, input,
+  async createRegistrationGrant(input: CreateRegistrationGrantInput, idempotencyKey: string): Promise<CreatedRegistrationGrant> {
+    const response = await this.requestJsonWithScope<unknown>(
+      'POST', '/open/v1/registration-grants', REGISTRATION_GRANTS_WRITE_SCOPE, input, registrationCommandHeaders(idempotencyKey),
     )
     return parseCreatedRegistrationGrant(response)
   }
 
+  async rotateRegistrationGrant(grantId: string, expectedVersion: number, idempotencyKey: string): Promise<CreatedRegistrationGrant> {
+    const path = registrationGrantPath(grantId)
+    if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) throw invalidRegistrationGrantResponse()
+    const created = parseCreatedRegistrationGrant(await this.requestJsonWithScope<unknown>(
+      'POST', `${path}/rotate`, REGISTRATION_GRANTS_WRITE_SCOPE, { expectedVersion }, registrationCommandHeaders(idempotencyKey),
+    ))
+    if (created.grant.id !== grantId) throw invalidRegistrationGrantResponse()
+    return created
+  }
+
+  async deliverRegistrationGrant(grantId: string, input: RegistrationGrantDeliveryInput, idempotencyKey: string): Promise<RegistrationGrantDelivery> {
+    const path = registrationGrantPath(grantId)
+    if (typeof input.recipient !== 'string' || !input.recipient.trim() || (input.variant !== 'LINK' && input.variant !== 'CODE')) {
+      throw invalidRegistrationGrantResponse()
+    }
+    const delivery = parseRegistrationGrantDelivery(await this.requestJsonWithScope<unknown>(
+      'POST', `${path}/deliveries`, REGISTRATION_GRANTS_WRITE_SCOPE, input, registrationCommandHeaders(idempotencyKey),
+    ))
+    if (delivery.grantId !== grantId || delivery.variant !== input.variant) throw invalidRegistrationGrantResponse()
+    return delivery
+  }
+
+  async getRegistrationGrantDelivery(grantId: string, deliveryId: string): Promise<RegistrationGrantDelivery> {
+    const path = registrationGrantPath(grantId)
+    registrationGrantPath(deliveryId)
+    const delivery = parseRegistrationGrantDelivery(await this.requestJsonWithScope<unknown>(
+      'GET', `${path}/deliveries/${encodeURIComponent(deliveryId)}`, REGISTRATION_GRANTS_READ_SCOPE,
+    ))
+    if (delivery.grantId !== grantId || delivery.id !== deliveryId) throw invalidRegistrationGrantResponse()
+    return delivery
+  }
+
   async getRegistrationGrant(grantId: string): Promise<RegistrationGrant> {
-    return this.requestRegistrationGrantJson('GET', registrationGrantPath(grantId), REGISTRATION_GRANTS_READ_SCOPE)
+    const grant = parseRegistrationGrant(await this.requestRegistrationGrantJson<unknown>('GET', registrationGrantPath(grantId), REGISTRATION_GRANTS_READ_SCOPE))
+    if (grant.id !== grantId) throw invalidRegistrationGrantResponse()
+    return grant
   }
 
   async pauseRegistrationGrant(grantId: string): Promise<RegistrationGrant> {
@@ -1150,30 +1208,101 @@ function invalidOrganizationManagementResponse(): PortalOpenApiError {
 }
 
 function parseCreatedRegistrationGrant(value: unknown): CreatedRegistrationGrant {
-  if (!value || typeof value !== 'object') {
-    throw new PortalOpenApiError('Invalid registration grant create response', 0, 'invalid_registration_grant_response')
+  const response = registrationRecord(value)
+  const grant = parseRegistrationGrant(response.grant)
+  const token = registrationOptionalSecret(response.registrationGrantToken)
+  const code = registrationOptionalSecret(response.registrationAccessCode)
+  const url = registrationOptionalSecret(response.registrationInvitationUrl)
+  const replay = response.secretAlreadyIssued
+  if (typeof replay !== 'boolean' || (grant.type !== 'EMAIL_LINK' && grant.type !== 'ACCESS_CODE')) throw invalidRegistrationGrantResponse()
+  if (replay) {
+    if (token !== undefined || code !== undefined || url !== undefined) throw invalidRegistrationGrantResponse()
+    return { grant, secretAlreadyIssued: true }
   }
-  const response = value as Record<string, unknown>
-  const grant = response.grant
-  const token = response.registrationGrantToken
-  const code = response.registrationAccessCode
-  if (!grant || typeof grant !== 'object' || ((token !== undefined && token !== null && typeof token !== 'string') || (code !== undefined && code !== null && typeof code !== 'string'))) {
-    throw new PortalOpenApiError('Invalid registration grant create response', 0, 'invalid_registration_grant_response')
+  if ((grant.type === 'EMAIL_LINK' && (!token || code || !url)) || (grant.type === 'ACCESS_CODE' && (!code || token || url))) {
+    throw invalidRegistrationGrantResponse()
   }
-  const type = (grant as Record<string, unknown>).type
-  const tokenPresent = typeof token === 'string' && token.length > 0
-  const codePresent = typeof code === 'string' && code.length > 0
-  if ((tokenPresent === codePresent) || (type === 'EMAIL_LINK' && !tokenPresent) || (type === 'ACCESS_CODE' && !codePresent)) {
-    throw new PortalOpenApiError('Invalid registration grant create response', 0, 'invalid_registration_grant_response')
-  }
-  if (type !== 'EMAIL_LINK' && type !== 'ACCESS_CODE') {
-    throw new PortalOpenApiError('Invalid registration grant create response', 0, 'invalid_registration_grant_response')
+  if (url) {
+    if (url !== url.trim() || /[\u0000-\u001f\u007f]/.test(url)) throw invalidRegistrationGrantResponse()
+    let parsed: URL
+    try { parsed = new URL(url) } catch { throw invalidRegistrationGrantResponse() }
+    if (!['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password) throw invalidRegistrationGrantResponse()
   }
   return {
-    grant: grant as RegistrationGrant,
-    ...(tokenPresent ? { registrationGrantToken: token } : {}),
-    ...(codePresent ? { registrationAccessCode: code } : {}),
+    grant,
+    secretAlreadyIssued: false,
+    ...(token ? { registrationGrantToken: token } : {}),
+    ...(code ? { registrationAccessCode: code } : {}),
+    ...(url ? { registrationInvitationUrl: url } : {}),
   }
+}
+
+function registrationRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalidRegistrationGrantResponse()
+  return value as Record<string, unknown>
+}
+
+function registrationString(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) throw invalidRegistrationGrantResponse()
+  return value
+}
+
+function registrationNullableString(value: unknown): string | null {
+  if (value === null) return null
+  return registrationString(value)
+}
+
+function registrationOptionalSecret(value: unknown): string | undefined {
+  return value === undefined || value === null ? undefined : registrationString(value)
+}
+
+function registrationNumber(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw invalidRegistrationGrantResponse()
+  return value
+}
+
+function parseRegistrationGrant(value: unknown): RegistrationGrant {
+  const p = registrationRecord(value)
+  const type = p.type
+  const status = p.status
+  if (type !== 'EMAIL_LINK' && type !== 'ACCESS_CODE' && type !== 'ORG_INVITATION') throw invalidRegistrationGrantResponse()
+  if (status !== 'ACTIVE' && status !== 'PAUSED' && status !== 'REDEEMED' && status !== 'EXPIRED' && status !== 'REVOKED') throw invalidRegistrationGrantResponse()
+  return {
+    id: registrationString(p.id), version: registrationNumber(p.version), type, status,
+    displayName: registrationNullableString(p.displayName), allowedEmail: registrationNullableString(p.allowedEmail),
+    allowedDomain: registrationNullableString(p.allowedDomain), expiresAt: registrationNullableString(p.expiresAt),
+    maxUses: p.maxUses === null ? null : registrationNumber(p.maxUses), usedCount: registrationNumber(p.usedCount),
+    sourceType: registrationString(p.sourceType), createdAt: registrationString(p.createdAt), updatedAt: registrationString(p.updatedAt),
+    revokedAt: registrationNullableString(p.revokedAt), revokeReason: registrationNullableString(p.revokeReason),
+  }
+}
+
+function parseRegistrationGrantDelivery(value: unknown): RegistrationGrantDelivery {
+  const p = registrationRecord(value)
+  const variant = p.variant
+  const status = p.status
+  if (variant !== 'LINK' && variant !== 'CODE') throw invalidRegistrationGrantResponse()
+  if (status !== 'QUEUED' && status !== 'SENDING' && status !== 'DELIVERED' && status !== 'FAILED' && status !== 'UNKNOWN') throw invalidRegistrationGrantResponse()
+  if (typeof p.retryable !== 'boolean') throw invalidRegistrationGrantResponse()
+  const maxAttempts = p.maxAttempts === null ? null : registrationNumber(p.maxAttempts)
+  if (maxAttempts === 0) throw invalidRegistrationGrantResponse()
+  return {
+    id: registrationString(p.id), grantId: registrationString(p.grantId), recipient: registrationString(p.recipient), variant, status,
+    failureCode: registrationNullableString(p.failureCode), attemptCount: registrationNumber(p.attemptCount), maxAttempts,
+    nextAttemptAt: registrationNullableString(p.nextAttemptAt), retryable: p.retryable,
+    expiresAt: registrationString(p.expiresAt), createdAt: registrationString(p.createdAt),
+  }
+}
+
+function registrationCommandHeaders(key: string): Record<string, string> {
+  if (typeof key !== 'string' || !key.trim() || [...key].length > 200 || /[\u0000-\u001f\u007f-\u009f]/.test(key)) {
+    throw new PortalOpenApiError('Idempotency-Key must be a nonblank caller-owned key of at most 200 characters', 0, 'invalid_idempotency_key')
+  }
+  return { 'Idempotency-Key': key }
+}
+
+function invalidRegistrationGrantResponse(): PortalOpenApiError {
+  return new PortalOpenApiError('Invalid registration grant response', 0, 'invalid_registration_grant_response')
 }
 
 function scopeForMethod(method: PortalOpenApiMethod): PortalOpenApiScope {

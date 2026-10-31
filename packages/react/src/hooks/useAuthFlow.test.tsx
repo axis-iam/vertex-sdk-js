@@ -167,6 +167,24 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 describe('public primary transaction flow', () => {
+  it('binds duplicate provider labels to exact IDs and refuses name/type aliases', async () => {
+    const provider = flowCapabilities.idpProviders[0]!
+    const second = { ...provider, id: 'provider-second', availableForSignup: false }
+    const blocked = { ...provider, id: 'provider-disabled', enabled: false }
+    vi.mocked(currentClient.getPublicAuthMethods).mockResolvedValue({ ...flowCapabilities, idpProviders: [provider, second, blocked] })
+    const h = await setup()
+    expect(h.result.current.state.providers).toEqual([provider, second])
+    for (const alias of [provider.displayName, provider.providerType, blocked.id]) {
+      await act(async () => {
+        await expect(h.result.current.actions.startProvider(alias)).rejects.toThrow()
+      })
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+    fetchMock.mockResolvedValueOnce(response({ authorizationUrl: 'https://provider.test/login', expiresAt: transactionExpiry }))
+    await act(async () => { await h.result.current.actions.startProvider(second.id) })
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ providerId: second.id })
+  })
+
   it('uses explicit identifier capabilities and keeps PHONE password independent of SMS readiness', async () => {
     vi.mocked(currentClient.getPublicAuthMethods).mockResolvedValue({
       ...flowCapabilities, smsOtpEnabled: false,

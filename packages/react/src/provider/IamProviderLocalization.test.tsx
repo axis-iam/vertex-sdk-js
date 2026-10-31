@@ -139,7 +139,7 @@ describe('IamProvider localization', () => {
       createElement(SignUp),
       createElement(ForgotPassword),
       createElement(ResetPassword, { token: 'reset-token' }),
-      createElement(OrganizationInvitationAccept, { token: 'invitation-token' }),
+      createElement(OrganizationInvitationAccept, { continuation: 'c'.repeat(43) }),
     ))
 
     const roots = [

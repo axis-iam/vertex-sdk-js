@@ -32,6 +32,7 @@ function setupFetch({
     if (url.includes('openid-configuration')) return response(oidc)
     if (url.includes('/auth-methods'))
       return response({
+        identifierRestrictions: { signup: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } }, login: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } } },
         clientId: 'test-app',
         passwordLoginEnabled: true,
         emailMagicLinkEnabled: false,
@@ -62,8 +63,13 @@ function setupFetch({
       })
     if (url.includes('/auth-policy'))
       return response({
+        identifierRestrictions: { signup: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } }, login: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } } },
         passwordLoginEnabled: true,
-        passwordlessEnabled: false,
+        emailMagicLinkEnabled: false,
+        emailOtpEnabled: false,
+        smsOtpEnabled: false,
+        socialLoginEnabled: false,
+        smsAutoProvisioningEnabled: false,
         minPasswordLength: 8,
         requireUppercase: false,
         requireLowercase: false,

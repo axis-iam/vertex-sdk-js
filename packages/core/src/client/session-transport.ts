@@ -1,5 +1,8 @@
 import type { PrimaryAuthentication, MfaProofMethod } from './authentication-transaction.js'
 import type { CreateIdentityOperation, CompleteIdentityOperation, IdentityProofPurpose, StartRegistration } from './identity.js'
+import type { MfaOperationReauthentication, MfaOperationType } from './account-security-operations.js'
+import { invitationSessionRoute } from './invitation-journeys.js'
+import type { InvitationSessionRequest } from './invitation-journeys.js'
 
 export class UnsupportedOperationError extends Error {
   readonly code = 'UNSUPPORTED_OPERATION'
@@ -29,9 +32,10 @@ export function providerAuthorization(providerId: string, proof: ProviderRegistr
 type EmptyAction = 'bootstrap' | 'session' | 'login' | 'complete' | 'cancel' | 'logout' | 'workspaces'
   | 'authMethods' | 'authPolicy' | 'profile' | 'security' | 'identifiers' | 'loginMethods' | 'providers'
   | 'sessions' | 'revokeOtherSessions' | 'organizations' | 'currentOrganization' | 'permissions'
-  | 'mfaStatus' | 'credentials' | 'recoveryRemaining' | 'removeTotp' | 'generateRecoveryCodes'
-  | 'totpEnroll' | 'webauthnEnroll' | 'transfers'
+  | 'mfaStatus' | 'credentials' | 'recoveryRemaining'
+  | 'webauthnEnroll' | 'transfers' | 'mfaCapabilities'
 export type SessionRequest =
+  | InvitationSessionRequest
   | { action: EmptyAction; purposeRef?: string }
   | { action: 'authenticate'; body: PrimaryAuthentication }
   | { action: 'magic'; body: { transactionId: string; proof: string; state: string } }
@@ -46,11 +50,26 @@ export type SessionRequest =
   | { action: 'checkPermission'; body: { permission: string; organizationId?: string | null } }
   | { action: 'identityCreate'; body: CreateIdentityOperation | { type: 'ACCOUNT_DELETE'; expectedLoginMethodVersion: number; payload: Record<string, never> }; idempotencyKey: string }
   | { action: 'identityGet' | 'identityCancel'; ref: string }
-  | { action: 'identityReauthenticate'; ref: string; body: { method: 'PASSWORD'; password: string } | { method: 'STEP_UP_PROOF'; ref: string } }
+  | { action: 'identityReauthenticate'; ref: string; body: { method: 'PASSWORD'; password: string } | { method: 'EMAIL_OTP'; challengeRef: string; code: string } }
+  | { action: 'identityCurrentChallenge'; ref: string; body: { identifierId: string } }
+  | { action: 'identityStepUpStart'; ref: string }
+  | { action: 'identityStepUpVerify'; ref: string; body: { challengeRef: string; code: string } }
+  | { action: 'identityWebAuthnStart'; ref: string; body: { challengeRef: string } }
+  | { action: 'identityWebAuthnVerify'; ref: string; body: { challengeRef: string; requestRef: string; credential: string } }
   | { action: 'identityChallenge'; ref: string; body: { targetProofMethod: 'EMAIL_OTP' | 'PHONE_OTP' } }
   | { action: 'identityComplete'; ref: string; body: CompleteIdentityOperation }
   | { action: 'identityTransfer'; ref: string; body: { decision: 'ACCEPT' | 'REJECT' } }
   | { action: 'identityAuthorize'; ref: string; body: { purpose: IdentityProofPurpose; methodId?: string } }
+  | { action: 'mfaOperationCreate'; body: { requestId: string; type: MfaOperationType; expectedLoginMethodVersion: number } }
+  | { action: 'mfaOperationGet' | 'mfaOperationBegin' | 'mfaOperationProviderCallback' | 'mfaOperationCancel'; ref: string }
+  | { action: 'mfaOperationReauthenticate'; ref: string; body: MfaOperationReauthentication }
+  | { action: 'mfaOperationChallenge'; ref: string; body: { method: 'EMAIL_OTP'; identifierId: string } }
+  | { action: 'mfaOperationAuthorize'; ref: string; body: { methodId: string } }
+  | { action: 'mfaOperationStepUpStart'; ref: string }
+  | { action: 'mfaOperationStepUpVerify'; ref: string; body: { challengeRef: string; code: string } }
+  | { action: 'mfaOperationWebAuthnStart'; ref: string; body: { challengeRef: string } }
+  | { action: 'mfaOperationWebAuthnVerify'; ref: string; body: { challengeRef: string; requestRef: string; credential: string } }
+  | { action: 'mfaOperationComplete'; ref: string; body: { code?: string } }
   | { action: 'registrationStart'; body: Omit<StartRegistration, 'organizationInvitationToken'>; idempotencyKey: string }
   | { action: 'registrationGet' | 'registrationChallenge' | 'registrationCancel'; ref: string }
   | { action: 'registrationComplete'; ref: string; body: { code: string } }
@@ -60,8 +79,7 @@ export type SessionRequest =
   | { action: 'stepUpVerify'; body: { ref: string; code: string } }
   | { action: 'stepUpWebAuthn'; body: { ref: string } }
   | { action: 'stepUpWebAuthnVerify'; body: { ref: string; credential: string } }
-  | { action: 'enrollmentReauth'; body: { method: 'totp' | 'webauthn'; password: string } }
-  | { action: 'totpVerify'; body: { ref: string; code: string } }
+  | { action: 'enrollmentReauth'; body: { method: 'webauthn'; password: string } }
   | { action: 'webauthnVerify'; body: { ref: string; credential: string } }
   | { action: 'recoveryVerify'; body: { code: string } }
 
@@ -75,6 +93,47 @@ const ref = (value: string) => {
 const segment = (value: string) => {
   if (!value || value === '.' || value === '..') throw new SessionTransportError('SESSION_PATH_INVALID')
   return encodeURIComponent(value)
+}
+
+function operationBody(input: SessionRequest): void {
+  const action = input.action
+  if (!action.startsWith('mfaOperation') && !['identityCurrentChallenge', 'identityStepUpStart', 'identityStepUpVerify', 'identityWebAuthnStart', 'identityWebAuthnVerify', 'identityReauthenticate'].includes(action)) return
+  const invalid = (): never => { throw new SessionTransportError('INVALID_OPERATION_PAYLOAD') }
+  const raw: unknown = 'body' in input ? input.body : {}
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) invalid()
+  const body = raw as Record<string, unknown>
+  const exact = (keys: string[], required = keys) => {
+    if (Object.keys(body).some(key => !keys.includes(key)) || required.some(key => !(key in body))) invalid()
+  }
+  const nonblank = (key: string, max = Number.MAX_SAFE_INTEGER) => {
+    const value = body[key]
+    if (typeof value !== 'string' || !value.trim() || value.length > max) invalid()
+  }
+  const opaque = (key: string) => { if (typeof body[key] !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body[key])) invalid() }
+  const code = () => { if (typeof body.code !== 'string' || !/^\d{6}$/.test(body.code)) invalid() }
+  switch (action) {
+    case 'mfaOperationCreate':
+      exact(['requestId', 'type', 'expectedLoginMethodVersion']); opaque('requestId')
+      if (!['TOTP_ENROLL', 'TOTP_DISABLE', 'RECOVERY_CODES_GENERATE'].includes(String(body.type)) || typeof body.expectedLoginMethodVersion !== 'number' || !Number.isSafeInteger(body.expectedLoginMethodVersion) || body.expectedLoginMethodVersion < 0) invalid()
+      return
+    case 'identityReauthenticate': case 'mfaOperationReauthenticate':
+      if (body.method === 'PASSWORD') { exact(['method', 'password']); nonblank('password', 128) }
+      else if (body.method === 'EMAIL_OTP') { exact(['method', 'challengeRef', 'code']); opaque('challengeRef'); code() }
+      else invalid()
+      return
+    case 'identityCurrentChallenge': case 'mfaOperationChallenge':
+      exact(action === 'identityCurrentChallenge' ? ['identifierId'] : ['method', 'identifierId'])
+      if (action === 'mfaOperationChallenge' && body.method !== 'EMAIL_OTP') invalid()
+      if (typeof body.identifierId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.identifierId)) invalid()
+      return
+    case 'mfaOperationAuthorize': exact(['methodId']); nonblank('methodId'); return
+    case 'identityStepUpVerify': case 'mfaOperationStepUpVerify': exact(['challengeRef', 'code']); opaque('challengeRef'); code(); return
+    case 'identityWebAuthnStart': case 'mfaOperationWebAuthnStart': exact(['challengeRef']); opaque('challengeRef'); return
+    case 'identityWebAuthnVerify': case 'mfaOperationWebAuthnVerify':
+      exact(['challengeRef', 'requestRef', 'credential']); opaque('challengeRef'); opaque('requestRef'); nonblank('credential', 65536); return
+    case 'mfaOperationComplete': exact(['code'], []); if ('code' in body) code(); return
+    default: exact([])
+  }
 }
 const routes = {
   bootstrap: ['GET', '/session/bootstrap'], session: ['GET', '/session'], login: ['POST', '/session/login'],
@@ -97,10 +156,9 @@ const routes = {
   stepUpWebAuthn: ['POST', '/step-up/webauthn/start'], stepUpWebAuthnVerify: ['POST', '/step-up/webauthn/verify'],
   mfaStatus: ['GET', '/api/api/v1/auth/mfa/status'], credentials: ['GET', '/api/api/v1/auth/mfa/webauthn/credentials'],
   recoveryRemaining: ['GET', '/api/api/v1/auth/mfa/recovery-codes/remaining'], recoveryVerify: ['POST', '/api/api/v1/auth/mfa/recovery-codes/verify'],
-  removeTotp: ['DELETE', '/api/api/v1/auth/mfa/totp'], generateRecoveryCodes: ['POST', '/api/api/v1/auth/mfa/recovery-codes/generate'],
-  enrollmentReauth: ['POST', '/mfa/enrollment/reauth'], totpEnroll: ['POST', '/mfa/totp/enroll'],
-  totpVerify: ['POST', '/mfa/totp/enroll/verify'], webauthnEnroll: ['POST', '/mfa/webauthn/register/start'],
+  enrollmentReauth: ['POST', '/mfa/enrollment/reauth'], webauthnEnroll: ['POST', '/mfa/webauthn/register/start'],
   webauthnVerify: ['POST', '/mfa/webauthn/register/finish'],
+  mfaCapabilities: ['GET', '/mfa/capabilities'],
 } as const
 
 /** Same-origin adapter for the delivered finite Console contract, also replaceable by customer BFFs. */
@@ -118,18 +176,43 @@ export class CookieSessionTransport implements SessionTransport {
       throw new SessionTransportError('SESSION_ORIGIN_INVALID')
   }
   async request(input: SessionRequest): Promise<unknown> {
+    operationBody(input)
     if (input.action === 'authorize') providerAuthorization(input.body.providerId, {
       ...(input.body.registrationGrantToken !== undefined ? { registrationGrantToken: input.body.registrationGrantToken } : {}),
       ...(input.body.registrationAccessCode !== undefined ? { registrationAccessCode: input.body.registrationAccessCode } : {}),
     } as ProviderRegistrationProof)
     let method: string, path: string
-    if (input.action.startsWith('identity') && 'ref' in input) {
+    if (input.action.startsWith('invitation')) {
+      ;[method, path] = invitationSessionRoute(input as InvitationSessionRequest)
+    } else if (input.action.startsWith('identity') && 'ref' in input) {
       const actions: Record<string, string> = { identityGet: '', identityCancel: '/cancel', identityReauthenticate: '/reauthenticate',
-        identityChallenge: '/challenges', identityComplete: '/complete', identityTransfer: '/confirm-transfer', identityAuthorize: '/authorize' }
+        identityCurrentChallenge: '/current-account/challenges', identityStepUpStart: '/step-up/start', identityStepUpVerify: '/step-up/verify', identityWebAuthnStart: '/step-up/webauthn/start', identityWebAuthnVerify: '/step-up/webauthn/verify', identityChallenge: '/challenges', identityComplete: '/complete', identityTransfer: '/confirm-transfer', identityAuthorize: '/authorize' }
       const suffix = actions[input.action]
       if (suffix === undefined) throw new UnsupportedOperationError()
       method = input.action === 'identityGet' ? 'GET' : 'POST'
       path = '/identity-operations/' + ref(input.ref) + suffix
+    } else if (input.action.startsWith('mfaOperation') && 'ref' in input) {
+      const actions: Record<string, string> = {
+        mfaOperationGet: '',
+        mfaOperationReauthenticate: '/reauthenticate',
+        mfaOperationChallenge: '/challenges',
+        mfaOperationAuthorize: '/authorize',
+        mfaOperationProviderCallback: '/provider-callback',
+        mfaOperationStepUpStart: '/step-up/start',
+        mfaOperationStepUpVerify: '/step-up/verify',
+        mfaOperationWebAuthnStart: '/step-up/webauthn/start',
+        mfaOperationWebAuthnVerify: '/step-up/webauthn/verify',
+        mfaOperationBegin: '/begin',
+        mfaOperationComplete: '/complete',
+        mfaOperationCancel: '/cancel',
+      }
+      const suffix = actions[input.action]
+      if (suffix === undefined) throw new UnsupportedOperationError()
+      method = input.action === 'mfaOperationGet' ? 'GET' : 'POST'
+      path = '/mfa/operations/' + ref(input.ref) + suffix
+    } else if (input.action === 'mfaOperationCreate') {
+      method = 'POST'
+      path = '/mfa/operations'
     } else if (input.action.startsWith('registration') && 'ref' in input) {
       const actions: Record<string, string> = { registrationGet: '', registrationCancel: '/cancel', registrationChallenge: '/challenges', registrationComplete: '/complete' }
       const suffix = actions[input.action]

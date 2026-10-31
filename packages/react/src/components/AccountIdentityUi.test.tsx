@@ -1,3 +1,4 @@
+import { managedIdentifiers } from '../core/identity-management-fixtures.test-support'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { OAuthClient } from '../core/oauth-client'
@@ -7,15 +8,18 @@ import { IamUiProvider } from '../provider/IamUiProvider'
 import { AccountProfilePanel } from './AccountProfilePanel'
 import { ConnectedAccounts } from './ConnectedAccounts'
 import { AccountCenter } from './AccountCenter'
+import { flowCapabilities } from '../core/auth-flow-fixtures.test-support'
 import { SessionTransportError } from '@axis-iam/vertex'
+import type { AuthClient } from '../core/auth-client'
+import { securityFixture, securityId, securityRef } from '../core/account-security-fixtures.test-support'
 
-let client: OAuthClient
+let client: AuthClient
 vi.mock('../provider/IamProvider', () => ({ useIamContext: () => ({ client, user: client.state.getUser(), isAuthenticated: true, isLoaded: true }) }))
 const response = (value: unknown) => new Response(JSON.stringify(value))
 let items: { id: string; kind: string; displayValue: string; status: string; verificationState: string; isPrimary: boolean; managedBy: string | null }[]
 let operationState: string
 const op = () => ({ id: 'fixture-operation-ref', type: 'ADD', state: operationState, expiresAt: new Date(Date.now() + 600000).toISOString(),
-  requiredProofs: [{ purpose: 'CURRENT_ACCOUNT', methods: ['PASSWORD'], strength: 'POLICY', satisfied: false }] })
+  proofOptions: [{ method: 'PASSWORD' }], completion: null, requiredProofs: [{ purpose: 'CURRENT_ACCOUNT', methods: ['PASSWORD'], strength: 'POLICY', satisfied: false }] })
 const fetchMock = vi.fn<typeof fetch>()
 beforeEach(() => {
   sessionStorage.clear()
@@ -29,15 +33,18 @@ beforeEach(() => {
   operationState = 'AWAITING_REAUTH'
   fetchMock.mockReset().mockImplementation(async (url, init) => {
     const path = String(url)
-    if (path.endsWith('/identifiers')) return response({ loginMethodVersion: 1, items })
+    if (path.endsWith('/identifiers')) return response(managedIdentifiers(items, 1))
     if (path.endsWith('/login-methods')) return response({ loginMethodVersion: 1, methods: [{ methodId: 'method-1', kind: 'PROVIDER', providerId: 'missing-provider', roles: ['FIRST_FACTOR'], status: 'AVAILABLE', capabilities: { unlink: false }, unavailableReasons: [] }] })
     if (path.endsWith('/linkable-identity-providers')) return response([])
     if (path.endsWith('/profile')) return response({ userId: 'u', displayName: 'Sample', email: 'stale@example.invalid', emailVerified: false, username: null, avatarUrl: null, status: 'ACTIVE' })
+    if (path.endsWith('/mfa/capabilities')) return response({ loginMethodVersion: 4, totpEnroll: { allowed: true, proofRequirement: 'SESSION', proofOptions: [], reasonCode: null }, totpDisable: { allowed: false, proofRequirement: 'SESSION', proofOptions: [], reasonCode: 'METHOD_UNAVAILABLE' }, recoveryCodesGenerate: { allowed: true, proofRequirement: 'SESSION', proofOptions: [], reasonCode: null } })
+    if (path.endsWith('/mfa/recovery-codes/remaining')) return response({ remaining: 0 })
     if (path.endsWith('/security')) return response({ emailVerified: false, passwordCredentialPresent: true, mfaEnrolled: false, activeSessionCount: 1 })
     if (path.endsWith('/cancel')) { operationState = 'CANCELLED'; return response(op()) }
     if (path.includes('/identity-operations')) return response(op())
     throw new Error(`Unexpected fixture route ${path} ${init?.method}`)
   })
+  vi.spyOn(client, 'getPublicAuthMethods').mockResolvedValue(flowCapabilities)
   vi.stubGlobal('fetch', fetchMock)
 })
 afterEach(() => { cleanup(); client.dispose(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
@@ -52,6 +59,60 @@ async function add() {
   return dialog
 }
 describe('account identity UI contract', () => {
+  it.each(['oauth_tokens', 'server_session'] as const)('%s new LINK confirms the returned masked target, not the catalog, before committing', async mode => {
+    client.dispose()
+    const f = await securityFixture(mode)
+    client = f.client
+    const receipt = mode === 'server_session' ? securityRef : securityId
+    let phase = 'AWAITING_REAUTH', authorized = false
+    const target = { providerId: securityId, maskedDisplayName: 'V*** A***', maskedEmail: 'v***@verified.invalid', reference: 'a'.repeat(64) }
+    const wire = () => ({ [mode === 'server_session' ? 'ref' : 'id']: receipt, type: 'LINK', state: phase, expiresAt: new Date(Date.now() + 600_000).toISOString(), completion: null,
+      proofOptions: [{ method: 'PASSWORD' }], providerTarget: ['READY', 'COMMITTED'].includes(phase) ? target : null,
+      requiredProofs: [{ purpose: 'CURRENT_ACCOUNT', methods: ['PASSWORD'], strength: 'POLICY', satisfied: phase !== 'AWAITING_REAUTH' }, { purpose: 'TARGET_OWNERSHIP', methods: ['PROVIDER'], strength: 'OWNERSHIP', satisfied: ['READY', 'COMMITTED'].includes(phase) }] })
+    const actual = f.fetchMock.getMockImplementation()!
+    f.fetchMock.mockImplementation(async (url, init) => {
+      const path = new URL(String(url)).pathname
+      if (path.endsWith('/linkable-identity-providers')) return response([{ id: securityId, displayName: 'Catalog directory label', providerType: 'OIDC', protocol: 'OIDC', enabled: true, linked: false, linkedAt: null, supportsAccountLinking: true, canLink: true, canReauthenticate: false, unavailableReasons: [] }])
+      if (path.includes('/identity-operations')) {
+        if (path.endsWith('/reauthenticate')) phase = 'AWAITING_PROOF'
+        if (path.endsWith('/authorize')) { authorized = true; return response({ [mode === 'server_session' ? 'ref' : 'authorizationId']: mode === 'server_session' ? receipt : 'provider-auth', authorizationUrl: 'https://provider.invalid/authorize', expiresAt: new Date(Date.now() + 60_000).toISOString() }) }
+        if (path.endsWith('/provider-callback') || (init?.method === 'GET' && authorized)) phase = 'READY'
+        if (path.endsWith('/complete')) phase = 'COMMITTED'
+        return response(wire())
+      }
+      return actual(url, init)
+    })
+    const popup = { location: { href: 'about:blank' }, closed: false, close: vi.fn() }
+    vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
+    render(<IamUiProvider><ConnectedAccounts redirectUri="/callback" /></IamUiProvider>)
+    await screen.findByText('Catalog directory label')
+    fireEvent.click(screen.getByText('Connect a provider', { selector: 'summary' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Connect', exact: true }))
+    await screen.findByLabelText('Confirm your current password')
+    expect(screen.getByText(/Waiting for the verified external account/)).toBeTruthy()
+    expect(screen.queryByRole('region', { name: 'External account to connect' })).toBeNull()
+    fireEvent.change(screen.getByLabelText('Confirm your current password'), { target: { value: 'fixture-password' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and continue' }))
+    await screen.findByRole('button', { name: 'Use Catalog directory label' })
+    fireEvent.click(screen.getByRole('button', { name: 'Use Catalog directory label' }))
+    await screen.findByRole('button', { name: 'I completed provider confirmation' })
+    popup.location.href = mode === 'server_session' ? `${window.location.origin}/console/session/callback?operation_id=upstream&authorization_id=provider-auth&identity_operation=proof_pending` : `${window.location.origin}/callback?operation_id=${receipt}&authorization_id=provider-auth&identity_operation=proof_pending`
+    fireEvent.click(screen.getByRole('button', { name: 'I completed provider confirmation' }))
+    const presentation = await screen.findByRole('region', { name: 'External account to connect' })
+    expect(within(presentation).getByText(target.maskedDisplayName)).toBeTruthy()
+    expect(within(presentation).getByText(target.maskedEmail)).toBeTruthy()
+    expect(presentation.textContent).not.toContain('Catalog directory label')
+    expect(document.body.innerHTML).not.toContain(target.reference)
+    expect(f.fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/complete'))).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm connection' }))
+    await screen.findByRole('heading', { name: 'Change completed', exact: true })
+    const complete = f.fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/complete'))
+    expect(complete).toHaveLength(1)
+    expect(JSON.parse(String(complete[0][1]?.body))).toEqual({ proofs: [] })
+    expect(screen.getByText(target.maskedEmail)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Done', exact: true }))
+    expect(identityOperationStore(client).getSnapshot().operation).toBeNull()
+  })
   it('binds the profile email and badge to the same primary identifier, not legacy profile booleans', async () => {
     render(<IamUiProvider><AccountProfilePanel /></IamUiProvider>)
     expect(await screen.findByText('primary@example.invalid')).toBeTruthy()
@@ -73,10 +134,12 @@ describe('account identity UI contract', () => {
     items[0].managedBy = 'Directory SCIM'
     render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
     await screen.findByText('primary@example.invalid')
-    expect(screen.getByText(/Directory SCIM/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Manage emails' }))
+    expect(screen.getByText('Managed by your organization')).toBeTruthy()
+    expect(screen.queryByText(/Directory SCIM/)).toBeNull()
     expect(screen.getByText('Connection information unavailable')).toBeTruthy()
     expect(screen.queryByLabelText('Operation ID')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Replace' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Replace' }).matches(':disabled')).toBe(true)
   })
   it('continues the same operation after closing, clears secret inputs, and never sends cancel on close', async () => {
     const dialog = await add()

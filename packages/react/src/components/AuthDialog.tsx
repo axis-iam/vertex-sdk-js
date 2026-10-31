@@ -65,16 +65,17 @@ export function AuthDialog({
   children,
 }: AuthDialogProps) {
   const { localization: l } = useIamUi()
-  const intent = useRef<AuthDialogView>(initialView)
+  const candidateSignup = authDialogCanShowSignUp(mode, allowSignUp, signUpProps?.registrationGrant)
+  const initialIntent = candidateSignup ? initialView : 'sign-in'
+  const intent = useRef<AuthDialogView>(initialIntent)
   const flow = useAuthFlow({
-    initialIntent: initialView,
+    initialIntent,
     registrationGrant: signUpProps?.registrationGrant,
     onSignInSuccess: signInProps?.onSuccess,
     onSignUpSuccess: signUpProps?.onSuccess,
     onError: (error) => (intent.current === 'sign-up' ? signUpProps?.onError : signInProps?.onError)?.(error),
   })
   intent.current = flow.state.intent
-  const candidateSignup = authDialogCanShowSignUp(mode, allowSignUp, signUpProps?.registrationGrant)
   const canSignUp =
     candidateSignup &&
     Boolean(
@@ -109,7 +110,7 @@ export function AuthDialog({
         !dialog.current?.contains(active)
           ? active
           : null
-      if (flow.state.step !== 'verification' || flow.state.registration.status !== 'PENDING_VERIFICATION')
+      if (!initialMount.current && (flow.state.step !== 'verification' || flow.state.registration.status !== 'PENDING_VERIFICATION'))
         selectView(requested.current ?? initialView)
       requested.current = null
       close.current?.focus()
@@ -233,6 +234,7 @@ export function AuthDialog({
                     registrationGrant={signUpProps?.registrationGrant}
                     presentation="dialog"
                     renderProviderButton={signInProps?.renderProviderButton}
+                    providerNavigation={signInProps?.providerNavigation}
                     onForgotPassword={signInProps?.onForgotPassword}
                     forgotPasswordUrl={signInProps?.forgotPasswordUrl}
                     showIntentSwitch={false}

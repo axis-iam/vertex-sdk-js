@@ -1,4 +1,4 @@
-import { parseAuthCapabilities, parseDefaultLogin, parseSignupIdentifierKinds, parsePasswordIdentifierKinds } from '@axis-iam/vertex'
+import { parseIdentifierRestrictions, parseAuthCapabilities, parseDefaultLogin, parseSignupIdentifierKinds, parsePasswordIdentifierKinds } from '@axis-iam/vertex'
 import { requestJson, requestNoContent } from './http-client'
 import { IamApiError, IamConfigurationError } from './types'
 import type { AuthClient } from './auth-client'
@@ -12,6 +12,8 @@ export function validateFlowMetadata(
   policy: PublicAuthPolicyResponse,
 ): void {
   validateIdentifierCapabilities(capabilities)
+  parseIdentifierRestrictions(policy.identifierRestrictions)
+  if (JSON.stringify(policy.identifierRestrictions) !== JSON.stringify(capabilities.identifierRestrictions)) throw malformed('identifier restriction snapshot')
   parseDefaultLogin(policy.defaultLogin)
   parseSignupIdentifierKinds(policy.allowedSignupIdentifierKinds)
   const passwordKinds = parsePasswordIdentifierKinds(policy.allowedPasswordIdentifierKinds)
@@ -50,6 +52,11 @@ export function validateFlowMetadata(
       policy.requireDigit,
       policy.requireSpecialChar,
       policy.breachedPasswordCheck,
+      policy.emailMagicLinkEnabled,
+      policy.emailOtpEnabled,
+      policy.smsOtpEnabled,
+      policy.socialLoginEnabled,
+      policy.smsAutoProvisioningEnabled,
     ].every((x) => typeof x === 'boolean') ||
     !['OPEN', 'INVITE_REQUIRED', 'DISABLED'].includes(policy.signupMode) ||
     !Array.isArray(policy.allowedRegistrationGrantTypes) ||

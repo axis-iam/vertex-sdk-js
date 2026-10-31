@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
-import type { AuthMethodIdpProviderResponse, IamUser, PublicAuthMethodsResponse, SocialProviderConfig } from '../../core/types'
+import type { AuthMethodIdpProviderResponse, IamUser, PublicAuthMethodsResponse } from '../../core/types'
 import type { AuthClient } from '../../core/auth-client'
 
 export type CredentialMethod = 'password' | 'sms' | 'magic_link' | 'email_otp'
@@ -147,7 +147,6 @@ export function getAvailableCredentialMethods(authMethods: PublicAuthMethodsResp
 
 export function getAvailableProviderOptions(
   authMethods: PublicAuthMethodsResponse,
-  socialProviders: SocialProviderConfig[] = [],
   intent: 'sign-in' | 'sign-up' = 'sign-in',
 ): AuthMethodIdpProviderResponse[] {
   if (!authMethods.socialLoginEnabled) return []
@@ -158,23 +157,10 @@ export function getAvailableProviderOptions(
       && (intent === 'sign-up' ? provider.availableForSignup : provider.availableForLogin)
       && typeof provider.authorizationUrl === 'string'
       && provider.authorizationUrl.length > 0)
-    .map((provider) => {
-      const override = socialProviders.find((item) => legacyProviderMatches(provider, item))
-      return override?.displayName ? { ...provider, displayName: override.displayName } : provider
-    })
 }
 
 export function toError(err: unknown, fallback: string): Error {
   return err instanceof Error ? err : new Error(fallback)
-}
-
-function legacyProviderMatches(provider: AuthMethodIdpProviderResponse, legacy: SocialProviderConfig): boolean {
-  const key = legacy.provider.toLowerCase()
-  return [
-    provider.id,
-    provider.providerType,
-    provider.displayName,
-  ].some((value) => value.toLowerCase() === key)
 }
 
 /** Bind a final authentication response to this mounted form and current session. */

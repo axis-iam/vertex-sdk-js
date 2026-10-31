@@ -64,11 +64,16 @@ const googleAuthMethodProvider: AuthMethodIdpProviderResponse = {
 }
 
 const publicAuthPolicy = {
+  identifierRestrictions: { signup: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } }, login: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } } },
   defaultLogin: { identifierKind: 'EMAIL', method: 'PASSWORD' },
   allowedSignupIdentifierKinds: ['EMAIL', 'USERNAME'],
   allowedPasswordIdentifierKinds: ['EMAIL', 'USERNAME', 'PHONE'],
   passwordLoginEnabled: true,
-  passwordlessEnabled: true,
+  emailMagicLinkEnabled: true,
+  emailOtpEnabled: false,
+  smsOtpEnabled: false,
+  socialLoginEnabled: true,
+  smsAutoProvisioningEnabled: false,
   minPasswordLength: 8,
   requireUppercase: false,
   requireLowercase: false,
@@ -91,6 +96,7 @@ const publicAuthPolicy = {
 } as const
 
 const publicAuthMethods: PublicAuthMethodsResponse = {
+  identifierRestrictions: { signup: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } }, login: { email: { restricted: false }, phone: { restricted: false, allowedRegions: null } } },
   clientId: 'my-app',
   passwordLoginEnabled: true,
   emailMagicLinkEnabled: true,
@@ -168,6 +174,7 @@ describe('OAuthClient', () => {
   })
 
   afterEach(() => {
+    client.dispose()
     vi.useRealTimers()
     vi.restoreAllMocks()
   })
@@ -758,7 +765,7 @@ describe('OAuthClient', () => {
       expect(client.tokenManager.getRefreshToken()).toBe('new-session')
     })
 
-    it('uses one Direct request for concurrent manual refresh callers', async () => {
+    it('uses one OAuth token request for concurrent manual refresh callers', async () => {
       let complete!: (response: Response) => void
       fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
         if (String(input).includes('openid-configuration'))
@@ -779,12 +786,12 @@ describe('OAuthClient', () => {
       storeOAuthTokens(client.tokenManager, makeTokenSet())
       const first = client.refreshToken()
       expect(client.refreshToken()).toBe(first)
-      await Promise.resolve()
+      await vi.waitFor(() => expect(complete).toBeTypeOf('function'))
       complete(new Response(JSON.stringify(makeTokenSet({ refresh_token: 'rotated' }))))
       await first
-      expect(fetchMock.mock.calls.filter((call) => String(call[0]).endsWith('/token/refresh'))).toHaveLength(
-        1,
-      )
+      const refreshCalls = fetchMock.mock.calls.filter((call) => String(call[0]) === mockOidcConfig.token_endpoint)
+      expect(refreshCalls).toHaveLength(1)
+      expect(new URLSearchParams(String(refreshCalls[0]![1].body)).get('grant_type')).toBe('refresh_token')
       expect(client.tokenManager.getRefreshToken()).toBe('rotated')
       expect(client.tokenManager.getRoles()).toEqual(['member'])
     })
@@ -942,11 +949,13 @@ describe('OAuthClient', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1)
     })
 
-    it('clears tokens', () => {
+    it('clears tokens and awaits the logout transport', async () => {
       storeOAuthTokens(client.tokenManager, makeTokenSet())
+      fetchMock.mockResolvedValueOnce({ ok: true, status: 204 })
       expect(client.isAuthenticated()).toBe(true)
-      client.logout()
+      const pending = client.logout()
       expect(client.isAuthenticated()).toBe(false)
+      await pending
     })
 
     it('builds logout URL with id_token_hint', async () => {

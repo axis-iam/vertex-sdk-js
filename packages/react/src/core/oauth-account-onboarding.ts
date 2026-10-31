@@ -12,8 +12,6 @@ import type {
   ChangePasswordInput,
   OIDCConfiguration,
   OrganizationSwitchResponse,
-  PublicOrganizationInvitationAcceptResponse,
-  PublicOrganizationInvitationPreview,
 } from './types'
 
 export interface OAuthAccountOnboardingClientOptions {
@@ -140,24 +138,6 @@ export class OAuthAccountOnboardingClient {
       json: input,
       bearerToken: token,
     })
-  }
-
-  async previewOrganizationInvitation(token: string): Promise<PublicOrganizationInvitationPreview> {
-    const config = await this.discover()
-    return await requestJson<PublicOrganizationInvitationPreview>(
-      `${config.issuer}/api/v1/auth/organization-invitations/${encodeURIComponent(token)}`,
-    )
-  }
-
-  async acceptOrganizationInvitation(token: string): Promise<PublicOrganizationInvitationAcceptResponse> {
-    const config = await this.discover()
-    return await requestJson<PublicOrganizationInvitationAcceptResponse>(
-      `${config.issuer}/api/v1/auth/organization-invitations/${encodeURIComponent(token)}/accept`,
-      {
-        method: 'POST',
-        bearerToken: this.getAccessToken(),
-      },
-    )
   }
 
   private requireCurrentAccessToken(): string {
