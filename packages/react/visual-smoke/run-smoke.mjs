@@ -31,15 +31,15 @@ try {
 
   const cases = [
     { name: 'desktop-light', width: 1440, height: 900, scenario: 'success', scheme: 'light', themeSwitch: true },
-    { name: 'desktop-dark', width: 1440, height: 900, scenario: 'success', scheme: 'dark', section: 3 },
-    { name: 'tablet-light', width: 768, height: 1024, scenario: 'success', scheme: 'light', section: 1 },
-    { name: 'tablet-dark', width: 768, height: 1024, scenario: 'success', scheme: 'dark', section: 2 },
+    { name: 'desktop-dark', width: 1440, height: 900, scenario: 'success', scheme: 'dark', section: 'permissions' },
+    { name: 'tablet-light', width: 768, height: 1024, scenario: 'success', scheme: 'light', section: 'password' },
+    { name: 'tablet-dark', width: 768, height: 1024, scenario: 'success', scheme: 'dark', section: 'sessions' },
     { name: 'mobile-light', width: 390, height: 844, scenario: 'success', scheme: 'light', mobile: true },
     { name: 'mobile-dark', width: 390, height: 844, scenario: 'success', scheme: 'dark', mobile: true },
     { name: 'system-dark-to-light', width: 768, height: 1024, scenario: 'success', scheme: 'system', systemDark: true, systemSwitch: true },
     { name: 'chinese-dark-mobile', width: 390, height: 844, scenario: 'success', scheme: 'dark', locale: 'zh', mobile: true },
-    { name: 'long-english-desktop', width: 1440, height: 900, scenario: 'long', scheme: 'light', locale: 'long', section: 3 },
-    { name: 'tablet-empty', width: 768, height: 1024, scenario: 'empty', scheme: 'light', section: 2 },
+    { name: 'long-english-desktop', width: 1440, height: 900, scenario: 'long', scheme: 'light', locale: 'long', section: 'permissions' },
+    { name: 'tablet-empty', width: 768, height: 1024, scenario: 'empty', scheme: 'light', section: 'sessions' },
     { name: 'mobile-error-retry', width: 390, height: 844, scenario: 'error', scheme: 'dark', retry: true },
     { name: 'mobile-loading', width: 390, height: 844, scenario: 'loading', scheme: 'light' },
     { name: 'desktop-busy', width: 1440, height: 900, scenario: 'busy', scheme: 'dark', busy: true },
@@ -100,7 +100,7 @@ async function runCase(item) {
     if (item.scenario === 'success' || item.scenario === 'busy' || item.scenario === 'long') {
       await waitFor(async () => await evaluate(cdp, `document.querySelector('.axis-iam-profile-identity-copy strong') !== null`))
     } else if (item.scenario === 'empty') {
-      await evaluate(cdp, `Array.from(document.querySelectorAll('button')).find((button) => button.textContent === 'Sessions').click()`)
+      await selectSection(cdp, 'sessions', item.mobile)
       await waitFor(async () => await evaluate(cdp, `document.body.innerText.includes('No active sessions')`))
     } else if (item.scenario === 'error') {
       await waitFor(async () => await evaluate(cdp, `document.querySelectorAll('[role="alert"]').length >= 1`))
@@ -123,7 +123,7 @@ async function runCase(item) {
   }
 
   if (item.themeSwitch) {
-    await selectSection(cdp, 1, false)
+    await selectSection(cdp, 'password', false)
     await waitFor(async () => await evaluate(cdp, `document.getElementById('iam-current-password') !== null`))
     await evaluate(cdp, `(() => {
       const setValue = (id, value) => {
@@ -138,24 +138,14 @@ async function runCase(item) {
     await waitFor(async () => await evaluate(cdp, `document.querySelector('[role="dialog"]').dataset.colorScheme === 'dark'`))
     const passwordValue = await evaluate(cdp, `document.getElementById('iam-current-password').value`)
     if (passwordValue !== 'typed-before-theme-switch') throw new Error(`${item.name} cleared typed password during theme switch`)
-    await selectSection(cdp, 3, false)
-    await waitFor(async () => await evaluate(cdp, `document.querySelector('.axis-iam-permission-checker') !== null`))
-    await evaluate(cdp, `(() => {
-      const setValue = (id, value) => {
-        const input = document.getElementById(id)
-        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
-        setter.call(input, value)
-        input.dispatchEvent(new Event('input', { bubbles: true }))
-      }
-      const details = document.querySelector('.axis-iam-permission-checker')
-      details.open = true
-      setValue('iam-permission-check', 'orders:read')
-    })()`)
+    await selectSection(cdp, 'permissions', false)
+    await waitFor(async () => await evaluate(cdp, `document.querySelector('.axis-iam-permission-list') !== null`))
+    const summaryBefore = await evaluate(cdp, `document.querySelector('.axis-iam-permission-list').textContent`)
     const permissionGets = requests.filter((url) => url.includes('/api/v1/auth/me/permissions') && !url.includes(':check')).length
     await evaluate(cdp, `document.getElementById('theme-light').click()`)
     await waitFor(async () => await evaluate(cdp, `document.querySelector('[role="dialog"]').dataset.colorScheme === 'light'`))
-    const preserved = await evaluate(cdp, `({ value: document.getElementById('iam-permission-check').value, active: document.querySelectorAll('.axis-ac-nav button')[3].getAttribute('aria-current') })`)
-    if (preserved.value !== 'orders:read' || preserved.active !== 'page') throw new Error(`${item.name} lost permission form or section state: ${JSON.stringify(preserved)}`)
+    const preserved = await evaluate(cdp, `({ summary: document.querySelector('.axis-iam-permission-list').textContent, active: document.querySelectorAll('.axis-ac-nav button')[5].getAttribute('aria-current'), checker: !!document.querySelector('.axis-iam-permission-checker') })`)
+    if (preserved.summary !== summaryBefore || preserved.active !== 'page' || preserved.checker) throw new Error(`${item.name} lost permission summary or section state: ${JSON.stringify(preserved)}`)
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250))
     const permissionGetsAfter = requests.filter((url) => url.includes('/api/v1/auth/me/permissions') && !url.includes(':check')).length
     if (permissionGetsAfter !== permissionGets) throw new Error(`${item.name} refetched permissions during theme switch`)
@@ -163,11 +153,11 @@ async function runCase(item) {
 
   if (item.systemSwitch) {
     await waitFor(async () => await evaluate(cdp, `document.querySelector('[role="dialog"]').dataset.colorScheme === 'dark'`))
-    await selectSection(cdp, 1, false)
+    await selectSection(cdp, 'password', false)
     await evaluate(cdp, `(() => { const input = document.getElementById('iam-current-password'); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(input, 'system-theme-value'); input.dispatchEvent(new Event('input', { bubbles: true })) })()`)
     await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] })
     await waitFor(async () => await evaluate(cdp, `document.querySelector('[role="dialog"]').dataset.colorScheme === 'light'`))
-    const systemState = await evaluate(cdp, `({ value: document.getElementById('iam-current-password').value, active: document.querySelectorAll('.axis-ac-nav button')[1].getAttribute('aria-current') })`)
+    const systemState = await evaluate(cdp, `({ value: document.getElementById('iam-current-password').value, active: document.querySelectorAll('.axis-ac-nav button')[2].getAttribute('aria-current') })`)
     if (systemState.value !== 'system-theme-value' || systemState.active !== 'page') throw new Error(`${item.name} lost state following system theme`)
   }
 
@@ -180,7 +170,7 @@ async function runCase(item) {
     if (mobile.width !== item.width || mobile.height !== item.height || !mobile.backVisible) throw new Error(`${item.name} did not render as a full-screen mobile dialog: ${JSON.stringify(mobile)}`)
     await evaluate(cdp, `document.querySelector('.axis-ac-back').click()`)
     await waitFor(async () => await evaluate(cdp, `document.querySelector('[role="dialog"]').classList.contains('axis-ac-menu')`))
-    await evaluate(cdp, `document.querySelectorAll('.axis-ac-nav button')[2].click()`)
+    await selectSection(cdp, 'sessions', true)
     await waitFor(async () => await evaluate(cdp, `document.querySelector('.axis-iam-session-current') !== null`))
   }
 
@@ -238,30 +228,28 @@ async function runAuthDialogCase(cdp, item, requests, target) {
   await waitFor(async () => await evaluate(cdp, `document.querySelector('[role="dialog"]') !== null`))
   const initial = await evaluate(cdp, `(() => { const dialog = document.querySelector('[role="dialog"]'); return { focus: document.activeElement?.getAttribute('aria-label'), scheme: dialog.dataset.colorScheme, hasIdentifier: document.querySelector('input[placeholder*="example.com"]') !== null } })()`)
   if (initial.focus !== (item.locale === 'zh' ? '关闭认证窗口' : 'Close authentication dialog') || !initial.hasIdentifier) throw new Error(`${item.name} did not focus the localized close control or render sign in: ${JSON.stringify(initial)}`)
+  await evaluate(cdp, `window.__authDialogStorageBaseline = JSON.stringify(Object.entries(sessionStorage).sort(([a], [b]) => a.localeCompare(b)))`)
 
   const tabText = item.locale === 'zh' ? '注册' : item.locale === 'long' ? 'Create a new account for your organization with deliberately extended explanatory wording' : 'Sign up'
   const signInTabText = item.locale === 'zh' ? '登录' : item.locale === 'long' ? 'Sign in using your organization account with deliberately extended explanatory wording' : 'Sign in'
-  await evaluate(cdp, `Array.from(document.querySelectorAll('[role="tab"]')).find((node) => node.textContent === ${JSON.stringify(tabText)}).click()`)
+  await evaluate(cdp, `Array.from(document.querySelectorAll('.axis-iam-auth-dialog-content button')).find((node) => node.textContent.includes(${JSON.stringify(tabText)})).click()`)
   await waitFor(async () => await evaluate(cdp, `document.querySelector('input[placeholder="you@example.com"]') !== null`))
-  await evaluate(cdp, `(() => {
-    const setValue = (selector, value, index = 0) => {
-      const input = document.querySelectorAll(selector)[index]
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
-      setter.call(input, value)
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    }
-    setValue('input[placeholder="you@example.com"]', 'roundtrip@example.com')
-    setValue('input[type="password"]', 'roundtrip-password', 0)
-    setValue('input[type="password"]', 'roundtrip-password', 1)
-  })()`)
-  await evaluate(cdp, `Array.from(document.querySelectorAll('[role="tab"]')).find((node) => node.textContent === ${JSON.stringify(signInTabText)}).click()`)
+  await evaluate(cdp, `Array.from(document.querySelectorAll('.axis-iam-auth-dialog-content button')).find((node) => node.textContent.includes(${JSON.stringify(signInTabText)})).click()`)
   await waitFor(async () => await evaluate(cdp, `document.querySelector('input[placeholder*="example.com"]') !== null`))
-  await evaluate(cdp, `Array.from(document.querySelectorAll('[role="tab"]')).find((node) => node.textContent === ${JSON.stringify(tabText)}).click()`)
-  await waitFor(async () => await evaluate(cdp, `(() => { const inputs = document.querySelectorAll('[data-auth-dialog-panels] > div:not([hidden]) input'); return inputs[0]?.value === 'roundtrip@example.com' && inputs[1]?.value === 'roundtrip-password' && inputs[2]?.value === 'roundtrip-password' })()`))
-  await evaluate(cdp, `(() => { const tab = Array.from(document.querySelectorAll('[role="tab"]')).find((node) => node.textContent === ${JSON.stringify(tabText)}); tab.focus(); tab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })) })()`)
-  await waitFor(async () => await evaluate(cdp, `document.querySelector('[role="tab"][aria-selected="true"]').textContent !== ${JSON.stringify(tabText)}`))
-  await evaluate(cdp, `(() => { const tab = document.querySelector('[role="tab"][aria-selected="true"]'); tab.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })) })()`)
-  await waitFor(async () => await evaluate(cdp, `document.querySelector('[role="tab"][aria-selected="true"]').textContent === ${JSON.stringify(tabText)}`))
+  const clearedOnIntentChange = await evaluate(cdp, `document.querySelector('input[placeholder*="example.com"]').value === ''`)
+  if (!clearedOnIntentChange) throw new Error(`${item.name} retained sign-up input after switching authentication intent`)
+  await evaluate(cdp, `Array.from(document.querySelectorAll('.axis-iam-auth-dialog-content button')).find((node) => node.textContent.includes(${JSON.stringify(tabText)})).click()`)
+  await waitFor(async () => await evaluate(cdp, `document.querySelector('input[placeholder="you@example.com"]') !== null`))
+  if (await evaluate(cdp, `document.querySelectorAll('[data-auth-view]').length`) !== 1) throw new Error(`${item.name} rendered more than one authentication view`)
+  await evaluate(cdp, `(() => {
+    const input = document.querySelector('input[placeholder="you@example.com"]')
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+    setter.call(input, 'roundtrip@example.com')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  if (item.locale === 'long') {
+    await waitFor(async () => await evaluate(cdp, `document.querySelector('input[placeholder="you@example.com"]').value === 'roundtrip@example.com'`))
+  }
 
   if (item.dialogThemeSwitch) {
     await evaluate(cdp, `document.getElementById('theme-dark').click()`)
@@ -272,14 +260,22 @@ async function runAuthDialogCase(cdp, item, requests, target) {
     await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] })
     await waitFor(async () => await evaluate(cdp, `document.querySelector('[role="dialog"]').dataset.colorScheme === 'light'`))
   }
-  const preserved = await evaluate(cdp, `({ email: document.querySelector('input[placeholder="you@example.com"]')?.value, dialog: !!document.querySelector('[role="dialog"]') })`)
-  if (preserved.email !== 'roundtrip@example.com' || !preserved.dialog) throw new Error(`${item.name} lost auth dialog state after scheme switch: ${JSON.stringify(preserved)}`)
+  if (item.scheme === 'system') {
+    const alternate = item.systemDark ? 'light' : 'dark'
+    const initial = item.systemDark ? 'dark' : 'light'
+    await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: alternate }] })
+    await waitFor(async () => await evaluate(cdp, `document.querySelector('[role="dialog"]').dataset.colorScheme === '${alternate}'`))
+    await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: initial }] })
+    await waitFor(async () => await evaluate(cdp, `document.querySelector('[role="dialog"]').dataset.colorScheme === '${initial}'`))
+  }
+  const preserved = await evaluate(cdp, `({ email: document.querySelector('input[placeholder="you@example.com"]')?.value, dialog: !!document.querySelector('[role="dialog"]'), views: document.querySelectorAll('[data-auth-view]').length })`)
+  if (preserved.email !== 'roundtrip@example.com' || !preserved.dialog || preserved.views !== 1) throw new Error(`${item.name} lost active sign-up state after scheme switch: ${JSON.stringify(preserved)}`)
 
   const mobile = await evaluate(cdp, `(() => { const dialog = document.querySelector('[role="dialog"]'); const rect = dialog.getBoundingClientRect(); return { width: rect.width, height: rect.height } })()`)
   if (item.mobile && (mobile.width !== item.width || mobile.height !== item.height)) throw new Error(`${item.name} did not render full-screen mobile dialog: ${JSON.stringify(mobile)}`)
 
-  const openMetrics = await evaluate(cdp, `(() => { const dialog = document.querySelector('[role="dialog"]'); const visible = (node) => getComputedStyle(node).display !== 'none'; const activeEngine = document.querySelector('[data-auth-dialog-panels] > div:not([hidden]) > div'); return { pageOverflow: document.documentElement.scrollWidth > window.innerWidth, dialogOverflow: dialog.scrollWidth > dialog.clientWidth, clippedControl: Array.from(document.querySelectorAll('[role="dialog"] button')).some((node) => node.scrollWidth > node.clientWidth || node.scrollHeight > node.clientHeight), visibleHeadings: Array.from(dialog.querySelectorAll('h2')).filter(visible).length, visibleEngineHeadings: Array.from(document.querySelectorAll('[data-auth-dialog-panels] h2')).filter(visible).length, compactEngine: activeEngine ? { backgroundColor: getComputedStyle(activeEngine).backgroundColor, paddingTop: getComputedStyle(activeEngine).paddingTop } : null, renderedScheme: dialog.dataset.colorScheme, hasSensitiveText: /refresh[_ -]?token|access[_ -]?token|proof|client secret/i.test(document.body.innerText) } })()`)
-  if (openMetrics.pageOverflow || openMetrics.dialogOverflow || openMetrics.clippedControl || openMetrics.hasSensitiveText || openMetrics.visibleHeadings !== 1 || openMetrics.visibleEngineHeadings !== 0 || openMetrics.compactEngine?.backgroundColor !== 'rgba(0, 0, 0, 0)' || openMetrics.compactEngine?.paddingTop !== '0px' || openMetrics.renderedScheme !== item.expectedRenderedScheme) throw new Error(`${item.name} failed open dialog metrics: ${JSON.stringify(openMetrics)}`)
+  const openMetrics = await evaluate(cdp, `(() => { const dialog = document.querySelector('[role="dialog"]'); const visible = (node) => getComputedStyle(node).display !== 'none'; const activeEngine = document.querySelector('[data-auth-dialog-panels] > div:not([hidden]) > div'); const engineStyle = activeEngine ? getComputedStyle(activeEngine) : null; return { pageOverflow: document.documentElement.scrollWidth > window.innerWidth, dialogOverflow: dialog.scrollWidth > dialog.clientWidth, clippedControl: Array.from(document.querySelectorAll('[role="dialog"] button')).some((node) => node.scrollWidth > node.clientWidth || node.scrollHeight > node.clientHeight), visibleHeadings: Array.from(dialog.querySelectorAll('h2')).filter(visible).length, visibleEngineHeadings: Array.from(document.querySelectorAll('[data-auth-dialog-panels] h2')).filter(visible).length, compactEngine: engineStyle ? { backgroundColor: engineStyle.backgroundColor, borderWidth: engineStyle.borderWidth, borderRadius: engineStyle.borderRadius, padding: engineStyle.padding, margin: engineStyle.margin, dialogBackground: getComputedStyle(dialog).backgroundColor } : null, renderedScheme: dialog.dataset.colorScheme, hasSensitiveText: /refresh[_ -]?token|access[_ -]?token|proof|client secret/i.test(document.body.innerText) } })()`)
+  if (openMetrics.pageOverflow || openMetrics.dialogOverflow || openMetrics.clippedControl || openMetrics.hasSensitiveText || openMetrics.visibleHeadings !== 1 || openMetrics.visibleEngineHeadings !== 0 || openMetrics.compactEngine?.backgroundColor !== 'rgba(0, 0, 0, 0)' || openMetrics.compactEngine?.borderWidth !== '0px' || openMetrics.compactEngine?.borderRadius !== '0px' || openMetrics.compactEngine?.padding !== '0px' || openMetrics.compactEngine?.margin !== '0px' || openMetrics.renderedScheme !== item.expectedRenderedScheme) throw new Error(`${item.name} failed open dialog metrics: ${JSON.stringify(openMetrics)}`)
   const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
   const bytes = Buffer.from(screenshot.data, 'base64')
   if (bytes.length < 10000) throw new Error(`${item.name} produced an implausibly blank open render`)
@@ -288,10 +284,10 @@ async function runAuthDialogCase(cdp, item, requests, target) {
 
   await evaluate(cdp, `(() => { const dialog = document.querySelector('[role="dialog"]'); dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })()`)
   await waitFor(async () => await evaluate(cdp, `document.querySelector('[role="dialog"]') === null`))
-  const closeState = await evaluate(cdp, `({ restored: document.activeElement?.id === 'auth-dialog-trigger', pageOverflow: document.documentElement.scrollWidth > window.innerWidth, hasSensitiveText: /refresh[_ -]?token|access[_ -]?token|proof|client secret/i.test(document.body.innerText), storageSensitive: Object.values(sessionStorage).some((value) => /visual-smoke-proof|visual-smoke-refresh-value|visual-smoke-signature/.test(value)) })`)
+  const closeState = await evaluate(cdp, `(() => { const before = new Map(JSON.parse(window.__authDialogStorageBaseline)); const changed = Object.keys(sessionStorage).filter(key => before.get(key) !== sessionStorage.getItem(key)); const pending = sessionStorage.getItem('axis_iam_pending_authorization'); let pendingValid = false; try { const value = pending && JSON.parse(pending); pendingValid = !!value && value.entryMode === 'HOSTED' && value.version === 1 && Object.keys(value).every(key => ['version','issuer','clientId','redirectUri','entryMode','flowOwner','state','verifier','nonce','expiresAt'].includes(key)) && !JSON.stringify(value).includes('visual-smoke-proof') } catch {} return { restored: document.activeElement?.id === 'auth-dialog-trigger', pageOverflow: document.documentElement.scrollWidth > innerWidth, hasSensitiveText: /refresh[_ -]?token|access[_ -]?token|proof|client secret/i.test(document.body.innerText), changedStorageKeys: changed, pendingAuthorizationValid: pendingValid, storageBoundaryValid: changed.every(key => key === 'axis_iam_pending_authorization') && (!changed.includes('axis_iam_pending_authorization') || pendingValid) } })()`)
   const managementRequests = requests.filter((url) => /\/api\/v1\/(admin|management)|\/management\//i.test(url))
   const clientCredentialRequests = requests.filter((url) => /client_credentials|\/m2m\b/i.test(url))
-  if (!closeState.restored || closeState.pageOverflow || closeState.hasSensitiveText || closeState.storageSensitive || managementRequests.length > 0 || clientCredentialRequests.length > 0) throw new Error(`${item.name} failed security/focus metrics: ${JSON.stringify({ closeState, managementRequests, clientCredentialRequests })}`)
+  if (!closeState.restored || closeState.pageOverflow || closeState.hasSensitiveText || !closeState.storageBoundaryValid || managementRequests.length > 0 || clientCredentialRequests.length > 0) throw new Error(`${item.name} failed security/focus metrics: ${JSON.stringify({ closeState, managementRequests, clientCredentialRequests })}`)
 
   cdp.close()
   await fetch(`http://127.0.0.1:${chromePort}/json/close/${target.id}`)
@@ -303,9 +299,9 @@ async function runAuthSurfaceCase(cdp, item, requests, target) {
   try {
     await waitFor(async () => await evaluate(cdp, `document.querySelectorAll('#auth-localization-smoke > *').length === 6`))
     if (item.locale === 'zh') {
-      await waitFor(async () => await evaluate(cdp, `['登录', '创建账户', '重置密码', '创建新密码', '加入 Visual Organization', '已关联账户', 'GitHub（OAuth 2.0）'].every((text) => document.body.innerText.includes(text))`))
+      await waitFor(async () => await evaluate(cdp, `['登录', '创建账户', '重置密码', '创建新密码', '组织邀请', '登录方式'].every((text) => document.body.innerText.includes(text)) && document.querySelector('.axis-identity-methods [role="alert"]') === null && document.querySelector('.axis-identity-overview-row p')?.textContent === 'alex.morgan@example.com'`))
     } else {
-      await waitFor(async () => await evaluate(cdp, `['Sign in', 'Create account', 'Reset password', 'Create new password', 'Join Visual Organization', 'Connected accounts', 'GitHub (OAuth 2.0)'].every((text) => document.body.innerText.includes(text))`))
+      await waitFor(async () => await evaluate(cdp, `['Sign in', 'Create account', 'Reset password', 'Create new password', 'Organization invitation', 'Login methods'].every((text) => document.body.innerText.includes(text)) && document.querySelector('.axis-identity-methods [role="alert"]') === null && document.querySelector('.axis-identity-overview-row p')?.textContent === 'alex.morgan@example.com'`))
     }
   } catch (error) {
     const body = await evaluate(cdp, `document.body.innerText`)
@@ -341,7 +337,9 @@ async function runAuthSurfaceCase(cdp, item, requests, target) {
   return { ...item, screenshotPath, screenshotBytes: bytes.length, managementRequests, requestCount: requests.length, ...metrics }
 }
 
-async function selectSection(cdp, index, mobile = false) {
+async function selectSection(cdp, section, mobile = false) {
+  const index = ['profile', 'methods', 'password', 'security', 'sessions', 'permissions'].indexOf(section)
+  if (index < 0) throw new Error(`Unknown AccountCenter section: ${section}`)
   if (mobile) {
     const dialogMenu = await evaluate(cdp, `document.querySelector('[role="dialog"]').classList.contains('axis-ac-menu')`)
     if (!dialogMenu) await evaluate(cdp, `document.querySelector('.axis-ac-back').click()`)

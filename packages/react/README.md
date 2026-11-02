@@ -417,6 +417,11 @@ when accepting/consuming proofs; these UI helpers do not grant permission or rev
 is the embedded surface; `AccountSecurityDialog` wraps the same content/store in
 protected modal focus and exact server cancellation. Do not mount competing
 editors for one operation. An uncertain cancellation stays open for status recovery.
+The permissions section shows localized role, resource/action, and active
+organization-context summaries without asking end users to enter permission
+codes. `AccountPermissionsPanel` keeps its permission-check API; its raw-code
+checker is available only when a standalone developer surface opts in with
+`showPermissionChecker`.
 
 All surfaces use the existing `IamProvider` `colorScheme="light" | "dark" | "system"`,
 `appearance`, `darkAppearance`, `locale="en" | "zh-CN"` and `localization.security`.

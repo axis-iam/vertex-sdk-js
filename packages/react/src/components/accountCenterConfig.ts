@@ -79,6 +79,8 @@ export interface AccountCenterLocalization {
   roles: string
   permissions: string
   organization: string
+  organizationContext: string
+  organizationContextActive: string
   noRoles: string
   grantedPermissions: string
   noPermissions: string
@@ -117,7 +119,7 @@ export const accountCenterEnglish: AccountCenterLocalization = {
   sessionControls: 'Session controls', sessionControlsDetail: 'Revoked devices must sign in again.', revokeOtherSessions: 'Revoke other sessions',
   revokingOtherSessions: 'Revoking other sessions', logOut: 'Log out', loggingOut: 'Logging out',
   permissionsAria: 'Account permissions', permissionsTitle: 'Access', permissionsDescription: 'Roles and permissions',
-  permissionRequiredError: 'Permission is required', permissionsLoading: 'Loading permissions', role: 'Role', roles: 'Roles', permissions: 'Permissions', organization: 'Organization',
+  permissionRequiredError: 'Permission is required', permissionsLoading: 'Loading permissions', role: 'Role', roles: 'Roles', permissions: 'Permissions', organization: 'Organization', organizationContext: 'Current organization', organizationContextActive: 'Active',
   noRoles: 'No roles assigned.', grantedPermissions: 'Granted permissions', noPermissions: 'No permissions granted.',
   accessEmptyTitle: 'Access summary unavailable', accessEmptyDetail: 'We could not load roles or permissions.', checkPermissionSummary: 'Check a permission',
   checkPermissionDetail: 'Test whether this account has a permission', checkPermissionLabel: 'Check permission', permissionPlaceholder: 'orders:read',

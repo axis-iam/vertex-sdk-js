@@ -1,4 +1,4 @@
-type AccountIconName = 'profile' | 'methods' | 'password' | 'security' | 'sessions' | 'permissions' | 'check' | 'info' | 'close' | 'back' | 'authenticator' | 'recovery'
+type AccountIconName = 'profile' | 'methods' | 'password' | 'security' | 'sessions' | 'permissions' | 'check' | 'info' | 'close' | 'back' | 'authenticator' | 'recovery' | 'chevronDown'
 
 const paths: Record<AccountIconName, string> = {
   profile: 'M20 21v-2a7 7 0 0 0-14 0v2M13 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8',
@@ -12,6 +12,7 @@ const paths: Record<AccountIconName, string> = {
   close: 'm6 6 12 12M6 18 18 6',
   back: 'm14 6-6 6 6 6',
   authenticator: 'M7 2h10v20H7zM10 5h4M12 18h.01',
+  chevronDown: 'm6 9 6 6 6-6',
   recovery: 'M6 3h12v18H6zM9 7h6M9 11h6M9 15h3',
 }
 

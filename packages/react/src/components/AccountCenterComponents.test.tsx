@@ -85,6 +85,7 @@ function setupFetch(options: {
   failPermissionCheck?: boolean
   failSessionsOnce?: boolean
   longPermission?: boolean
+  wildcardPermissions?: boolean
 } = {}) {
   let sessionRequests = 0
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -164,6 +165,10 @@ function setupFetch(options: {
           permissions: ['accounting:quarterly-report-with-a-deliberately-long-unbroken-action-name-for-overflow-validation'],
         })
       }
+      if (options.wildcardPermissions) return jsonResponse({
+        ...permissionSummary,
+        permissions: ['orders:*', '*:read', '*:*'],
+      })
       return jsonResponse(permissionSummary)
     }
     return jsonResponse({ message: 'Not found' }, 404)
@@ -250,13 +255,13 @@ describe('Account Center components', () => {
   it('switches explicit and system themes without clearing form state, changing section, or refetching', async () => {
     let mediaChange: (() => void) | null = null
     let prefersDark = true
+    const hostMediaChange = vi.fn()
     vi.stubGlobal('matchMedia', vi.fn(() => ({
       get matches() { return prefersDark },
       media: '(prefers-color-scheme: dark)',
-      get onchange() { return mediaChange },
-      set onchange(listener: (() => void) | null) { mediaChange = listener },
-      addEventListener: () => undefined,
-      removeEventListener: () => undefined,
+      onchange: hostMediaChange,
+      addEventListener: (_type: string, listener: () => void) => { mediaChange = listener },
+      removeEventListener: (_type: string, listener: () => void) => { if (mediaChange === listener) mediaChange = null },
       addListener: () => undefined,
       removeListener: () => undefined,
       dispatchEvent: () => true,
@@ -281,26 +286,25 @@ describe('Account Center components', () => {
     expect(screen.getByRole('button', { name: 'Password' }).getAttribute('aria-current')).toBe('page')
 
     fireEvent.click(screen.getByRole('button', { name: 'Permissions' }))
-    await waitFor(() => expect(screen.getByText('orders:write')).toBeTruthy())
-    const permission = screen.getByLabelText('Check permission') as HTMLInputElement
-    fireEvent.change(permission, { target: { value: 'orders:read' } })
+    await waitFor(() => expect(screen.getByText('Orders · Edit')).toBeTruthy())
+    expect(screen.queryByLabelText('Check permission')).toBeNull()
     const permissionGets = () => fetchMock.mock.calls.filter((call) => String(call[0]).includes('/api/v1/auth/me/permissions') && !String(call[0]).includes(':check')).length
     const beforeSwitch = permissionGets()
     fireEvent.click(screen.getByText('Use system theme'))
     await waitFor(() => expect(screen.getByRole('dialog').getAttribute('data-color-scheme')).toBe('dark'))
-    expect(permission.value).toBe('orders:read')
+    expect(screen.getByText('Orders · View')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Permissions' }).getAttribute('aria-current')).toBe('page')
     expect(permissionGets()).toBe(beforeSwitch)
 
     prefersDark = false
     act(() => { mediaChange?.() })
     expect(screen.getByRole('dialog').getAttribute('data-color-scheme')).toBe('light')
-    expect(permission.value).toBe('orders:read')
+    expect(screen.getByText('Orders · View')).toBeTruthy()
+    expect(hostMediaChange).not.toHaveBeenCalled()
   })
 
-  it('AccountCenter closes with Escape, restores trigger focus, navigates sections, and forwards panel props', async () => {
+  it('AccountCenter closes with Escape, restores trigger focus, navigates sections, and keeps developer permission checks out of the end-user view', async () => {
     const onOpenChange = vi.fn()
-    const onChecked = vi.fn()
     const trigger = document.createElement('button')
     trigger.textContent = 'Open account center'
     document.body.append(trigger)
@@ -310,7 +314,6 @@ describe('Account Center components', () => {
       open: true,
       onOpenChange,
       organizationId: 'org-1',
-      permissionsProps: { onChecked },
     }))
 
     expect(screen.getByRole('dialog')).toBeTruthy()
@@ -323,10 +326,10 @@ describe('Account Center components', () => {
     expect(screen.getByRole('button', { name: 'Permissions' }).getAttribute('aria-current')).toBe('page')
     await waitFor(() => expect(screen.getByLabelText('Account permissions')).toBeTruthy())
     expect(screen.getByLabelText('Account permissions').classList.contains('axis-ac-e')).toBe(true)
-    fireEvent.click(screen.getByText('Check a permission'))
-    fireEvent.change(screen.getByLabelText('Check permission'), { target: { value: 'orders:read' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Check' }))
-    await waitFor(() => expect(onChecked).toHaveBeenCalledWith('orders:read', true))
+    expect(screen.queryByLabelText('Check permission')).toBeNull()
+    await waitFor(() => expect(screen.getByText('Orders · View')).toBeTruthy())
+    expect(screen.getByText('Orders · View')).toBeTruthy()
+    expect(screen.getByText('Orders · Edit')).toBeTruthy()
 
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
     expect(onOpenChange).toHaveBeenCalledWith(false)
@@ -504,12 +507,24 @@ describe('Account Center components', () => {
     expect(container.textContent).not.toContain('rt-test')
   })
 
-  it('AccountPermissionsPanel renders summary and checks current-user permissions', async () => {
+  it('AccountPermissionsPanel renders readable access and keeps the developer checker opt-in', async () => {
+    setupFetch()
+    const { rerender } = renderWithProvider(createElement(AccountPermissionsPanel))
+    await waitFor(() => expect(screen.getByText('Orders · View')).toBeTruthy())
+    expect(screen.getByText('Orders · Edit')).toBeTruthy()
+    expect(screen.getByText('Administrator')).toBeTruthy()
+    expect(screen.getByText('Current organization')).toBeTruthy()
+    expect(screen.queryByLabelText('Check permission')).toBeNull()
+    rerender(createElement(IamProvider, testProviderProps(), createElement(AccountPermissionsPanel, { showPermissionChecker: true })))
+    expect(screen.getByLabelText('Check permission')).toBeTruthy()
+  })
+
+  it('AccountPermissionsPanel retains the public permission-check flow when explicitly enabled', async () => {
     const fetchMock = setupFetch()
     const onChecked = vi.fn()
-    renderWithProvider(createElement(AccountPermissionsPanel, { organizationId: 'org-1', onChecked }))
+    renderWithProvider(createElement(AccountPermissionsPanel, { organizationId: 'org-1', showPermissionChecker: true, onChecked }))
 
-    await waitFor(() => expect(screen.getByText('orders:write')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Orders · Edit')).toBeTruthy())
     fireEvent.change(screen.getByLabelText('Check permission'), { target: { value: 'orders:read' } })
     await act(async () => {
       fireEvent.click(screen.getByText('Check'))
@@ -524,11 +539,20 @@ describe('Account Center components', () => {
     })
   })
 
+  it('AccountPermissionsPanel localizes access summaries and explains wildcard scopes', async () => {
+    setupFetch({ wildcardPermissions: true })
+    render(createElement(IamProvider, { ...testProviderProps(), locale: 'zh-CN' }, createElement(AccountPermissionsPanel)))
+    await waitFor(() => expect(screen.getByText('订单 · 全部操作')).toBeTruthy())
+    expect(screen.getByText('全部资源 · 查看')).toBeTruthy()
+    expect(screen.getByText('全部资源 · 全部操作')).toBeTruthy()
+    expect(screen.getByText('当前组织')).toBeTruthy()
+  })
+
   it('AccountPermissionsPanel renders permission check errors without success state', async () => {
     setupFetch({ failPermissionCheck: true })
-    renderWithProvider(createElement(AccountPermissionsPanel, { organizationId: 'org-1' }))
+    renderWithProvider(createElement(AccountPermissionsPanel, { organizationId: 'org-1', showPermissionChecker: true }))
 
-    await waitFor(() => expect(screen.getByText('orders:write')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Orders · Edit')).toBeTruthy())
     fireEvent.change(screen.getByLabelText('Check permission'), { target: { value: 'orders:read' } })
     await act(async () => {
       fireEvent.click(screen.getByText('Check'))
@@ -547,8 +571,8 @@ describe('Account Center components', () => {
 
     setupFetch({ longPermission: true })
     const { container } = renderWithProvider(createElement(AccountPermissionsPanel))
-    await waitFor(() => expect(screen.getByText(/deliberately-long-unbroken/)).toBeTruthy())
-    expect(container.querySelector('.axis-iam-permission-list code')).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('Other access')).toBeTruthy())
+    expect(container.querySelector('.axis-iam-permission-list code')).toBeNull()
   })
 
   it('AccountSessionsPanel fails closed when authentication is missing', async () => {

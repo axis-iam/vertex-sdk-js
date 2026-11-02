@@ -1,4 +1,6 @@
 export const identityEnglish = {
+  newIdentifier: { USERNAME: 'New username', EMAIL: 'New email', PHONE: 'New phone number' },
+  exitTitle: 'Cancel this change?', exitDescription: 'The pending change will be cancelled. Your existing sign-in methods will stay unchanged.', keepChange: 'Continue change', confirmCancelChange: 'Cancel change',
   description: 'Manage the identifiers and connected accounts you use to sign in.',
   providerTargetTitle: 'External account to connect', confirmProviderTarget: 'Confirm connection', providerTargetPending: 'Waiting for the verified external account. Authorize with the provider before confirming the connection.', providerTargetPrivate: 'The provider confirmed an account without a display name or email.',
   managementRequirements: 'Requirements for this change', managementProofs: 'Available current-account confirmation',
@@ -44,6 +46,8 @@ export const identityEnglish = {
 }
 export type IdentityLocalization = typeof identityEnglish
 export const identityZhCN: IdentityLocalization = {
+  newIdentifier: { USERNAME: '新用户名', EMAIL: '新邮箱', PHONE: '新手机号' },
+  exitTitle: '取消此次变更？', exitDescription: '取消尚未完成的变更，现有登录方式将保持不变。', keepChange: '继续变更', confirmCancelChange: '取消变更',
   description: '管理用于登录的账号标识和已连接的第三方账号。',
   providerTargetTitle: '即将绑定的第三方账号', confirmProviderTarget: '确认绑定此账号', providerTargetPending: '等待第三方返回已验证的账号，请先完成授权，再确认绑定。', providerTargetPrivate: '第三方已确认账号，但未提供可展示的名称或邮箱。',
   managementRequirements: '此次变更的要求', managementProofs: '可用的当前账号确认方式',

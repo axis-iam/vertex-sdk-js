@@ -8,6 +8,10 @@ import { OAuthClient } from '../core/oauth-client'
 import { ConnectedAccounts } from './ConnectedAccounts'
 import { AccountProfilePanel } from './AccountProfilePanel'
 import { AccountCenter } from './AccountCenter'
+import { AccountSecurityDialog } from './AccountSecurityDialog'
+import { AccountSecurityPanel } from './AccountSecurityPanel'
+import { accountSecurityStore } from '../core/account-security-store'
+import { securityFixture, securityPassword } from '../core/account-security-fixtures.test-support'
 import { makeTestJwt } from '../test-utils'
 import { identityEnglish, identityZhCN } from '../identity-localization'
 import { identityOperationStore } from '../core/identity-operation-store'
@@ -28,6 +32,11 @@ function openAdd(l = identityEnglish) {
   return screen.getByRole('dialog')
 }
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  })
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function(this: HTMLDialogElement) { this.open = true } })
   Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function(this: HTMLDialogElement) { this.open = false } })
   client = new OAuthClient({ issuerUri: issuer, clientId: 'c', redirectUri: '/callback' })
@@ -52,6 +61,328 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock)
 })
 afterEach(() => { cleanup(); client.dispose(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+describe('F007 F008 fixed identifier changes and default management boundary', () => {
+  const items = [
+    { id: 'email-1', kind: 'EMAIL', displayValue: 'member@example.invalid', status: 'ACTIVE', verificationState: 'VERIFIED' as const, isPrimary: true, managedBy: null },
+    { id: 'phone-1', kind: 'PHONE', displayValue: '+12025550108', status: 'ACTIVE', verificationState: 'VERIFIED' as const, isPrimary: true, managedBy: null },
+    { id: 'username-1', kind: 'USERNAME', displayValue: 'existing.member', status: 'ACTIVE', verificationState: 'VERIFIED' as const, isPrimary: true, managedBy: null },
+  ]
+  it.each(['EMAIL', 'PHONE', 'USERNAME'] as const)('F007 fixes %s at the entry and retains the exact REPLACE payload', async kind => {
+    const item = items.find(value => value.kind === kind)!
+    vi.spyOn(client.identity, 'identifiers').mockResolvedValue(managedIdentifiers([item], 3))
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((url, init) => String(url).endsWith('/identity-operations') && init?.method === 'POST'
+      ? Promise.resolve(response({ ...operation(), type: 'REPLACE' })) : original(url, init))
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByRole('button', { name: identityEnglish.manageEmails })
+    if (kind === 'EMAIL') fireEvent.click(screen.getByRole('button', { name: identityEnglish.manageEmails }))
+    await screen.findByText(item.displayValue)
+    if (kind === 'USERNAME') fireEvent.click(screen.getByRole('button', { name: identityEnglish.change, exact: true }))
+    else {
+      fireEvent.click(screen.getByLabelText(`${identityEnglish.moreActions}: ${item.displayValue}`))
+      fireEvent.click(screen.getByRole('button', { name: identityEnglish.replace, exact: true }))
+    }
+    expect(screen.queryByLabelText(identityEnglish.kind)).toBeNull()
+    const value = kind === 'EMAIL' ? 'new@example.invalid' : kind === 'PHONE' ? '+12025550109' : 'replacement.member'
+    fireEvent.change(screen.getByLabelText(identityEnglish.newIdentifier[kind]), { target: { value } })
+    if (kind === 'PHONE') fireEvent.change(screen.getByLabelText(identityEnglish.phoneCountry), { target: { value: 'US' } })
+    if (kind === 'USERNAME') {
+      expect(screen.queryByRole('checkbox')).toBeNull()
+      expect(screen.getByText(identityEnglish.managementRequirement.REMOVE_OLD)).toBeTruthy()
+    } else expect((screen.getByLabelText(identityEnglish.removeOld) as HTMLInputElement).checked).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.complete, exact: true }))
+    await screen.findByLabelText(identityEnglish.password)
+    const call = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/identity-operations') && init?.method === 'POST')!
+    expect(JSON.parse(String(call[1]?.body))).toEqual({ type: 'REPLACE', expectedLoginMethodVersion: 3, payload: { identifierId: item.id, replacement: { kind, value, ...(kind === 'PHONE' ? { region: 'US' } : {}) }, removeOld: true } })
+  })
+  it('F008 removes TRANSFER and targetUserId from every default identifier menu', async () => {
+    vi.spyOn(client.identity, 'identifiers').mockResolvedValue(managedIdentifiers(items, 3))
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByText('existing.member')
+    for (const item of items.filter(item => item.kind !== 'EMAIL')) {
+      fireEvent.click(screen.getByLabelText(`${identityEnglish.moreActions}: ${item.displayValue}`))
+      expect(screen.queryByRole('button', { name: identityEnglish.transfer, exact: true })).toBeNull()
+      expect(screen.queryByLabelText(identityEnglish.targetUser)).toBeNull()
+      fireEvent.click(screen.getByLabelText(`${identityEnglish.moreActions}: ${item.displayValue}`))
+    }
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.manageEmails }))
+    fireEvent.click(screen.getByLabelText(`${identityEnglish.moreActions}: member@example.invalid`))
+    expect(screen.queryByRole('button', { name: identityEnglish.transfer, exact: true })).toBeNull()
+    expect(screen.queryByLabelText(identityEnglish.targetUser)).toBeNull()
+  })
+  it('F008 retains externally-created transfer continuation without a manual receiving-user form', async () => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((url, init) => String(url).includes('/identity-operations')
+      ? Promise.resolve(response({ ...operation(), type: 'TRANSFER', requiredProofs: [{ purpose: 'TRANSFER_COUNTERPART', methods: ['PASSWORD'], strength: 'POLICY', satisfied: false }] })) : original(url, init))
+    const store = identityOperationStore(client)
+    await store.create({ type: 'TRANSFER', expectedLoginMethodVersion: 3, payload: { identifierId: 'email-1', targetUserId: 'receiving-fixture-user' } })
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByLabelText(identityEnglish.password)
+    expect(screen.queryByLabelText(identityEnglish.targetUser)).toBeNull()
+    expect(store.getSnapshot().operation?.type).toBe('TRANSFER')
+    expect(screen.getByText(identityEnglish.transferWarning)).toBeTruthy()
+  })
+})
+describe('F010 identity operation exits', () => {
+  async function pending(center = false, close = vi.fn()) {
+    render(<IamUiProvider>{center ? <AccountCenter open onOpenChange={close} initialSection="methods" /> : <ConnectedAccounts />}</IamUiProvider>)
+    await screen.findByRole('button', { name: identityEnglish.addEmail })
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.addEmail }))
+    fireEvent.change(screen.getByLabelText(identityEnglish.EMAIL), { target: { value: 'new@example.invalid' } })
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.add, exact: true }))
+    await screen.findByLabelText(identityEnglish.password)
+    return close
+  }
+  it('F010 uses a real modal for native identity Escape and restores the operation on Keep', async () => {
+    await pending()
+    fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true }))
+    const modal = screen.getByRole('alertdialog', { name: identityEnglish.exitTitle })
+    expect((modal as HTMLDialogElement).open).toBe(true)
+    expect(modal.getAttribute('aria-describedby')).toBeTruthy()
+    expect(within(modal).getByRole('button', { name: identityEnglish.keepChange })).toBe(document.activeElement)
+    fireEvent.keyDown(modal, { key: 'Escape' })
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.getByLabelText(identityEnglish.password)).toBeTruthy()
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/cancel'))).toHaveLength(0)
+  })
+  it('F010 preserves identity navigation until definite cancellation', async () => {
+    await pending(true)
+    const nav = screen.getByRole('navigation', { name: 'Account sections' })
+    fireEvent.click(within(nav).getByRole('button', { name: 'Profile' }))
+    const modal = screen.getByRole('alertdialog')
+    expect(within(nav).getByRole('button', { name: 'Login methods' }).getAttribute('aria-current')).toBe('page')
+    fireEvent.click(within(modal).getByRole('button', { name: identityEnglish.confirmCancelChange }))
+    await waitFor(() => expect(within(nav).getByRole('button', { name: 'Profile' }).getAttribute('aria-current')).toBe('page'))
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/cancel'))).toHaveLength(1)
+  })
+  it.each(['unknown', 'committed', 'generation'] as const)('F010 never executes the identity exit after %s cancellation', async outcome => {
+    const close = await pending(true)
+    let finish!: () => void
+    if (outcome === 'unknown') vi.spyOn(client.identity, 'cancel').mockRejectedValueOnce(new TypeError('Controlled lost response'))
+    if (outcome === 'committed') vi.spyOn(client.identity, 'cancel').mockResolvedValueOnce({ ...operation('COMMITTED'), type: 'ADD' } as Awaited<ReturnType<typeof client.identity.cancel>>)
+    if (outcome === 'generation') vi.spyOn(client.identity, 'cancel').mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ ...operation('CANCELLED'), type: 'ADD' } as Awaited<ReturnType<typeof client.identity.cancel>>) }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close account center' }))
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: identityEnglish.confirmCancelChange }))
+    if (outcome === 'generation') { act(() => client.state.clear()); await act(async () => finish()) }
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(close).not.toHaveBeenCalled()
+    if (outcome === 'unknown') expect(identityOperationStore(client).getSnapshot().uncertain).toBe(true)
+    if (outcome === 'committed') expect(screen.getByRole('heading', { name: identityEnglish.COMMITTED })).toBeTruthy()
+  })
+})
+describe('F-003 action discovery and operation composition', () => {
+  it('renders Provider disclosure as a real secondary button with icons and explicit expanded state', async () => {
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    await screen.findByRole('button', { name: identityEnglish.addEmail })
+    const toggle = await screen.findByRole('button', { name: identityEnglish.connectProvider, exact: true })
+    expect(toggle.getAttribute('type')).toBe('button')
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(toggle.querySelectorAll('svg')).toHaveLength(2)
+    const options = document.getElementById(toggle.getAttribute('aria-controls')!)!
+    expect(options.hidden).toBe(true)
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(options.hidden).toBe(false)
+    expect(within(options).getByRole('button', { name: identityEnglish.link }).matches(':disabled')).toBe(true)
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+  })
+  it.each([false, true])('exposes username Change using REPLACE while preserving managed denial=%s', async managed => {
+    const snapshot = managedIdentifiers([{ id: 'username-1', kind: 'USERNAME', displayValue: 'existing.member', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: true, managedBy: managed ? 'Directory' : null }], 3)
+    vi.spyOn(client.identity, 'identifiers').mockResolvedValue(snapshot)
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((url, init) => String(url).endsWith('/identity-operations') && init?.method === 'POST'
+      ? Promise.resolve(response({ ...operation(), type: 'REPLACE', requiredProofs: [{ purpose: 'CURRENT_ACCOUNT', methods: ['PASSWORD'], strength: 'POLICY', satisfied: false }] })) : original(url, init))
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    const existing = await screen.findByText('existing.member')
+    const row = existing.closest('article')!
+    const change = within(row).getByRole('button', { name: identityEnglish.change, exact: true })
+    expect(change.closest('details')).toBeNull()
+    expect(screen.queryByRole('button', { name: identityEnglish.addUsername, exact: true })).toBeNull()
+    expect(change.matches(':disabled')).toBe(managed)
+    if (managed) {
+      const reason = document.getElementById(change.getAttribute('aria-describedby')!)!
+      expect(reason.textContent).toBe('Your organization manages this identifier.')
+      fireEvent.click(change)
+      expect(screen.queryByRole('dialog')).toBeNull()
+      return
+    }
+    fireEvent.click(change)
+    expect(screen.getByRole('heading', { name: 'Change: existing.member' })).toBeTruthy()
+    expect(screen.queryByLabelText(identityEnglish.kind)).toBeNull()
+    expect(screen.queryByRole('checkbox')).toBeNull()
+    expect(screen.getByText(identityEnglish.managementRequirement.REMOVE_OLD)).toBeTruthy()
+    fireEvent.change(screen.getByLabelText(identityEnglish.newIdentifier.USERNAME), { target: { value: 'replacement.member' } })
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.complete, exact: true }))
+    await screen.findByLabelText(identityEnglish.password)
+    const call = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/identity-operations') && init?.method === 'POST')!
+    expect(JSON.parse(String(call[1]?.body))).toEqual({ type: 'REPLACE', expectedLoginMethodVersion: 3, payload: { identifierId: 'username-1', replacement: { kind: 'USERNAME', value: 'replacement.member' }, removeOld: true } })
+  })
+  it.each(['TOTP_ENROLL', 'TOTP_DISABLE', 'RECOVERY_CODES_GENERATE'] as const)('keeps %s READY as one described focusable step and footer', async type => {
+    client.dispose()
+    const fixture = await securityFixture()
+    if (!(fixture.client instanceof OAuthClient)) throw new Error('Expected OAuth fixture')
+    client = fixture.client
+    render(<IamUiProvider><AccountSecurityPanel /></IamUiProvider>)
+    await screen.findByRole('button', { name: 'Set up authenticator' })
+    await act(() => accountSecurityStore(client).create(type, 4))
+    const step = document.querySelector('.axis-security-operation[data-state="READY"]')!
+    const heading = step.querySelector('h3')!
+    expect(heading).toBe(document.activeElement)
+    expect(heading.getAttribute('tabindex')).toBe('-1')
+    expect(getComputedStyle(heading).outlineStyle).not.toBe('solid')
+    expect(step.querySelector('.axis-security-step-description')?.textContent).toBeTruthy()
+    expect(step.querySelectorAll('footer')).toHaveLength(1)
+    expect(step.querySelectorAll('footer button')).toHaveLength(2)
+    expect(step.querySelector('form form')).toBeNull()
+  })
+})
+describe('SDK09-11 grouped methods and protected security exits', () => {
+  async function setupSecurity() {
+    client.dispose()
+    const fixture = await securityFixture()
+    if (!(fixture.client instanceof OAuthClient)) throw new Error('Expected OAuth fixture')
+    client = fixture.client
+    return fixture
+  }
+  const click = (name: string) => fireEvent.click(screen.getByRole('button', { name, exact: true }))
+  async function enroll() {
+    click('Set up authenticator')
+    await screen.findByRole('button', { name: 'Show setup instructions' })
+    click('Show setup instructions')
+    await screen.findByText('FIXTUREONLYSETUP')
+  }
+  const confirmation = () => {
+    expect(screen.getAllByRole('button', { name: 'Cancel setup', exact: true })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Keep setting up', exact: true })).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: 'Confirm setup', exact: true })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Keep setting up' })).toBe(document.activeElement)
+  }
+  it('groups additions and provider actions without losing readiness', async () => {
+    render(<IamUiProvider><ConnectedAccounts /></IamUiProvider>)
+    const add = await screen.findByRole('button', { name: identityEnglish.addEmail })
+    expect(add.closest('.axis-identity-addition-row')?.querySelector('strong')?.textContent).toBe(identityEnglish.EMAIL)
+    const connect = screen.getByRole('button', { name: identityEnglish.link, hidden: true })
+    expect(connect.closest('.axis-identity-addition-row')?.querySelector('strong')?.textContent).toBe('Provider One')
+    expect(connect.matches(':disabled')).toBe(true)
+    expect(add.closest('section')?.querySelectorAll('.axis-identity-additions .axis-identity-addition-row')).toHaveLength(3)
+  })
+  it.each(['panel', 'dialog', 'center'])('%s uses one operation form and one confirmation owner', async surface => {
+    await setupSecurity()
+    const close = vi.fn()
+    render(<IamUiProvider>{surface === 'center' ? <AccountCenter open initialSection="security" onOpenChange={close} /> : surface === 'dialog' ? <AccountSecurityDialog open onOpenChange={close} /> : <AccountSecurityPanel />}</IamUiProvider>)
+    await screen.findByRole('button', { name: 'Set up authenticator' }); await enroll()
+    const form = screen.getByLabelText('Verification code').closest('form')
+    expect(form?.querySelectorAll('footer')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Confirm setup' }).closest('footer')).toBe(form?.querySelector('footer'))
+    click('Cancel setup')
+    if (surface !== 'panel') click(surface === 'center' ? 'Close account center' : 'Close security verification')
+    confirmation(); click('Keep setting up')
+    expect(screen.getByText('FIXTUREONLYSETUP')).toBeTruthy()
+    expect(close).not.toHaveBeenCalled()
+    click('Cancel setup'); confirmation(); click('Cancel setup')
+    await screen.findByText('Operation cancelled')
+    expect(close).not.toHaveBeenCalled()
+    expect(accountSecurityStore(client).getSnapshot().material).toBeNull()
+  })
+  it.each(['close', 'escape', 'section', 'menu'])('protects %s until definite cancellation', async intent => {
+    const f = await setupSecurity(), close = vi.fn()
+    render(<IamUiProvider><AccountCenter open initialSection="security" onOpenChange={close} /></IamUiProvider>)
+    await screen.findByRole('button', { name: 'Set up authenticator' }); await enroll()
+    const request = () => {
+      if (intent === 'close') click('Close account center')
+      else if (intent === 'escape') fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+      else if (intent === 'section') fireEvent.click(within(screen.getByRole('navigation', { name: 'Account sections' })).getByRole('button', { name: 'Profile' }))
+      else fireEvent.click(document.querySelector('.axis-ac-back')!)
+    }
+    request(); confirmation(); request(); confirmation()
+    expect(document.querySelector('.axis-ac-menu')).toBeNull()
+    click('Keep setting up')
+    expect(screen.getByText('FIXTUREONLYSETUP')).toBeTruthy()
+    request(); confirmation(); click('Cancel setup')
+    await waitFor(() => expect(f.fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/cancel'))).toHaveLength(1))
+    if (intent === 'close' || intent === 'escape') await waitFor(() => expect(close).toHaveBeenCalledWith(false))
+    else if (intent === 'section') await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Account sections' })).getByRole('button', { name: 'Profile' }).getAttribute('aria-current')).toBe('page'))
+    else await waitFor(() => expect(document.querySelector('.axis-ac-menu')).not.toBeNull())
+  })
+  it('blocks busy navigation and never exits on an unknown cancellation result', async () => {
+    await setupSecurity()
+    const close = vi.fn()
+    render(<IamUiProvider><AccountCenter open initialSection="security" onOpenChange={close} /></IamUiProvider>)
+    await screen.findByRole('button', { name: 'Set up authenticator' }); await enroll()
+    let reject!: (reason: Error) => void
+    vi.spyOn(client, 'cancelMfaOperation').mockImplementationOnce(() => new Promise((_, fail) => { reject = fail }))
+    click('Close account center'); confirmation(); click('Cancel setup')
+    expect(screen.getByRole('button', { name: 'Cancel setup' }).matches(':disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: 'Keep setting up' }).matches(':disabled')).toBe(true)
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Account sections' })).getByRole('button', { name: 'Profile' }))
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(close).not.toHaveBeenCalled()
+    await act(async () => reject(new TypeError('Controlled lost response')))
+    await screen.findByRole('button', { name: 'Check this operation' })
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Cancel setup' }).matches(':disabled')).toBe(true)
+    click('Close account center')
+    expect(close).not.toHaveBeenCalled()
+    expect(accountSecurityStore(client).getSnapshot().uncertain).toBe(true)
+    click('Check this operation')
+    await waitFor(() => expect(accountSecurityStore(client).getSnapshot().uncertain).toBe(false))
+    expect(close).not.toHaveBeenCalled()
+  })
+  it('does not leave when cancellation discovers a committed operation', async () => {
+    const f = await setupSecurity(), close = vi.fn()
+    render(<IamUiProvider><AccountCenter open initialSection="security" onOpenChange={close} /></IamUiProvider>)
+    await screen.findByRole('button', { name: 'Set up authenticator' }); await enroll()
+    vi.spyOn(client, 'cancelMfaOperation').mockImplementationOnce(async ref => {
+      await client.completeMfaOperation(ref, '123456')
+      return f.getOperation()
+    })
+    click('Close account center'); confirmation(); click('Cancel setup')
+    await screen.findByText('Authenticator enabled. You can now generate recovery codes.')
+    expect(close).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Cancel setup' })).toBeNull()
+    expect(accountSecurityStore(client).getSnapshot().operation?.state).toBe('COMMITTED')
+  })
+  it('retires a pending exit when the authentication generation changes', async () => {
+    const f = await setupSecurity(), close = vi.fn()
+    render(<IamUiProvider><AccountCenter open initialSection="security" onOpenChange={close} /></IamUiProvider>)
+    await screen.findByRole('button', { name: 'Set up authenticator' }); await enroll()
+    let finish!: (value: ReturnType<typeof f.getOperation>) => void
+    const late = { ...f.getOperation(), state: 'CANCELLED' as const }
+    vi.spyOn(client, 'cancelMfaOperation').mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    click('Close account center'); confirmation(); click('Cancel setup')
+    act(() => client.state.clear())
+    await act(async () => finish(late))
+    expect(close).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Cancel setup' })).toBeNull()
+    expect(accountSecurityStore(client).getSnapshot().operation).toBeNull()
+  })
+  it('displays the returned Application issuer without rewriting the QR payload', async () => {
+    await setupSecurity()
+    const original = client.beginTotpEnrollmentOperation.bind(client)
+    const issuer = 'Customer Application / application-name-not-client-name'
+    const uri = 'otpauth://totp/Customer%20Application:member?secret=FIXTUREONLYSETUP&issuer=Customer%20Application'
+    vi.spyOn(client, 'beginTotpEnrollmentOperation').mockImplementation(async ref => {
+      const result = await original(ref)
+      if (!result.material) throw new Error('Expected setup material')
+      return { ...result, material: { ...result.material, issuer, qrCodeUri: uri } }
+    })
+    render(<IamUiProvider><AccountSecurityPanel /></IamUiProvider>)
+    await screen.findByRole('button', { name: 'Set up authenticator' }); await enroll()
+    expect(screen.getByText(issuer, { exact: true })).toBeTruthy()
+    expect(accountSecurityStore(client).getSnapshot().material?.qrCodeUri).toBe(uri)
+    expect(screen.queryByText('Fixture only')).toBeNull()
+  })
+  it('keeps reauthentication fields above the shared operation footer', async () => {
+    const f = await setupSecurity(); f.setProof('REAUTHENTICATION', [securityPassword])
+    render(<IamUiProvider><AccountSecurityPanel /></IamUiProvider>)
+    await screen.findByRole('button', { name: 'Set up authenticator' }); click('Set up authenticator')
+    const field = await screen.findByLabelText('Current password')
+    expect(field.closest('footer')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Verify and continue' }).closest('footer')).not.toBeNull()
+    expect(field.closest('form')).toBe(screen.getByRole('button', { name: 'Verify and continue' }).closest('form'))
+  })
+})
 describe('AccountCenter real login-method consumer', () => {
   it('uses authenticated per-kind/per-record decisions, including grandfathered and directory verification capabilities', async () => {
     const facts = managedIdentifiers([{ id: 'managed-email', kind: 'EMAIL', displayValue: 'old@outside.invalid', status: 'ACTIVE', verificationState: 'UNVERIFIED', isPrimary: true, managedBy: 'directory' }], 3)
@@ -85,11 +416,21 @@ describe('AccountCenter real login-method consumer', () => {
     expect(screen.queryByText('member6@example.invalid')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: identityEnglish.manageEmails }))
     expect(screen.queryByText('member6@example.invalid')).toBeNull()
+    expect(screen.queryByRole('heading', { name: identityEnglish.add, exact: true })).toBeNull()
+    expect(screen.queryByRole('region', { name: identityEnglish.providers })).toBeNull()
+    expect(screen.getAllByRole('button', { name: identityEnglish.addEmail, exact: true })).toHaveLength(1)
+    const firstEmail = screen.getByText('member1@example.invalid').closest('article')!
+    expect(within(firstEmail).getByText(identityEnglish.primary)).toBeTruthy()
+    expect(within(firstEmail).getByText(identityEnglish.verified)).toBeTruthy()
+    expect(firstEmail.querySelector('.axis-identity-email-status')).toBeTruthy()
+    const pager = screen.getByRole('navigation', { name: identityEnglish.emailPages })
+    expect(screen.getByText('member5@example.invalid').compareDocumentPosition(pager) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: identityEnglish.next }))
     expect(screen.getByText('member6@example.invalid')).toBeTruthy()
     expect(screen.queryByText('member2@example.invalid')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: identityEnglish.previous }))
     const more = screen.getByLabelText(`${identityEnglish.moreActions}: member1@example.invalid`).parentElement!
+    fireEvent.click(within(more).getByLabelText(`${identityEnglish.moreActions}: member1@example.invalid`))
     fireEvent.click(within(more).getByRole('button', { name: identityEnglish.remove }))
     const primary = screen.getByLabelText(identityEnglish.replacementPrimary)
     expect(within(primary).queryByRole('option', { name: 'member3@example.invalid' })).toBeNull()
@@ -143,6 +484,7 @@ describe('AccountCenter real login-method consumer', () => {
     expect(screen.getByRole('button', { name: identityEnglish.unlink }).matches(':disabled')).toBe(true)
     fireEvent.click(screen.getByRole('button', { name: identityEnglish.manageEmails }))
     const more = screen.getByLabelText(`${identityEnglish.moreActions}: a@example.invalid`).parentElement!
+    fireEvent.click(within(more).getByLabelText(`${identityEnglish.moreActions}: a@example.invalid`))
     fireEvent.click(within(more).getByRole('button', { name: identityEnglish.remove }))
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'LAST_LOGIN_METHOD' }), { status: 409 }))
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: identityEnglish.complete }))
@@ -381,7 +723,7 @@ async function controlOperation() {
   await act(async () => { await identityOperationStore(client).reopen('op') })
 }
 describe('SDK-C01 mounted identity form isolation', () => {
-  it.each(['REPLACE', 'TRANSFER'] as const)('discards the old %s draft before new facts arrive on the same mounted client', async type => {
+  it('F007 discards the old REPLACE draft before new facts arrive on the same mounted client', async () => {
     const identifiers = vi.spyOn(client.identity, 'identifiers').mockResolvedValue(managedIdentifiers([
         { id: 'old-id', kind: 'EMAIL', displayValue: 'old@example.invalid', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: true },
         { id: 'old-primary', kind: 'EMAIL', displayValue: 'other@example.invalid', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: false },
@@ -390,26 +732,23 @@ describe('SDK-C01 mounted identity form isolation', () => {
     const view = render(tree())
     await screen.findByText('old@example.invalid')
     fireEvent.click(screen.getByRole('button', { name: identityEnglish.manageEmails }))
-    const oldItem = screen.getAllByText('old@example.invalid').find(item => item.tagName === 'STRONG')!.parentElement!
+    const oldItem = screen.getAllByText('old@example.invalid').find(item => item.tagName === 'STRONG')!.closest('article')!
     const root = screen.getByRole('region', { name: identityEnglish.title })
     expect(screen.queryByLabelText(identityEnglish.operationId)).toBeNull()
-    fireEvent.click(within(oldItem).getByText(identityEnglish.moreActions))
-    fireEvent.click(within(oldItem).getByRole('button', { name: type === 'REPLACE' ? identityEnglish.replace : identityEnglish.transfer }))
-    if (type === 'REPLACE') {
-      expect(screen.getByLabelText(identityEnglish.kind).matches(':disabled')).toBe(true)
-      fireEvent.change(screen.getByLabelText(identityEnglish.value), { target: { value: 'old-draft@example.invalid' } })
-      fireEvent.click(screen.getByLabelText(identityEnglish.removeOld))
-    } else fireEvent.change(screen.getByLabelText(identityEnglish.targetUser), { target: { value: 'old-recipient' } })
-    if (type === 'TRANSFER') fireEvent.change(screen.getByLabelText(identityEnglish.replacementPrimary), { target: { value: 'old-primary' } })
+    fireEvent.click(within(oldItem).getByLabelText(`${identityEnglish.moreActions}: old@example.invalid`))
+    fireEvent.click(within(oldItem).getByRole('button', { name: identityEnglish.replace }))
+    expect(screen.queryByLabelText(identityEnglish.kind)).toBeNull()
+    fireEvent.change(screen.getByLabelText(identityEnglish.newIdentifier.EMAIL), { target: { value: 'old-draft@example.invalid' } })
+    fireEvent.click(screen.getByLabelText(identityEnglish.removeOld))
     const newFacts = deferred<Awaited<ReturnType<typeof client.identity.identifiers>>>()
     identifiers.mockReturnValue(newFacts.promise)
     vi.spyOn(client.identity, 'loginMethods').mockResolvedValue({ loginMethodVersion: 4, methods: [] })
-    switchIdentity(view, tree, type === 'TRANSFER' ? 'user-1' : 'new-user')
+    switchIdentity(view, tree)
     expect(screen.getByRole('region', { name: identityEnglish.title })).toBe(root)
     expect(screen.queryByText('old@example.invalid')).toBeNull()
     expect(screen.queryByRole('heading', { name: /old@example/ })).toBeNull()
     expect(screen.queryByLabelText(identityEnglish.operationId)).toBeNull()
-    expect(screen.queryByLabelText(identityEnglish.value)).toBeNull()
+    expect(screen.queryByLabelText(identityEnglish.newIdentifier.EMAIL)).toBeNull()
     expect(screen.queryByLabelText(identityEnglish.kind)).toBeNull()
     expect(screen.queryByLabelText(identityEnglish.targetUser)).toBeNull()
     expect(screen.queryByRole('button', { name: identityEnglish.addEmail, exact: true })).toBeNull()
@@ -418,24 +757,19 @@ describe('SDK-C01 mounted identity form isolation', () => {
     ], 4)) })
     await screen.findByText('new@example.invalid')
     fireEvent.click(screen.getByRole('button', { name: identityEnglish.manageEmails }))
-    fireEvent.click(screen.getByText(identityEnglish.moreActions, { selector: 'summary' }))
-    fireEvent.click(screen.getByRole('button', { name: type === 'REPLACE' ? identityEnglish.replace : identityEnglish.transfer }))
+    fireEvent.click(screen.getByLabelText(`${identityEnglish.moreActions}: new@example.invalid`))
+    fireEvent.click(screen.getByRole('button', { name: identityEnglish.replace }))
     expect(screen.queryByLabelText(identityEnglish.replacementPrimary)).toBeNull()
-    if (type === 'REPLACE') {
-      expect((screen.getByLabelText(identityEnglish.removeOld) as HTMLInputElement).checked).toBe(true)
-      expect(screen.getByLabelText(identityEnglish.kind).matches(':disabled')).toBe(true)
-      fireEvent.change(screen.getByLabelText(identityEnglish.value), { target: { value: 'replacement@example.invalid' } })
-    } else {
-      expect((screen.getByLabelText(identityEnglish.targetUser) as HTMLInputElement).value).toBe('')
-      fireEvent.change(screen.getByLabelText(identityEnglish.targetUser), { target: { value: 'new-recipient' } })
-    }
+    expect((screen.getByLabelText(identityEnglish.removeOld) as HTMLInputElement).checked).toBe(true)
+    expect(screen.queryByLabelText(identityEnglish.kind)).toBeNull()
+    expect((screen.getByLabelText(identityEnglish.newIdentifier.EMAIL) as HTMLInputElement).value).toBe('')
+    fireEvent.change(screen.getByLabelText(identityEnglish.newIdentifier.EMAIL), { target: { value: 'replacement@example.invalid' } })
     fireEvent.click(screen.getByRole('button', { name: identityEnglish.complete }))
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/identity-operations') && init?.method === 'POST')).toBe(true))
     const request = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/identity-operations') && init?.method === 'POST')!
     expect(JSON.parse(String(request[1]?.body))).toEqual({
-      type, expectedLoginMethodVersion: 4, payload: type === 'REPLACE'
-        ? { identifierId: 'new-id', replacement: { kind: 'EMAIL', value: 'replacement@example.invalid' }, removeOld: true }
-        : { identifierId: 'new-id', targetUserId: 'new-recipient' },
+      type: 'REPLACE', expectedLoginMethodVersion: 4,
+      payload: { identifierId: 'new-id', replacement: { kind: 'EMAIL', value: 'replacement@example.invalid' }, removeOld: true },
     })
     expect(sessionStorage.length).toBe(0)
     expect(localStorage.length).toBe(0)
@@ -545,7 +879,8 @@ describe('SDK-C02 AccountCenter local methods theme', () => {
     const rgb = (value: string) => { const div = document.createElement('div'); div.style.color = value; return div.style.color }
     const root = screen.getByRole('region', { name: identityEnglish.title })
     expect(screen.getByRole('dialog').getAttribute('data-color-scheme')).toBe(local)
-    expect(getComputedStyle(root).backgroundColor).toBe(rgb(tokens.backgroundColor))
+    expect(getComputedStyle(root).backgroundColor).toBe('rgba(0, 0, 0, 0)')
+    expect(screen.getByRole('dialog').style.getPropertyValue('--a-surface')).toBe(tokens.surfaceColor)
     expect(getComputedStyle(root).color).toBe(rgb(tokens.textColor))
     openAdd()
     const input = screen.getByLabelText(identityEnglish.EMAIL)
@@ -630,7 +965,7 @@ describe('ui-sdk2 operation action stages', () => {
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.queryByRole('button', { name: identityEnglish.queryStatus })).toBeNull()
   })
-  it('preserves recipient transfer decisions after account proof and never substitutes complete or initiator cancel', async () => {
+  it('F008 preserves recipient transfer decisions after account proof and never substitutes complete or initiator cancel', async () => {
     const transfer = { ...operation(), type: 'TRANSFER', requiredProofs: [
       { purpose: 'TRANSFER_COUNTERPART', methods: ['PASSWORD'], strength: 'POLICY', satisfied: false },
     ] }
@@ -655,19 +990,21 @@ describe('ui-sdk2 operation action stages', () => {
     expect(screen.queryByRole('button', { name: identityEnglish.cancelChange })).toBeNull()
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/complete') || String(url).endsWith('/cancel'))).toBe(false)
   })
-  it('lets a recipient reject without account proof and displays the real terminal result', async () => {
+  it('F010 lets a recipient reject without account proof after explicit confirmation and displays the real terminal result', async () => {
     const transfer = { ...operation(), type: 'TRANSFER', requiredProofs: [
       { purpose: 'TRANSFER_COUNTERPART', methods: ['PASSWORD'], strength: 'POLICY', satisfied: false },
     ] }
     const confirm = vi.spyOn(client.identity, 'confirmTransfer').mockResolvedValue({ ...transfer, state: 'REJECTED' })
     await mounted(transfer)
     fireEvent.click(screen.getByRole('button', { name: identityEnglish.reject }))
+    expect(confirm).not.toHaveBeenCalled()
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: identityEnglish.confirmCancelChange }))
     await screen.findByRole('heading', { name: identityEnglish.REJECTED })
     expect(confirm).toHaveBeenCalledExactlyOnceWith('op', 'REJECT')
     expect(screen.queryByRole('button', { name: identityEnglish.later })).toBeNull()
     expect(screen.getByRole('button', { name: identityEnglish.done })).toBeTruthy()
   })
-  it('does not let the initiating account complete a transfer while the other account is still pending', async () => {
+  it('F008 does not let the initiating account complete a transfer while the other account is still pending', async () => {
     await mounted({ ...operation('AWAITING_PROOF'), type: 'TRANSFER', requiredProofs: [
       { purpose: 'CURRENT_ACCOUNT', methods: ['PASSWORD'], strength: 'POLICY', satisfied: true },
       { purpose: 'TRANSFER_COUNTERPART', methods: [], strength: 'POLICY', satisfied: false },

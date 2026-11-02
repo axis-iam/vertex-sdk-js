@@ -124,4 +124,4 @@ export function PasswordChangeForm({ appearance, colorScheme, darkAppearance, lo
   )
 }
 
-const passwordCss = `.axis-iam-password-form,.axis-iam-password-new-fields{display:grid;gap:16px;min-width:0}.axis-iam-password-new-fields{margin-top:16px}.axis-iam-password-actions{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;min-width:0;margin-top:22px;padding-top:18px;border-top:1px solid var(--a-border)}.axis-iam-password-actions p{max-width:440px;margin:0;color:var(--a-muted);overflow-wrap:anywhere;font-size:12px;line-height:18px}@container(max-width:480px){.axis-iam-password-actions{display:grid}}`
+const passwordCss = `.axis-iam-password-form,.axis-iam-password-new-fields{display:grid;gap:21px;min-width:0;max-width:475px}.axis-iam-password-new-fields{margin-top:0}.axis-iam-password-actions{display:flex;align-items:flex-start;justify-content:flex-end;flex-wrap:wrap;gap:18px;min-width:0;margin-top:6px;padding-top:0}.axis-iam-password-actions p{width:100%;max-width:475px;margin:0;color:var(--a-muted);overflow-wrap:anywhere;font-size:12px;line-height:18px}@container(max-width:480px){.axis-iam-password-actions{display:grid}}`

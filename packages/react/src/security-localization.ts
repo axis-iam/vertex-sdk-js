@@ -1,4 +1,5 @@
 export const securityEnglish = {
+  confirmGenerateTitle: 'Generate new recovery codes?', confirmDisableTitle: 'Turn off your authenticator?', generateAction: 'Generate new recovery codes', disableAction: 'Turn off authenticator', dismiss: 'Cancel', cancelTitle: 'Cancel this setup?',
   title: 'Security verification', description: 'Protect sign-in with an authenticator and recovery codes.',
   loading: 'Loading security', retry: 'Try again', unavailable: 'This action is not available right now. Try another verification method or contact support.',
   totp: 'Authenticator app', enabled: 'Enabled', disabled: 'Not enabled', enroll: 'Set up authenticator', disable: 'Turn off authenticator',
@@ -7,7 +8,7 @@ export const securityEnglish = {
   recovery: 'Recovery codes', generate: 'Generate recovery codes', regenerate: 'Generate a new set',
   confirmGenerate: 'A new set replaces every previous recovery code. Keep the new codes somewhere safe.',
   confirmDisable: 'Turning off your authenticator signs you out. You will need to sign in again.',
-  confirm: 'Continue', back: 'Back', cancel: 'Cancel setup', cancelConfirm: 'Cancel this operation? Any setup material will stop working.', keep: 'Keep setting up', cancelNow: 'Confirm cancellation',
+  confirm: 'Continue', back: 'Back', cancel: 'Cancel setup', cancelConfirm: 'Cancel this operation? Any setup material will stop working.', keep: 'Keep setting up', cancelNow: 'Cancel setup',
   password: 'Current password', code: 'Verification code', verify: 'Verify and continue', choose: 'Choose a verification method', email: 'Email code', send: 'Send account code',
   provider: 'Confirm with provider', providerDone: 'I have returned from the provider', stepUp: 'Use an existing authenticator', webauthn: 'Use security key',
   begin: 'Show setup instructions', setup: 'Scan with your authenticator app, or enter the setup key manually. Then enter its six-digit code.', qr: 'Authenticator setup QR code', secret: 'Manual setup key', issuer: 'Issuer', complete: 'Confirm setup',
@@ -28,12 +29,13 @@ export const securityEnglish = {
 }
 export type SecurityLocalization = typeof securityEnglish
 export const securityZhCN: SecurityLocalization = {
+  confirmGenerateTitle: '生成新恢复码？', confirmDisableTitle: '关闭验证器？', generateAction: '生成新恢复码', disableAction: '关闭验证器', dismiss: '取消', cancelTitle: '取消本次设置？',
   title: '安全验证', description: '使用验证器和恢复码保护账号登录。', loading: '正在读取安全状态', retry: '重试', unavailable: '暂时无法进行此操作，请使用其他验证方式或联系支持。',
   totp: '验证器应用', enabled: '已启用', disabled: '未启用', enroll: '设置验证器', disable: '停用验证器', recovery: '恢复码', generate: '生成恢复码', regenerate: '生成新恢复码',
   authenticatorDetail: '使用验证器中的动态码，为登录增加一道验证。',
   recoveryDetail: '妥善保存备用验证码，在无法使用验证器时完成验证。',
   confirmGenerate: '生成新的一组后，所有旧恢复码将失效。请妥善保存新恢复码。', confirmDisable: '停用验证器后将退出登录，你需要重新登录。', confirm: '继续', back: '返回',
-  cancel: '取消设置', cancelConfirm: '确定取消本次操作？当前设置资料将失效。', keep: '继续设置', cancelNow: '确认取消',
+  cancel: '取消设置', cancelConfirm: '确定取消本次操作？当前设置资料将失效。', keep: '继续设置', cancelNow: '取消设置',
   password: '当前密码', code: '验证码', verify: '验证并继续', choose: '选择验证方式', email: '邮箱验证码', send: '发送账号验证码', provider: '通过第三方确认', providerDone: '已从第三方返回', stepUp: '使用已有验证器', webauthn: '使用安全密钥',
   begin: '查看设置步骤', setup: '用验证器扫描二维码，或手动输入密钥，然后填写应用生成的六位验证码。', qr: '验证器设置二维码', secret: '手动设置密钥', issuer: '签发者', complete: '确认启用',
   committed: '变更已完成', enrolled: '验证器已启用，现在可以生成恢复码。', cancelled: '操作已取消', expired: '设置已到期，资料已清除。重新开始前请先查询最新状态。',

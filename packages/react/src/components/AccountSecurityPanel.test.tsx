@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AccountSecurityPanel } from './AccountSecurityPanel'
 import { AccountSecurityDialog } from './AccountSecurityDialog'
 import { AccountCenter } from './AccountCenter'
@@ -19,6 +19,78 @@ async function setup(mode: 'oauth_tokens' | 'server_session' = 'oauth_tokens') {
   return f
 }
 const click = (label: string) => fireEvent.click(screen.getByRole('button', { name: label, exact: true }))
+describe('F009 single final risk modal', () => {
+  it('F009 keeps an unknown final result unavailable for a second submission', async () => {
+    await setup()
+    render(<IamUiProvider><AccountSecurityPanel /></IamUiProvider>)
+    await screen.findByRole('button', { name: 'Generate recovery codes' }); click('Generate recovery codes')
+    await screen.findByRole('button', { name: 'Generate new recovery codes' }); click('Generate new recovery codes')
+    const complete = vi.spyOn(client, 'completeMfaOperation').mockRejectedValueOnce(new TypeError('Controlled lost completion'))
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Generate new recovery codes' }))
+    await screen.findByRole('button', { name: 'Check this operation' })
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Generate new recovery codes' }).matches(':disabled')).toBe(true)
+    expect(accountSecurityStore(client).getSnapshot().uncertain).toBe(true)
+    expect(complete).toHaveBeenCalledTimes(1)
+  })
+  it('F009 retires the risk modal when its authentication generation changes', async () => {
+    const f = await setup()
+    render(<IamUiProvider><AccountSecurityPanel /></IamUiProvider>)
+    await screen.findByRole('button', { name: 'Generate recovery codes' }); click('Generate recovery codes')
+    await screen.findByRole('button', { name: 'Generate new recovery codes' }); click('Generate new recovery codes')
+    act(() => client.state.clear())
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(f.fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/complete'))).toHaveLength(0)
+  })
+  it.each(['TOTP_DISABLE', 'RECOVERY_CODES_GENERATE'] as const)('F009 requires one final modal for %s after server proof', async type => {
+    const f = await setup()
+    f.setProof('REAUTHENTICATION', [securityPassword])
+    if (type === 'TOTP_DISABLE') await client.completeMfaOperation((await client.createMfaOperation('TOTP_ENROLL', 4)).ref, '123456')
+    f.fetchMock.mockClear()
+    render(<IamUiProvider><AccountSecurityPanel /></IamUiProvider>)
+    const entry = type === 'TOTP_DISABLE' ? 'Turn off authenticator' : 'Generate recovery codes'
+    await screen.findByRole('button', { name: entry }); click(entry)
+    const proof = await screen.findByLabelText('Current password')
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Continue', exact: true })).toBeNull()
+    fireEvent.change(proof, { target: { value: 'isolated-fixture-password' } }); click('Verify and continue')
+    const label = type === 'TOTP_DISABLE' ? 'Turn off authenticator' : 'Generate new recovery codes'
+    await screen.findByRole('button', { name: label }); click(label)
+    const modal = screen.getByRole('alertdialog')
+    expect((modal as HTMLDialogElement).open).toBe(true)
+    expect(within(modal).getByRole('button', { name: 'Cancel', exact: true })).toBe(document.activeElement)
+    expect(f.fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/complete'))).toHaveLength(0)
+    fireEvent.keyDown(modal, { key: 'Escape' })
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(f.fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/complete'))).toHaveLength(0)
+    click(label)
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: label }))
+    await screen.findByRole('heading', { name: 'Change completed' })
+    expect(f.fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/complete'))).toHaveLength(1)
+  })
+})
+describe('F010 shared security exit modal', () => {
+  it.each(['panel', 'dialog', 'center'] as const)('F010 %s traps focus, Escape keeps material and never bubbles a second close', async surface => {
+    await setup()
+    const close = vi.fn()
+    render(<IamUiProvider>{surface === 'center' ? <AccountCenter open initialSection="security" onOpenChange={close} /> : surface === 'dialog' ? <AccountSecurityDialog open onOpenChange={close} /> : <AccountSecurityPanel />}</IamUiProvider>)
+    await screen.findByRole('button', { name: 'Set up authenticator' }); click('Set up authenticator')
+    await screen.findByRole('button', { name: 'Show setup instructions' }); click('Show setup instructions')
+    await screen.findByText('FIXTUREONLYSETUP')
+    click('Cancel setup')
+    const modal = screen.getByRole('alertdialog', { name: 'Cancel this setup?' })
+    const keep = within(modal).getByRole('button', { name: 'Keep setting up' }), cancel = within(modal).getByRole('button', { name: 'Cancel setup' })
+    expect((modal as HTMLDialogElement).open).toBe(true)
+    expect(keep).toBe(document.activeElement)
+    fireEvent.keyDown(keep, { key: 'Tab', shiftKey: true }); expect(cancel).toBe(document.activeElement)
+    fireEvent.keyDown(cancel, { key: 'Tab' }); expect(keep).toBe(document.activeElement)
+    fireEvent.keyDown(keep, { key: 'Escape' })
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.getByText('FIXTUREONLYSETUP')).toBeTruthy()
+    expect(close).not.toHaveBeenCalled()
+    expect(accountSecurityStore(client).getSnapshot().material).not.toBeNull()
+  })
+})
 it('groups security rows with descriptive copy and decorative icons without changing action names', async () => {
   await setup()
   render(<IamUiProvider><AccountSecurityPanel /></IamUiProvider>)
@@ -52,7 +124,7 @@ it.each((['oauth_tokens', 'server_session'] as const).flatMap(mode => (['panel',
   expect(sessionStorage.length).toBe(0)
   expect(f.fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/complete'))).toHaveLength(1)
 })
-it.each((['oauth_tokens', 'server_session'] as const).flatMap(mode => (['panel', 'center', 'dialog'] as const).map(surface => ({ mode, surface }))))('$mode $surface blocks rapid next creation until the authoritative capability refresh resolves', async ({ mode, surface }) => {
+it.each((['oauth_tokens', 'server_session'] as const).flatMap(mode => (['panel', 'center', 'dialog'] as const).map(surface => ({ mode, surface }))))('F009 $mode $surface blocks rapid next creation until the authoritative capability refresh resolves', async ({ mode, surface }) => {
   const f = await setup(mode)
   render(<IamUiProvider>{surface === 'center' ? <AccountCenter open onOpenChange={vi.fn()} initialSection="security" /> : surface === 'dialog' ? <AccountSecurityDialog open onOpenChange={vi.fn()} /> : <AccountSecurityPanel />}</IamUiProvider>)
   await screen.findByRole('button', { name: 'Set up authenticator' })
@@ -67,7 +139,7 @@ it.each((['oauth_tokens', 'server_session'] as const).flatMap(mode => (['panel',
   const creates = () => f.fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith('/mfa/operations') && init?.method === 'POST')
   expect(creates()).toHaveLength(1)
   await act(async () => finish({ ...f.capabilities(), loginMethodVersion: 5 }))
-  await screen.findByRole('button', { name: 'Generate recovery codes' }); click('Generate recovery codes'); click('Continue')
+  await screen.findByRole('button', { name: 'Generate recovery codes' }); click('Generate recovery codes')
   await waitFor(() => expect(creates()).toHaveLength(2))
   expect(JSON.parse(String(creates()[1][1]?.body)).expectedLoginMethodVersion).toBe(5)
 })
@@ -103,7 +175,7 @@ it.each(['oauth_tokens', 'server_session'] as const)('%s keeps next-operation co
   expect(creates()).toHaveLength(1)
   read.mockResolvedValueOnce({ ...f.capabilities(), loginMethodVersion: 5 })
   click('Try again')
-  await screen.findByRole('button', { name: 'Generate recovery codes' }); click('Generate recovery codes'); click('Continue')
+  await screen.findByRole('button', { name: 'Generate recovery codes' }); click('Generate recovery codes')
   await waitFor(() => expect(creates()).toHaveLength(2))
   expect(JSON.parse(String(creates()[1][1]?.body)).expectedLoginMethodVersion).toBe(5)
 })
@@ -119,12 +191,12 @@ it('offers server-listed password/email proof rather than assuming a password ex
   await screen.findByRole('button', { name: 'Show setup instructions' })
   expect(screen.queryByLabelText('Current password')).toBeNull()
 })
-it('clears recovery codes on unmount and never places secrets in storage', async () => {
+it('F009 clears recovery codes on unmount and never places secrets in storage', async () => {
   await setup()
   const view = render(<IamUiProvider><AccountSecurityPanel /></IamUiProvider>)
   await screen.findByRole('button', { name: 'Generate recovery codes' }); click('Generate recovery codes')
-  click('Continue')
-  await screen.findByRole('button', { name: 'Continue' }); click('Continue')
+  await screen.findByRole('button', { name: 'Generate new recovery codes' }); click('Generate new recovery codes')
+  fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Generate new recovery codes', exact: true }))
   await screen.findByText('FIXTURE-ONE')
   expect(sessionStorage.length).toBe(0); expect(localStorage.length).toBe(0)
   view.unmount()
@@ -139,7 +211,7 @@ it('Dialog close asks once, cancels the exact server operation and restores trig
   await screen.findByRole('button', { name: 'Show setup instructions' }); click('Show setup instructions')
   await screen.findByText('FIXTUREONLYSETUP'); click('Close security verification')
   expect(onOpenChange).not.toHaveBeenCalled()
-  click('Confirm cancellation')
+  click('Cancel setup')
   await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
   expect(f.fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/cancel'))).toHaveLength(1)
   view.unmount(); expect(document.activeElement).toBe(trigger); trigger.remove()

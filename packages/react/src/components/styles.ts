@@ -79,10 +79,8 @@ export function useResolvedAppearance(
     const query = window.matchMedia('(prefers-color-scheme: dark)')
     const update = () => setSystemDark(query.matches)
     update()
-    query.onchange = update
     query.addEventListener('change', update)
     return () => {
-      query.onchange = null
       query.removeEventListener('change', update)
     }
   }, [colorScheme])

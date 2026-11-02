@@ -25,7 +25,7 @@ export function BrandedAuthContent({ brand, presentation = 'standalone', ...prop
   return (
     <div data-axis-branded-auth data-color-scheme={brand.scheme} style={{
       ...containerStyle(a), overflowWrap: 'anywhere',
-      ...(presentation === 'dialog' ? { maxWidth: 'none', margin: 0, padding: 0, borderRadius: 0 } : {}),
+      ...(presentation === 'dialog' ? { maxWidth: 'none', margin: 0, padding: 0, borderRadius: 0, backgroundColor: 'transparent' } : {}),
     }}>
       {isLoading && <p role="status">{l.auth.brandingLoading}</p>}
       {error && <p role="status" style={{ fontSize: 13, color: a.dangerColor }}>

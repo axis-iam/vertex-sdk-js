@@ -20,6 +20,9 @@ const scenario = new URLSearchParams(window.location.search).get('scenario') ?? 
 const locale = new URLSearchParams(window.location.search).get('locale') ?? 'en'
 const surface = new URLSearchParams(window.location.search).get('surface') ?? 'account-center'
 const initialScheme = (new URLSearchParams(window.location.search).get('scheme') ?? 'light') as AccountCenterColorScheme
+const organizationId = scenario === 'long'
+  ? 'org-visual-smoke-with-a-deliberately-long-organization-identifier-and-context-value'
+  : 'org-visual-smoke'
 
 const longLocalization = Object.fromEntries(Object.entries(accountCenterEnglish).map(([key, value]) => [
   key,
@@ -88,7 +91,7 @@ function jwt() {
     email: activeProfile.email,
     name: activeProfile.displayName,
     roles: ['workspace-admin', 'billing-reviewer-with-a-deliberately-long-role-name'],
-    org_id: 'org-visual-smoke-with-a-deliberately-long-organization-identifier',
+    org_id: organizationId,
     exp: Math.floor(Date.now() / 1000) + 3600,
   })}.visual-smoke-signature`
 }
@@ -112,6 +115,10 @@ function response(data?: unknown, status = 200): Response {
     status,
     headers: data === undefined ? undefined : { 'Content-Type': 'application/json' },
   })
+}
+
+function identifierCapability(unavailableReasons: string[] = []) {
+  return { allowed: unavailableReasons.length === 0, unavailableReasons, requirements: ['CURRENT_ACCOUNT_PROOF'], replacementPrimaryIds: [] }
 }
 
 window.fetch = async (input, init) => {
@@ -156,9 +163,16 @@ window.fetch = async (input, init) => {
     }] })
   }
   if (url.endsWith('/api/v1/auth/me/identifiers')) {
-    return response({ loginMethodVersion: 1, items: [{
+    return response({ loginMethodVersion: 1, management: {
+      add: { USERNAME: identifierCapability(), EMAIL: identifierCapability(), PHONE: identifierCapability(['TARGET_PROOF_UNAVAILABLE']) },
+      proofOptions: [{ method: 'PASSWORD', availableMethods: [] }],
+    }, items: [{
       id: 'email-visual', kind: 'EMAIL', displayValue: activeProfile.email,
       status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: true,
+      managedBy: null, capabilities: {
+        VERIFY: identifierCapability(['ALREADY_VERIFIED']), SET_PRIMARY: identifierCapability(['ALREADY_PRIMARY']),
+        REMOVE: identifierCapability(['LAST_LOGIN_METHOD']), REPLACE: identifierCapability(), TRANSFER: identifierCapability(),
+      },
     }] })
   }
   if (url.includes('/api/v1/auth/me/linkable-identity-providers')) {
@@ -212,11 +226,11 @@ window.fetch = async (input, init) => {
       roles: ['workspace-admin'],
     })
   }
-  if (url.endsWith('/api/v1/auth/me')) return response({ id: activeProfile.userId, email: activeProfile.email, username: null, status:'ACTIVE', emailVerified:true, metadata:{}, authenticationContext:{subjectType:'USER',applicationId:activeProfile.applicationId,clientId:'visual-smoke-public-client',sessionId:'session-current',workspaceId:null,workspaceSelectionRequired:true,organizationId:null,organizationSlug:null,organizationRole:null,authTime:null,authenticationMethods:[],assuranceLevel:null,impersonation:null} })
+  if (url.endsWith('/api/v1/auth/me')) return response({ id: activeProfile.userId, email: activeProfile.email, username: null, status:'ACTIVE', emailVerified:true, metadata:{}, authenticationContext:{subjectType:'USER',applicationId:activeProfile.applicationId,clientId:'visual-smoke-public-client',sessionId:'session-current',workspaceId:null,workspaceSelectionRequired:true,organizationId,organizationSlug:'visual-smoke',organizationRole:'ADMIN',authTime:null,authenticationMethods:[],assuranceLevel:null,impersonation:null} })
   if (url.includes('/api/v1/auth/me/permissions')) {
     return response({
       applicationId: activeProfile.applicationId,
-      organizationId: scenario === 'long' ? 'org-visual-smoke-with-a-deliberately-long-organization-identifier-and-context-value' : 'org-visual-smoke',
+      organizationId,
       roles: scenario === 'empty' ? [] : ['workspace-admin', 'billing-reviewer-with-a-deliberately-long-role-name'],
       permissions: scenario === 'empty' ? [] : ['orders:read', 'invoices:approve', longPermission],
     })
@@ -314,7 +328,7 @@ function App() {
         <AccountCenter
           open={accountCenterOpen}
           onOpenChange={setAccountCenterOpen}
-          organizationId={scenario === 'long' ? 'org-visual-smoke-with-a-deliberately-long-organization-identifier-and-context-value' : 'org-visual-smoke'}
+          organizationId={organizationId}
         />
       </main>
     </IamProvider>

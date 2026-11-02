@@ -3,8 +3,10 @@ import { readFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 
 /** Deterministic protocol boundary, not a replacement for real-backend integration. */
-export function securityFixture(bundle) {
+export function securityFixture(bundle, baselineBundle) {
   let origin, enrolled = false, count = 0, version = 4, operation = null, lostBegin = false, lostComplete = false, identity = null, providerReturned = false, lostIdentityComplete = false
+  let scenarioOptions = {}, usernameValue = null, replacementUsername = null
+  const usernameId = '019a31b0-0000-7000-8000-000000000003'
   const requests = [], issued = new Map()
   const ref = 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc'
   const providerId = '019a31b0-0000-7000-8000-000000000001'
@@ -12,13 +14,20 @@ export function securityFixture(bundle) {
   const identifierIds = Array.from({ length: 11 }, () => randomUUID())
   const capability = (unavailableReasons = [], requirements = ['CURRENT_ACCOUNT_PROOF'], replacementPrimaryIds = []) => ({ allowed: !unavailableReasons.length, unavailableReasons, requirements, replacementPrimaryIds })
   const identifiers = () => ({ loginMethodVersion: version, management: { add: {
-    USERNAME: capability([], ['CURRENT_ACCOUNT_PROOF', 'NEW_IDENTIFIER']), EMAIL: capability([], ['CURRENT_ACCOUNT_PROOF', 'NEW_IDENTIFIER', 'TARGET_EMAIL_OTP']), PHONE: capability(['TARGET_PROOF_UNAVAILABLE'], ['CURRENT_ACCOUNT_PROOF', 'NEW_IDENTIFIER', 'TARGET_PHONE_OTP']),
+    USERNAME: capability(usernameValue ? ['IDENTIFIER_ALREADY_EXISTS'] : [], ['CURRENT_ACCOUNT_PROOF', 'NEW_IDENTIFIER']), EMAIL: capability([], ['CURRENT_ACCOUNT_PROOF', 'NEW_IDENTIFIER', 'TARGET_EMAIL_OTP']), PHONE: capability(['TARGET_PROOF_UNAVAILABLE'], ['CURRENT_ACCOUNT_PROOF', 'NEW_IDENTIFIER', 'TARGET_PHONE_OTP']),
   }, proofOptions: [{ method: 'PASSWORD', availableMethods: [] }] }, items: identifierIds.map((id, index) => ({ id, kind: 'EMAIL', displayValue: index === 0 ? 'member@example.invalid' : `member.${index + 1}.with-a-long-address@example.invalid`, status: 'ACTIVE', verificationState: index === 1 ? 'UNVERIFIED' : 'VERIFIED', isPrimary: index === 0, managedBy: null, capabilities: {
     VERIFY: capability(index === 1 ? [] : ['ALREADY_VERIFIED'], ['CURRENT_ACCOUNT_PROOF', 'TARGET_EMAIL_OTP']), SET_PRIMARY: capability(index === 0 ? ['ALREADY_PRIMARY'] : index === 1 ? ['IDENTIFIER_UNVERIFIED'] : []),
     REMOVE: capability([], ['CURRENT_ACCOUNT_PROOF', 'REMAINING_LOGIN_PATH', ...(index === 0 ? ['REPLACEMENT_PRIMARY'] : [])], index === 0 ? [identifierIds[10]] : []),
     REPLACE: capability([], ['CURRENT_ACCOUNT_PROOF', 'NEW_IDENTIFIER', 'REMAINING_LOGIN_PATH', 'TARGET_EMAIL_OTP']),
     TRANSFER: capability([], ['CURRENT_ACCOUNT_PROOF', 'REMAINING_LOGIN_PATH', 'COUNTERPART_CONFIRMATION', 'TARGET_EMAIL_OTP', ...(index === 0 ? ['REPLACEMENT_PRIMARY'] : [])], index === 0 ? [identifierIds[10]] : []),
-  } })) })
+  } })).concat(usernameValue ? [{ id: usernameId, kind: 'USERNAME', displayValue: usernameValue, status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: true, managedBy: scenarioOptions.usernameManaged ? 'Directory' : null, capabilities: {
+    VERIFY: capability(['NOT_APPLICABLE']), SET_PRIMARY: capability(['ALREADY_PRIMARY']),
+    REPLACE: capability(scenarioOptions.usernameManaged ? ['MANAGED_IDENTIFIER'] : [], ['CURRENT_ACCOUNT_PROOF', 'NEW_IDENTIFIER', 'REMAINING_LOGIN_PATH', 'REMOVE_OLD']),
+    REMOVE: capability([], ['CURRENT_ACCOUNT_PROOF', 'REMAINING_LOGIN_PATH']), TRANSFER: capability([], ['CURRENT_ACCOUNT_PROOF', 'REMAINING_LOGIN_PATH', 'COUNTERPART_CONFIRMATION']),
+  } }] : []).concat(scenarioOptions.phone ? [{ id: '019a31b0-0000-7000-8000-000000000004', kind: 'PHONE', displayValue: '+12025550108', status: 'ACTIVE', verificationState: 'VERIFIED', isPrimary: true, managedBy: null, capabilities: {
+    VERIFY: capability(['ALREADY_VERIFIED']), SET_PRIMARY: capability(['ALREADY_PRIMARY']),
+    REPLACE: capability([], ['CURRENT_ACCOUNT_PROOF', 'NEW_IDENTIFIER', 'TARGET_PHONE_OTP']), REMOVE: capability([]), TRANSFER: capability([], ['CURRENT_ACCOUNT_PROOF', 'COUNTERPART_CONFIRMATION']),
+  } }] : []) })
   const identityWire = bff => {
     const { ref: operationRef, ...rest } = identity
     return { [bff ? 'ref' : 'id']: operationRef, ...rest }
@@ -55,7 +64,7 @@ export function securityFixture(bundle) {
       if (path === '/' || path === '/callback') {
         res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<!doctype html><html lang="en" data-host-theme="unchanged"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Account security isolated consumer</title><style>body{margin:0;background:#edf0f3;font-family:Georgia,serif}.consumer-controls{margin:16px 0;color:#344352}.consumer-controls button{min-height:44px}#app{margin:0 auto;padding:24px;max-width:1000px;box-sizing:border-box}@media(max-width:480px){#app{padding:12px}}</style><script type="module" src="/browser.js"></script></html>'); return
       }
-      if (path === '/browser.js') { res.writeHead(200, { 'Content-Type': 'text/javascript' }); res.end(await readFile(bundle)); return }
+      if (path === '/browser.js') { res.writeHead(200, { 'Content-Type': 'text/javascript' }); res.end(await readFile(scenarioOptions.before && baselineBundle ? baselineBundle : bundle)); return }
       const chunks = []; for await (const chunk of req) chunks.push(chunk)
       const text = Buffer.concat(chunks).toString()
       const body = !text ? undefined : req.headers['content-type']?.includes('application/x-www-form-urlencoded')
@@ -76,20 +85,28 @@ export function securityFixture(bundle) {
       if (path.endsWith('/security')) return send(res, { emailVerified: true, passwordCredentialPresent: true, mfaEnrolled: enrolled, totpEnrolled: enrolled, webAuthnEnrolled: false, activeSessionCount: 1 })
       if (path.endsWith('/identifiers')) return send(res, identifiers())
       if (path.endsWith('/login-methods')) return send(res, { loginMethodVersion: version, methods: [] })
-      if (path.endsWith('/linkable-identity-providers')) return send(res, [{ id: providerId, displayName: 'Catalog directory label', providerType: 'OIDC', protocol: 'OIDC', enabled: true, linked: false, linkedAt: null, supportsAccountLinking: true, canLink: true, canReauthenticate: false, unavailableReasons: [] }])
+      if (path.endsWith('/linkable-identity-providers')) return send(res, [
+        { id: providerId, displayName: scenarioOptions.longProvider ? 'Catalog directory label with a deliberately long organization-managed provider name' : 'Catalog directory label', providerType: 'OIDC', protocol: 'OIDC', enabled: true, linked: false, linkedAt: null, supportsAccountLinking: true, canLink: true, canReauthenticate: false, unavailableReasons: [] },
+        ...(scenarioOptions.longProvider ? [{ id: '019a31b0-0000-7000-8000-000000000002', displayName: 'Unavailable organization identity provider', providerType: 'OIDC', protocol: 'OIDC', enabled: false, linked: false, linkedAt: null, supportsAccountLinking: true, canLink: false, canReauthenticate: false, unavailableReasons: ['PROVIDER_UNAVAILABLE'] }] : []),
+      ])
       if (path.endsWith('/identity-operations') && req.method === 'POST') {
-        if (body.type !== 'LINK' || body.payload.providerId !== providerId) return send(res, { error: 'INVALID_OPERATION_PAYLOAD' }, 400)
-        identity = { ref: bff ? ref : randomUUID(), type: 'LINK', state: 'AWAITING_REAUTH', expiresAt: future(), providerTarget: null, completion: null, proofOptions: [{ method: 'PASSWORD' }], requiredProofs: [{ purpose: 'CURRENT_ACCOUNT', methods: ['PASSWORD'], strength: 'POLICY', satisfied: false }, { purpose: 'TARGET_OWNERSHIP', methods: ['PROVIDER'], strength: 'OWNERSHIP', satisfied: false }] }
+        if (body.type === 'REPLACE') {
+          if (!usernameValue || body.payload.identifierId !== usernameId || body.payload.replacement?.kind !== 'USERNAME' || body.payload.removeOld !== true) return send(res, { error: 'INVALID_OPERATION_PAYLOAD' }, 400)
+          if (scenarioOptions.usernameManaged) return send(res, { error: 'MANAGED_IDENTIFIER' }, 409)
+          replacementUsername = body.payload.replacement.value
+        } else if (body.type !== 'LINK' || body.payload.providerId !== providerId) return send(res, { error: 'INVALID_OPERATION_PAYLOAD' }, 400)
+        identity = { ref: bff ? ref : randomUUID(), type: body.type, state: 'AWAITING_REAUTH', expiresAt: future(), providerTarget: null, completion: null, proofOptions: [{ method: 'PASSWORD' }], requiredProofs: [{ purpose: 'CURRENT_ACCOUNT', methods: ['PASSWORD'], strength: 'POLICY', satisfied: false }, ...(body.type === 'LINK' ? [{ purpose: 'TARGET_OWNERSHIP', methods: ['PROVIDER'], strength: 'OWNERSHIP', satisfied: false }] : [])] }
         return send(res, identityWire(bff), 201)
       }
       if (path.includes('/identity-operations/')) {
         if (!identity || !path.includes(identity.ref)) return send(res, { error: 'OPERATION_NOT_FOUND' }, 404)
-        if (path.endsWith('/reauthenticate')) { identity.state = 'AWAITING_PROOF'; identity.requiredProofs[0].satisfied = true }
+        if (path.endsWith('/reauthenticate')) { identity.state = identity.type === 'REPLACE' ? 'READY' : 'AWAITING_PROOF'; identity.requiredProofs[0].satisfied = true }
         if (path.endsWith('/authorize')) return send(res, { [bff ? 'ref' : 'authorizationId']: bff ? ref : 'protocol-authorization', authorizationUrl: `${origin}/protocol-provider?mode=${bff ? 'bff' : 'oauth'}`, expiresAt: future() })
         if (path.endsWith('/provider-callback')) { if (!providerReturned) return send(res, { error: 'PROOF_REQUIRED' }, 409); providerReady() }
         if (path.endsWith('/cancel')) { identity.state = 'CANCELLED'; identity.providerTarget = null }
         if (path.endsWith('/complete')) {
-          if (identity.state !== 'READY' || !identity.providerTarget || body.proofs.length) return send(res, { error: 'PROOF_REQUIRED' }, 409)
+          if (identity.state !== 'READY' || (identity.type === 'LINK' && !identity.providerTarget) || body.proofs.length) return send(res, { error: 'PROOF_REQUIRED' }, 409)
+          if (identity.type === 'REPLACE') usernameValue = replacementUsername
           identity.state = 'COMMITTED'; version++
           identity.completion = { completedAt: now(), finalLoginMethodVersion: version, sessionImpact: 'UNCHANGED' }
           if (lostIdentityComplete) { lostIdentityComplete = false; loseReply(res); return }
@@ -98,25 +115,29 @@ export function securityFixture(bundle) {
       }
       if (path.endsWith('/sessions')) return send(res, [])
       if (path.endsWith('/mfa/capabilities')) {
-        const action = allowed => ({ allowed, reasonCode: allowed ? null : 'METHOD_UNAVAILABLE', proofRequirement: 'SESSION', proofOptions: [] })
+        const action = allowed => ({ allowed, reasonCode: allowed ? null : 'METHOD_UNAVAILABLE', proofRequirement: scenarioOptions.securityProof ? 'REAUTHENTICATION' : 'SESSION', proofOptions: scenarioOptions.securityProof ? [{ method: 'PASSWORD', identifierId: null, maskedIdentifier: null, methodId: null, displayName: null, availableMethods: [] }] : [] })
         return send(res, { loginMethodVersion: version, totpEnroll: action(!enrolled), totpDisable: action(enrolled), recoveryCodesGenerate: action(true) })
       }
       if (path.endsWith('/recovery-codes/remaining')) return send(res, { remaining: count })
       if (path.endsWith('/mfa/operations') && req.method === 'POST') {
         const key = bff ? body.requestId : req.headers['idempotency-key']
         if (issued.has(key)) { operation = issued.get(key); return send(res, wire(bff)) }
-        operation = { ref: bff ? key : randomUUID(), type: body.type, state: 'READY', createdAt: now(), expiresAt: future(), expectedLoginMethodVersion: body.expectedLoginMethodVersion, proofRequirement: 'SESSION', proofOptions: [], proofSatisfied: true, nextChallengeAt: null, reasonCode: null, result: null }
+        operation = { ref: bff ? key : randomUUID(), type: body.type, state: scenarioOptions.securityProof ? 'AWAITING_REAUTH' : 'READY', createdAt: now(), expiresAt: future(), expectedLoginMethodVersion: body.expectedLoginMethodVersion, proofRequirement: scenarioOptions.securityProof ? 'REAUTHENTICATION' : 'SESSION', proofOptions: scenarioOptions.securityProof ? [{ method: 'PASSWORD', identifierId: null, maskedIdentifier: null, methodId: null, displayName: null, availableMethods: [] }] : [], proofSatisfied: !scenarioOptions.securityProof, nextChallengeAt: null, reasonCode: null, result: null }
         issued.set(key, operation); return send(res, wire(bff))
       }
       if (path.includes('/mfa/operations/')) {
         if (!operation || !path.includes(operation.ref)) return send(res, { error: 'OPERATION_NOT_FOUND' }, 404)
+        if (path.endsWith('/reauthenticate')) { operation.state = 'READY'; operation.proofSatisfied = true; return send(res, wire(bff)) }
         if (path.endsWith('/begin')) {
           if (operation.state === 'AWAITING_CONFIRMATION') return send(res, { operation: wire(bff), delivery: 'ALREADY_DELIVERED' })
           operation.state = 'AWAITING_CONFIRMATION'
           if (lostBegin) { lostBegin = false; loseReply(res); return }
-          return send(res, { operation: wire(bff), delivery: 'AVAILABLE', material: { secret: 'FIXTUREONLYSETUP', qrCodeUri: 'otpauth://totp/fixture?secret=FIXTUREONLYSETUP', issuer: 'Isolated fixture' } })
+          const issuer = scenarioOptions.applicationIssuer ?? 'Isolated fixture'
+          const qrCodeUri = scenarioOptions.applicationIssuer ? `otpauth://totp/${encodeURIComponent(issuer)}:member?secret=FIXTUREONLYSETUP&issuer=${encodeURIComponent(issuer)}` : 'otpauth://totp/fixture?secret=FIXTUREONLYSETUP'
+          return send(res, { operation: wire(bff), delivery: 'AVAILABLE', material: { secret: 'FIXTUREONLYSETUP', qrCodeUri, issuer } })
         }
         if (path.endsWith('/complete')) {
+          if (!operation.proofSatisfied) return send(res, { error: 'PROOF_REQUIRED' }, 409)
           if (operation.state === 'COMMITTED') return send(res, { operation: wire(bff), delivery: operation.type === 'RECOVERY_CODES_GENERATE' ? 'ALREADY_DELIVERED' : 'NOT_APPLICABLE' })
           if (operation.type === 'TOTP_ENROLL' && body.code !== '123456') return send(res, { error: 'INVALID_TOTP_CODE' }, 400)
           enrolled = operation.type === 'TOTP_ENROLL' || (operation.type !== 'TOTP_DISABLE' && enrolled)
@@ -126,7 +147,10 @@ export function securityFixture(bundle) {
           if (lostComplete) { lostComplete = false; loseReply(res); return }
           return send(res, { operation: wire(bff), delivery: operation.type === 'RECOVERY_CODES_GENERATE' ? 'AVAILABLE' : 'NOT_APPLICABLE', ...(operation.type === 'RECOVERY_CODES_GENERATE' ? { recoveryCodes: { codes: ['FIXTURE-CODE-ONE', 'FIXTURE-CODE-TWO'], count: 2 } } : {}) })
         }
-        if (path.endsWith('/cancel') && operation.state !== 'COMMITTED') operation.state = 'CANCELLED'
+        if (path.endsWith('/cancel') && operation.state !== 'COMMITTED') {
+          operation.state = 'CANCELLED'
+          if (scenarioOptions.lostCancel) { scenarioOptions.lostCancel = false; loseReply(res); return }
+        }
         return send(res, wire(bff))
       }
       return send(res, { error: 'FIXTURE_ROUTE_NOT_FOUND' }, 404)
@@ -135,6 +159,6 @@ export function securityFixture(bundle) {
   return {
     server, requests,
     async listen() { await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); origin = `http://127.0.0.1:${server.address().port}`; return origin },
-    reset(options = {}) { enrolled = false; count = 0; version = 4; operation = null; identity = null; providerReturned = false; lostBegin = Boolean(options.lostBegin); lostComplete = Boolean(options.lostComplete); lostIdentityComplete = Boolean(options.lostIdentityComplete); issued.clear(); requests.length = 0 },
+    reset(options = {}) { scenarioOptions = { ...options }; usernameValue = options.username ? 'existing.member' : null; replacementUsername = null; enrolled = Boolean(options.enrolled); count = 0; version = 4; operation = null; identity = null; providerReturned = false; lostBegin = Boolean(options.lostBegin); lostComplete = Boolean(options.lostComplete); lostIdentityComplete = Boolean(options.lostIdentityComplete); issued.clear(); requests.length = 0 },
   }
 }
