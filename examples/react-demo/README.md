@@ -28,11 +28,13 @@ For the Application:
 
 App-level IdP choice is owned by `iam-server`. If the Application has enabled IdPs, the Axis Vertex login page/runtime lists and starts the supported providers; this demo does not link to legacy provider routes directly.
 
-Embedded signup/sign-in flows use the same SPA public `clientId`. Embedded sign-in is identifier-first: email identifiers can show password, Email OTP, and Magic Link actions; phone-like identifiers can show SMS. Visible sign-in methods, provider buttons, signup availability, email-verification mode, and verification resend cooldown are driven by `GET /api/v1/apps/{clientId}/auth-methods`; verification resend and passwordless requests post public `client_id` and never use an IAM internal Application UUID.
+Embedded signup/sign-in flows use the same SPA public `clientId`. Embedded sign-in explicitly selects `EMAIL`, `USERNAME`, or `PHONE` from the effective discovered set; text shape never selects the kind. Only methods available for that kind/intent are shown. Signup accepts only server-allowed `EMAIL`/`USERNAME`. Visible sign-in methods, provider buttons, signup availability, email-verification mode, and verification resend cooldown are driven by `GET /api/v1/apps/{clientId}/auth-methods`; verification resend and passwordless requests post public `client_id` and never use an IAM internal Application UUID.
+
+For Provider return requiring MFA, the callback result is `status: "continuation"`; continue the same transaction via `useAuthFlow().actions.resumeProviderCallback(url)` and render MFA before claiming success. See the [current integration map](../../docs/current-integration.md).
 
 The `/callback` route uses `useAuth().handleRedirectCallback()` as the primary path. It does not manually parse OAuth `code`, `state`, or `error` query parameters, and the SDK scrubs callback parameters after completion. Logout uses `useAuth().logout({ redirect: true })`; the SDK starts IAM RP-Initiated Logout only when a valid `id_token_hint` and discovery `end_session_endpoint` are available, otherwise it clears local tokens and returns to the configured client-level post-logout URI.
 
-Browser permissions come from the login response or `GET /api/v1/auth/me/permissions` with the IAM access token. They are what power `usePermission()` and `<PermissionGate>`.
+Browser permissions come from authenticated `GET /api/v1/auth/me/permissions` after `/me`, never a login response, decoded JWT, or profile metadata. They are what power `usePermission()` and `<PermissionGate>`.
 
 After login, the demo also exposes a small API smoke panel:
 
@@ -40,6 +42,8 @@ After login, the demo also exposes a small API smoke panel:
 - `VITE_API_BASE_URL/posts` with the current access token from the public `useAuth().getAccessToken()` API.
 
 The panel never renders the token.
+
+This demo targets the current source candidate. It does not prove that the same APIs exist in an npm release or the older `0.1.0` preview tarballs.
 
 ## Run
 

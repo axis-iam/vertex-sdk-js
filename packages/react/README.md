@@ -85,7 +85,7 @@ contract. Grants are never persisted in the navigation store and do not bypass P
 React components, providers and hooks for Axis Vertex. React and React DOM are peer dependencies. Server rendering
 helpers use `JwtVerifier` from `@axis-iam/vertex/server` or the Express/Nest adapters. The decode-only React server subpath has been removed.
 
-Install the first beta with `npm install @axis-iam/vertex-react@beta`.
+This README describes the current **unpublished candidate**, not an npm beta release. Package version `0.1.0` does not identify the new APIs; older preview tarballs remain separate. See the [candidate and integration map](../../docs/current-integration.md) before choosing matching reviewed artifacts.
 
 ## Authentication entries
 

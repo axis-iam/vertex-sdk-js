@@ -2,6 +2,14 @@
 
 JavaScript and TypeScript packages for integrating Axis Vertex authentication, RBAC permissions, and security controls.
 
+## Current candidate and integration map
+
+This checkout is an **unpublished documentation/API candidate**, not a new npm release. The package manifests still
+say `0.1.0`; that version alone does not identify these APIs. Existing `0.1.0` self-hosted preview tarballs are older
+immutable artifacts and must not be assumed to include the current transaction, account-security or invitation APIs.
+Use the exact reviewed source commit and matching approved artifacts; no registry installation is claimed here.
+See the [current integration map](docs/current-integration.md) for authentication, callbacks, security and invitations.
+
 ## Permission manifest synchronization (server only)
 
 Import `PermissionManifestClient` only from `@axis-iam/vertex/server` and pass an explicit structured manifest,
@@ -42,12 +50,12 @@ Create one business Application for your product, then create the ApplicationCli
 
 | Package | Description | Version |
 |---------|-------------|---------|
-| [`@axis-iam/vertex`](./packages/core/) | Core runtime -- JWT verification, permission resolution, API client | [![npm](https://img.shields.io/npm/v/@axis-iam/vertex)](https://www.npmjs.com/package/@axis-iam/vertex) |
-| [`@axis-iam/vertex-react`](./packages/react/) | React SDK -- pre-built auth components, RBAC hooks, security hooks | [![npm](https://img.shields.io/npm/v/@axis-iam/vertex-react)](https://www.npmjs.com/package/@axis-iam/vertex-react) |
-| [`@axis-iam/vertex-nestjs`](./packages/nestjs/) | NestJS integration -- `IamModule`, guards, and decorators | [![npm](https://img.shields.io/npm/v/@axis-iam/vertex-nestjs)](https://www.npmjs.com/package/@axis-iam/vertex-nestjs) |
-| [`@axis-iam/vertex-express`](./packages/express/) | Express middleware -- JWT auth + RBAC permission checking | [![npm](https://img.shields.io/npm/v/@axis-iam/vertex-express)](https://www.npmjs.com/package/@axis-iam/vertex-express) |
-| [`@axis-iam/vertex-codegen`](./packages/codegen/) | CLI tool -- sync and upload permission definitions to IAM server | [![npm](https://img.shields.io/npm/v/@axis-iam/vertex-codegen)](https://www.npmjs.com/package/@axis-iam/vertex-codegen) |
-| [`@axis-iam/vertex-testing`](./packages/test/) | Test utilities -- mock resolver, test helpers | [![npm](https://img.shields.io/npm/v/@axis-iam/vertex-testing)](https://www.npmjs.com/package/@axis-iam/vertex-testing) |
+| [`@axis-iam/vertex`](./packages/core/) | Core runtime -- JWT verification, permission resolution, API client | Unpublished candidate (`0.1.0` manifest) |
+| [`@axis-iam/vertex-react`](./packages/react/) | React SDK -- pre-built auth components, RBAC hooks, security hooks | Unpublished candidate (`0.1.0` manifest) |
+| [`@axis-iam/vertex-nestjs`](./packages/nestjs/) | NestJS integration -- `IamModule`, guards, and decorators | Unpublished candidate (`0.1.0` manifest) |
+| [`@axis-iam/vertex-express`](./packages/express/) | Express middleware -- JWT auth + RBAC permission checking | Unpublished candidate (`0.1.0` manifest) |
+| [`@axis-iam/vertex-codegen`](./packages/codegen/) | CLI tool -- sync and upload permission definitions to IAM server | Unpublished candidate (`0.1.0` manifest) |
+| [`@axis-iam/vertex-testing`](./packages/test/) | Test utilities -- mock resolver, test helpers | Unpublished candidate (`0.1.0` manifest) |
 
 `@axis-iam/vertex/server`, Express, NestJS, and codegen are server-side surfaces. They verify tokens, resolve permissions through confidential clients, call management APIs, or sync permission definitions. They are not browser login flows and do not replace the Axis Vertex login page.
 
@@ -55,10 +63,14 @@ The decode-only React server helpers and incomplete Hosted-login redirect helper
 
 ## Quick Start
 
+These examples target the current candidate's public package names. Before installation, obtain approved matching
+core/framework tarballs built from the exact reviewed commit and set the `VERTEX_*_TARBALL` variables to their paths.
+The commands below do not select a registry release or the older preview tarballs.
+
 ### NestJS
 
 ```bash
-npm install @axis-iam/vertex @axis-iam/vertex-nestjs
+npm install "$VERTEX_CORE_TARBALL" "$VERTEX_NESTJS_TARBALL"
 ```
 
 ```ts
@@ -112,7 +124,7 @@ See full example: [`examples/nestjs-demo/`](./examples/nestjs-demo/)
 ### Express
 
 ```bash
-npm install @axis-iam/vertex @axis-iam/vertex-express
+npm install "$VERTEX_CORE_TARBALL" "$VERTEX_EXPRESS_TARBALL"
 ```
 
 ```ts
@@ -191,7 +203,7 @@ are fixed at construction and must remain on `applicationOrigin`.
 ### React SPA Phase 1 quickstart
 
 ```bash
-npm install @axis-iam/vertex @axis-iam/vertex-react
+npm install "$VERTEX_CORE_TARBALL" "$VERTEX_REACT_TARBALL"
 ```
 
 In the IAM Portal:
@@ -305,7 +317,7 @@ Pre-GA breaking change: browser persistence uses version 6 of `axis_iam_session`
 
 `clientId` in React is the `SPA` public `ApplicationClient.clientId`; do not pass or expose a `clientSecret` in browser code. If you pass `audience`, use the Application `resourceAudience` copied from Portal/Admin SDK Config, not a client id. The React SDK discovers `GET {issuer}/.well-known/openid-configuration`, uses Authorization Code + PKCE, and exchanges tokens as a public client. Axis Vertex publishes JWKS at `{issuer}/oauth2/jwks`.
 
-Account-center and B2B Organization surfaces are browser-safe connected-app helpers. Use `AccountCenter` when the host owns one entry trigger and the SDK should provide the accessible Profile, Password, Sessions, and Permissions dialog navigation. It is controlled with `open` / `onOpenChange`; use `initialSection`, `organizationId`, and individual panel props for composition. The standalone `AccountProfilePanel`, `PasswordChangeForm`, `AccountSessionsPanel`, and `AccountPermissionsPanel` remain available. The `OAuthClient` facade also exposes password change/forgot/reset, email verification send/verify, session list/revoke/logout, membership checks, and current-user permission summary/check helpers. Organization switching calls `POST /api/v1/auth/me/organizations/current` and returns the backend continuation response; the SDK does not edit JWT `org_id` claims locally.
+Account-center and B2B Organization surfaces are browser-safe connected-app helpers. Use `AccountCenter` when the host owns one entry trigger and the SDK should provide the accessible `profile`, `methods`, `password`, `security`, `sessions`, and `permissions` dialog navigation. It is controlled with `open` / `onOpenChange`; use `initialSection`, `organizationId`, and individual panel props for composition. The standalone `AccountProfilePanel`, `ConnectedAccounts`, `PasswordChangeForm`, `AccountSecurityPanel` / `AccountSecurityDialog`, `AccountSessionsPanel`, and `AccountPermissionsPanel` remain available. Use [AccountSecurity](packages/react/examples/AccountSecurity.tsx) for public-package prebuilt/headless examples and action-specific binding/authenticator capabilities. The `OAuthClient` facade also exposes password change/forgot/reset, email verification send/verify, session list/revoke/logout, membership checks, and current-user permission summary/check helpers. Organization switching calls `POST /api/v1/auth/me/organizations/current` and returns the backend continuation response; the SDK does not edit JWT `org_id` claims locally.
 
 ### Auth entry dialog
 
@@ -484,7 +496,7 @@ On your OAuth callback route, prefer `handleRedirectCallback()` over manual quer
 
 `<SignIn />` in redirect mode starts the standard OAuth flow. If App-level IdPs are enabled, the backend-owned IAM login page lists only runtime-supported providers. Do not use the legacy `/oauth2/authorization/{id}` App-level IdP route in customer apps.
 
-`<SignIn mode="embedded" />` renders an identifier-first SDK UI and backend-discovered provider buttons. Users first enter an email or phone-like identifier. For email identifiers, the SDK shows only the runtime-available password, email code, and magic-link actions. For phone-like identifiers, it shows SMS only when `SMS_OTP.availableForLogin=true`. Redirect mode remains hosted IAM UI and is not affected by embedded behavior.
+`<SignIn mode="embedded" />` renders an identifier-first SDK UI and backend-discovered provider buttons. Users explicitly select `EMAIL`, `USERNAME`, or `PHONE` from the effective discovered set before entering a value. The SDK never infers kind from email/phone-like text. It offers only methods available for that identifier and intent; signup accepts only server-allowed `EMAIL`/`USERNAME`. PHONE uses explicit region/E.164 input, never locale-based country inference. Redirect mode remains hosted IAM UI and is not affected by embedded behavior.
 
 Primary password, email OTP, SMS OTP and Magic link actions use the Core `AuthenticationTransaction` protocol at `/api/v1/auth/transactions`. Create binds the public client, exact redirect, scopes, random state, S256 and optional OIDC nonce. Controlled challenge/authenticate/MFA/complete calls return state and finally an authorization code; the discovered token endpoint exchanges it once. The SDK loads `/me` and `/me/permissions` before announcing success. No primary endpoint returns tokens directly.
 
