@@ -1,3 +1,6 @@
+import { beforeEach } from 'vitest'
+import { setupMockFetch } from '../../test-utils'
+import { AuthFormTestProvider } from './AuthFormTestProvider.test-support'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AuthFlowActions, AuthFlowState } from '../../core/auth-flow-types'
@@ -21,10 +24,11 @@ function setup(patch: Partial<AuthFlowState> = {}, locale: 'en' | 'zh-CN' = 'en'
     'cancelRegistration', 'resumeRegistration', 'resendVerification', 'startProvider', 'resumeProviderCallback',
   ].map((key) => [key, vi.fn().mockResolvedValue(undefined)])) as unknown as AuthFlowActions
   let state: AuthFlowState = { ...common, ...patch } as AuthFlowState
-  const view = () => <IamUiProvider locale={locale}><AuthFlowForm appearance={resolveAppearance({ primaryColor: '#164e63' })} flow={{ state, actions }} /></IamUiProvider>
+  const view = () => <AuthFormTestProvider><IamUiProvider locale={locale}><AuthFlowForm appearance={resolveAppearance({ primaryColor: '#164e63' })} flow={{ state, actions }} /></IamUiProvider></AuthFormTestProvider>
   const result = render(view())
   return { ...result, actions, update(next: Partial<AuthFlowState>) { state = { ...state, ...next } as AuthFlowState; result.rerender(view()) } }
 }
+beforeEach(() => { sessionStorage.clear(); setupMockFetch() })
 afterEach(() => { cleanup(); vi.useRealTimers() })
 describe('approved SDK UI contracts', () => {
   it('renders exact backend provider labels and binds each action to its ID', () => {
@@ -44,10 +48,10 @@ describe('approved SDK UI contracts', () => {
   it('keeps configured primary appearance and custom provider button composition', () => {
     const actions = { startProvider: vi.fn().mockRejectedValue(new Error('No navigation in component contract')) } as unknown as AuthFlowActions
     const provider = flowCapabilities.idpProviders[0]!
-    const h = render(<IamUiProvider colorScheme="dark" appearance={{ primaryColor: '#164e63' }}>
+    const h = render(<AuthFormTestProvider><IamUiProvider colorScheme="dark" appearance={{ primaryColor: '#164e63' }}>
       <AuthFlowForm flow={{ state: { ...common, providers: [provider] }, actions }} appearance={resolveAppearance({ primaryColor: '#164e63' })}
         renderProviderButton={({ provider: value, label, disabled, onClick }) => <button type="button" disabled={disabled} onClick={() => void onClick()} data-testid={value.id}>{label}</button>} />
-    </IamUiProvider>)
+    </IamUiProvider></AuthFormTestProvider>)
     const primary = screen.getByRole('button', { name: 'Sign in', exact: true })
     expect(primary.style.backgroundColor).toBe('rgb(22, 78, 99)')
     expect(screen.getByTestId(provider.id).textContent).toBe('Continue with Test provider')

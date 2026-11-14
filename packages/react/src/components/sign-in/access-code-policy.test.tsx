@@ -1,3 +1,6 @@
+import { beforeEach } from 'vitest'
+import { setupMockFetch } from '../../test-utils'
+import { AuthFormTestProvider } from './AuthFormTestProvider.test-support'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { AuthFlowForm } from './AuthFlowForm'
@@ -10,7 +13,7 @@ const state = (): AuthFlowState => ({ intent: 'sign-up', step: 'sign-up', capabi
 function fixture(initial = state(), grant?: RegistrationGrantInput) {
   const signUp = vi.fn().mockResolvedValue(undefined)
   const actions = { signUp, setIntent: vi.fn() } as unknown as UseAuthFlowResult['actions']
-  const tree = (s: AuthFlowState) => <IamUiProvider><AuthFlowForm flow={{ state: s, actions }} appearance={resolveAppearance()} registrationGrant={grant} /></IamUiProvider>
+  const tree = (s: AuthFlowState) => <AuthFormTestProvider><IamUiProvider><AuthFlowForm flow={{ state: s, actions }} appearance={resolveAppearance()} registrationGrant={grant} /></IamUiProvider></AuthFormTestProvider>
   const view = render(tree(initial))
   const submit = async () => {
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'fixture@example.invalid' } })
@@ -21,6 +24,7 @@ function fixture(initial = state(), grant?: RegistrationGrantInput) {
   }
   return { signUp, submit, change: (s: AuthFlowState) => view.rerender(tree(s)) }
 }
+beforeEach(() => { sessionStorage.clear(); setupMockFetch() })
 afterEach(cleanup)
 it('AC-01 OPEN shows optional access code and submits both no-proof and typed proof', async () => {
   const f = fixture();const input = screen.getByLabelText('Registration access code (optional)') as HTMLInputElement
@@ -43,7 +47,11 @@ it.each(['DISABLED','no-access','loading','error','sign-in'] as const)('AC-01 re
   if(kind==='loading'||kind==='error') {next.step=kind==='loading'?'loading':'unavailable';next.policy=null;next.capabilities=null}
   if(kind==='sign-in'){next.intent='sign-in';next.step='identifier'}
   f.change(next);expect(screen.queryByPlaceholderText('Enter access code')).toBeNull()
-  if(kind!=='no-access') expect(screen.queryByLabelText('Email')).toBeNull()
+  if(kind!=='no-access' && kind!=='sign-in') expect(screen.queryByLabelText('Email')).toBeNull()
+  if(kind==='sign-in') {
+    expect(screen.getByLabelText('Email')).toBeTruthy()
+    expect(screen.queryByLabelText('Confirm password')).toBeNull()
+  }
   if(kind==='no-access') {await f.submit();expect(f.signUp.mock.lastCall?.[0]).not.toHaveProperty('registrationGrant');f.signUp.mockClear()}
   f.change(state());expect((screen.getByLabelText('Registration access code (optional)') as HTMLInputElement).value).toBe('')
   await f.submit();expect(f.signUp.mock.lastCall?.[0]).not.toHaveProperty('registrationGrant')

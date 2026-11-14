@@ -85,7 +85,7 @@ describe('IamProvider token storage policy', () => {
     await waitFor(() => expect(result.current.isLoaded).toBe(true))
     expect(result.current.user).toMatchObject({ roles: ['current-role'], permissions: ['orders:read'] })
     expect(JSON.parse(sessionStorage.getItem('axis_iam_session') ?? '{}')).toMatchObject({
-      version: 5, expiresAt: expect.any(Number),
+      version: 6, expiresAt: expect.any(Number),
       owner: {id:'user-1',applicationId:'app-test',clientId:'test-app',sessionId:'s1'},
     })
   })
@@ -119,6 +119,8 @@ describe('Provider pending refresh ownership', () => {
     expect(result.current.initializationError).toBeNull()
     expect(vi.getTimerCount()).toBe(2)
     unmount()
+    // Real unmount disposes in a microtask so StrictMode replay can resubscribe.
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(vi.getTimerCount()).toBe(0)
     expect(sessionStorage.getItem('axis_iam_session')).not.toBeNull()
   })

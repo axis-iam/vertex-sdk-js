@@ -233,7 +233,7 @@ describe('AuthDialog', () => {
       document.body.removeAttribute('tabindex')
     }
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    expect(document.activeElement).toBe(opener)
+    await waitFor(() => expect(document.activeElement).toBe(opener))
   })
 
   it('restores an external controlled opener after Escape in StrictMode', async () => {
@@ -258,7 +258,7 @@ describe('AuthDialog', () => {
     await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy())
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    expect(document.activeElement).toBe(opener)
+    await waitFor(() => expect(document.activeElement).toBe(opener))
   })
 
   it('restores an external controlled opener after close-button click', async () => {
@@ -286,7 +286,7 @@ describe('AuthDialog', () => {
     expect(document.activeElement).toBe(close)
     fireEvent.click(close)
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    expect(document.activeElement).toBe(opener)
+    await waitFor(() => expect(document.activeElement).toBe(opener))
   })
 
   it('closes safely without focusing a disconnected opener', async () => {
@@ -384,7 +384,7 @@ describe('AuthDialog', () => {
     )
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    expect(document.activeElement).toBe(trigger)
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
   })
 
   it('uses the nested SignUpButton as an explicit sign-up trigger', async () => {

@@ -1,3 +1,4 @@
+import { currentUserFixture } from './currentUser.test-support'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { createElement } from 'react'
@@ -27,8 +28,9 @@ describe('UserProfile', () => {
     fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
       if (url.includes('/.well-known/openid-configuration')) return { ok: true, json: async () => mockOidcConfig }
+      if (url.endsWith('/api/v1/auth/me')) return { ok: true, json: async () => currentUserFixture() }
       if (url.includes('/api/v1/auth/me/permissions')) {
-        return { ok: true, json: async () => ({ applicationId: 'app-test', organizationId: null, roles: ['admin'], permissions: [] }) }
+        return { ok: true, json: async () => ({ applicationId: 'app-test', organizationId: 'org-1', roles: ['admin'], permissions: [] }) }
       }
       return { ok: true, json: async () => [] }
     })
@@ -80,8 +82,9 @@ describe('UserProfile', () => {
     fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
       if (url.includes('/.well-known/openid-configuration')) return { ok: true, json: async () => mockOidcConfig }
+      if (url.endsWith('/api/v1/auth/me')) return { ok: true, json: async () => currentUserFixture() }
       if (url.includes('/api/v1/auth/me/permissions')) {
-        return { ok: true, json: async () => ({ applicationId: 'app-test', organizationId: null, roles: ['admin'], permissions: [] }) }
+        return { ok: true, json: async () => ({ applicationId: 'app-test', organizationId: 'org-1', roles: ['admin'], permissions: [] }) }
       }
       return {
         ok: true,

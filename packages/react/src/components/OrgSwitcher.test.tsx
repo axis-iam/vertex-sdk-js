@@ -1,3 +1,4 @@
+import { currentUserFixture } from './currentUser.test-support'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
@@ -34,6 +35,7 @@ describe('OrganizationSwitcher', () => {
       if (url.endsWith('/.well-known/openid-configuration')) {
         return { ok: true, json: async () => mockOidcConfig }
       }
+      if (url.endsWith('/api/v1/auth/me')) return { ok: true, json: async () => currentUserFixture() }
       if (url.endsWith('/api/v1/auth/me/organizations') && init?.method !== 'POST') {
         return { ok: true, text: async () => JSON.stringify(mockOrgs) }
       }
@@ -48,7 +50,7 @@ describe('OrganizationSwitcher', () => {
           }),
         }
       }
-      const summary = { applicationId: 'app-test', organizationId: 'org-2', roles: ['admin'], permissions: ['orders:read'] }
+      const summary = { applicationId: 'app-test', organizationId: 'org-1', roles: ['admin'], permissions: ['orders:read'] }
       return { ok: true, json: async () => summary, text: async () => JSON.stringify(summary) }
     })
     globalThis.fetch = fetchMock

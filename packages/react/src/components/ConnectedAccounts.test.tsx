@@ -646,9 +646,11 @@ describe('AccountCenter real login-method consumer', () => {
       return previous(url, init)
     })
     fireEvent.click(screen.getByRole('button', { name: identityEnglish.cancelChange }))
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: identityEnglish.confirmCancelChange }))
     await screen.findByText(identityEnglish.cancelUnconfirmed)
     fireEvent.click(screen.getByRole('button', { name: 'Close account center' }))
-    expect(close).toHaveBeenCalledWith(false)
+    expect(close).not.toHaveBeenCalled()
+    expect(store.getSnapshot().cancelUnconfirmed).toBe(true)
     expect(store.getSnapshot().operation?.id).toBe('op')
   })
   it('orders identifiers before connected providers before additions and uses durable create/reauth/complete', async () => {

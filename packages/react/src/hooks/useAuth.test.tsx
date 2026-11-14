@@ -4,7 +4,7 @@ import { createElement } from 'react'
 import type { ReactNode } from 'react'
 import { IamProvider } from '../provider/IamProvider'
 import { useAuth } from './useAuth'
-import { setupMockFetch, storeTestTokens, testProviderProps } from '../test-utils'
+import { makeTestUser, setupMockFetch, storeTestTokens, testProviderProps } from '../test-utils'
 
 function wrapper({ children }: { children: ReactNode }) {
   return createElement(IamProvider, testProviderProps(), children)
@@ -66,6 +66,7 @@ describe('useAuth', () => {
     storeTestTokens()
     globalThis.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url.endsWith('/api/v1/auth/me')) return { ok: true, json: async () => makeTestUser() }
       if (url.includes('/api/v1/auth/me/permissions')) {
         return { ok: false, status: 503 }
       }
@@ -84,7 +85,9 @@ describe('useAuth', () => {
     const { result } = renderHook(() => useAuth(), { wrapper })
     await act(async () => { await vi.advanceTimersByTimeAsync(10) })
 
-    expect(result.current.user?.permissions).toEqual([])
+    expect(result.current.user).toBeNull()
+    expect(result.current.isAuthenticated).toBe(false)
+    expect(result.current.sessionView.status).toBe('error')
     expect(result.current.permissionFetchError?.message).toContain('IAM API request failed')
   })
 
@@ -98,16 +101,19 @@ describe('useAuth', () => {
     expect(typeof token).toBe('string')
   })
 
-  it('exposes safe temporary refresh errors without signing out a valid session', async () => {
+  it('clears a session after an uncertain sent refresh without exposing provider details or retrying', async () => {
     storeTestTokens()
     const { result } = renderHook(() => useAuth(), { wrapper })
     await act(async () => { await vi.advanceTimersByTimeAsync(10) })
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ error: 'unavailable', message: 'provider-secret' }), { status: 503 }))
     await act(async () => {
-      await expect(result.current.refreshToken()).rejects.toMatchObject({ reason: 'TEMPORARY_FAILURE', retryable: true })
+      await expect(result.current.refreshToken()).rejects.toMatchObject({ reason: 'RESULT_UNCERTAIN', retryable: false })
     })
-    expect(result.current.isAuthenticated).toBe(true)
-    expect(result.current.tokenRefreshError).toMatchObject({ reason: 'TEMPORARY_FAILURE', retryable: true, status: 503 })
+    expect(result.current.isAuthenticated).toBe(false)
+    expect(result.current.getAccessToken()).toBeNull()
+    expect(sessionStorage.getItem('axis_iam_session')).toBeNull()
+    expect(globalThis.fetch).toHaveBeenCalledOnce()
+    expect(result.current.tokenRefreshError).toMatchObject({ reason: 'RESULT_UNCERTAIN', retryable: false })
     expect(JSON.stringify(result.current.tokenRefreshError)).not.toContain('provider-secret')
   })
 

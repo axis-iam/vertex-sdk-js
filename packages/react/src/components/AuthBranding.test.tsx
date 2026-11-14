@@ -16,7 +16,7 @@ function setup(patch: Partial<BrandingConfig> = {}) {
     if (url.pathname.includes('openid-configuration')) body = { issuer: url.origin, authorization_endpoint: `${url.origin}/authorize`, token_endpoint: `${url.origin}/token`, userinfo_endpoint: `${url.origin}/userinfo`, jwks_uri: `${url.origin}/jwks` }
     else if (url.pathname.endsWith('/branding')) body = { ...brand, welcomeTitle: url.searchParams.get('intent') === 'signup' ? 'Signup authored' : brand.welcomeTitle, ...patch }
     else if (url.pathname.endsWith('/auth-policy')) body = flowPolicy
-    else if (url.pathname.endsWith('/auth-methods')) body = { ...flowCapabilities, methods: flowCapabilities.methods.filter(m => m.type === 'PASSWORD'), idpProviders: [] }
+    else if (url.pathname.endsWith('/auth-methods')) body = { ...flowCapabilities, idpProviders: [] }
     else return { ok: false, status: 404, json: async () => ({}) }
     return { ok: true, status: 200, json: async () => body }
   }); vi.stubGlobal('fetch', fetch); return fetch
@@ -32,10 +32,10 @@ it.each(['embedded', 'signup', 'dialog'] as const)('%s uses the same scoped logo
   expect(screen.getByAltText('Application logo').getAttribute('src')).toBe(brand.logoUrl)
   expect(screen.getByText('Author subtitle')).toBeTruthy(); expect(screen.getByText('Author footer')).toBeTruthy()
   const shell = view.container.querySelector<HTMLElement>('[data-axis-branded-auth]')!
-  expect(shell.style.backgroundColor).toBe('rgb(240, 253, 244)')
+  expect(shell.style.backgroundColor).toBe(mode === 'dialog' ? 'transparent' : 'rgb(240, 253, 244)')
   if (mode !== 'signup') {
-    fireEvent.change(screen.getByLabelText('Email or phone number'), { target: { value: 'brand@example.test' } })
-    fireEvent.submit(screen.getByLabelText('Email or phone number').closest('form')!)
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'brand@example.test' } })
+    fireEvent.submit(screen.getByLabelText('Email').closest('form')!)
     await screen.findByRole('button', { name: 'Enter product' })
     fireEvent.click(screen.getByRole('button', { name: /Sign up$/ }))
     await screen.findByText('Signup authored')
@@ -71,7 +71,7 @@ it('shows failed branding as an observable retry state while keeping authenticat
   mount(<SignIn mode="embedded" />)
   await screen.findByRole('button', { name: 'Retry branding' })
   expect(screen.queryByText('Loading application branding…')).toBeNull()
-  expect(screen.getByLabelText('Email or phone number')).toBeTruthy()
+  expect(screen.getByLabelText('Email')).toBeTruthy()
   expect(screen.queryByText('private backend detail')).toBeNull()
   fetch.mockImplementation(implementation)
   fireEvent.click(screen.getByRole('button', { name: 'Retry branding' }))

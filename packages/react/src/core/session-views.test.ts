@@ -158,7 +158,7 @@ describe('API session views and response deadlines', () => {
     client = new OAuthClient({ issuerUri: issuer, clientId:'test-client',redirectUri:'/callback',tokenStorage:'sessionStorage' })
     vi.spyOn(client,'discover').mockResolvedValue({issuer,authorization_endpoint:`${issuer}/authorize`,token_endpoint:`${issuer}/token`,userinfo_endpoint:`${issuer}/userinfo`,jwks_uri:`${issuer}/jwks`})
     store();await client.fetchPermissions()
-    fetchMock.mockResolvedValue(response({id:'operation',type:'ADD',state:'AWAITING_REAUTH',expiresAt:'2026-10-21T00:00:00Z',requiredProofs:[]}))
+    fetchMock.mockResolvedValue(response({id:'operation',type:'ADD',state:'AWAITING_REAUTH',expiresAt:new Date(Date.now()+600000).toISOString(),requiredProofs:[],proofOptions:[]}))
     await new IdentityOperationStore(client).reopen('operation')
     expect(sessionStorage.getItem(`axis_identity_operation:${issuer}:test-client:${fixture().authenticationContext.applicationId}:${fixture().id}:session-1`)).toBe('operation')
   })

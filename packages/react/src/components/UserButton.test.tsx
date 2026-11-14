@@ -1,3 +1,4 @@
+import { currentUserFixture } from './currentUser.test-support'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { createElement } from 'react'
@@ -13,12 +14,18 @@ describe('UserButton', () => {
   beforeEach(() => {
     sessionStorage.clear()
     vi.useFakeTimers()
-    setupMockFetch()
+    setupMockFetch(undefined, currentUserFixture())
+    const baseFetch = globalThis.fetch
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).endsWith('/me/permissions')
+        ? new Response(JSON.stringify({ applicationId: 'app-test', organizationId: 'org-1', roles: ['admin'], permissions: ['orders:read'] }))
+        : baseFetch(input, init))
   })
 
   afterEach(() => {
     vi.useRealTimers()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it('renders nothing when not authenticated', async () => {
