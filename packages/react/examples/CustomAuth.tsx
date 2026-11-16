@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useAuthFlow, phoneCountries, parsePhoneIdentifier, normalizePhoneIdentifier } from '@axis-iam/vertex-react'
 import type { AuthCredentialMethod, UseAuthFlowOptions } from '@axis-iam/vertex-react'
 import type { LoginIdentifier, SignupIdentifierKind } from '@axis-iam/vertex'
@@ -14,6 +14,10 @@ export function CustomAuth(options: UseAuthFlowOptions & { providerNavigation?: 
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
   const [localError, setLocalError] = useState<string | null>(null)
+  const mounted = useRef(true)
+  const view = `${s.intent}:${s.step}:${s.step === 'method' ? `${s.identifier}:${s.method}` : ''}`
+  const owner = useRef({ view })
+  if (owner.current.view !== view) owner.current = { view }
   const kinds = s.capabilities?.identifierMethods ?? []
   const kind = selectedKind ?? s.capabilities?.defaultIdentifierKind ?? null
   const registrationKinds = s.capabilities?.allowedSignupIdentifierKinds ?? []
@@ -24,8 +28,14 @@ export function CustomAuth(options: UseAuthFlowOptions & { providerNavigation?: 
   const busy = s.pending !== null
   const waiting = s.step === 'method' && (s.codeSent || s.magicLinkSent)
   const clearProof = () => { setPassword(''); setCode(''); setLocalError(null) }
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  useEffect(() => { setPassword(''); setCode('') }, [s.step])
   useEffect(() => { setIdentifier(''); setCountry(''); setKind(null); setSignupKind(null); setMethod(null); setPassword(''); setCode(''); setLocalError(null) }, [s.intent, s.capabilities])
-  const run = (promise: Promise<unknown>) => { void promise.catch(() => { /* Public state.error carries typed failures. */ }).finally(() => setPassword('')) }
+  const run = (promise: Promise<unknown>) => {
+    const attempt = owner.current
+    void promise.catch(() => { /* Public state.error carries typed failures. */ })
+      .finally(() => { if (mounted.current && owner.current === attempt) setPassword('') })
+  }
   const submit = () => {
     try {
       setLocalError(null)
@@ -49,9 +59,6 @@ export function CustomAuth(options: UseAuthFlowOptions & { providerNavigation?: 
   return <section aria-label="Custom authentication">
     <h2>{s.intent === 'sign-up' ? 'Create account' : 'Sign in'}</h2>
     {s.step === 'unavailable' ? <><p role="status">Authentication is unavailable.</p><button onClick={() => run(actions.retryOptions())}>Retry</button></> : <>
-      {s.recovery === 'session-views' && <button disabled={busy} onClick={() => run(actions.retrySessionViews())}>Retry loading account</button>}
-      {s.recovery === 'restart' && <button disabled={busy} onClick={() => { clearProof(); run(actions.reset()) }}>Start sign-in again</button>}
-      {!s.recovery && <>
       {!waiting && (s.step === 'identifier' || s.step === 'method') && kinds.length > 1 && <div role="group" aria-label="Identifier kind">{kinds.map(entry => <button key={entry.kind} aria-pressed={kind === entry.kind} disabled={busy} onClick={() => { if (s.step === 'method') run(actions.back()); setKind(entry.kind); setIdentifier(''); setCountry(''); setMethod(null); clearProof() }}>{entry.kind}</button>)}</div>}
       {s.step === 'sign-up' && registrationKinds.length > 1 && <div role="group" aria-label="Signup identifier">{registrationKinds.map(value => <button key={value} disabled={busy} aria-pressed={registrationKind === value} onClick={() => { setSignupKind(value); setIdentifier(''); clearProof() }}>{value}</button>)}</div>}
       {((!waiting && (s.step === 'identifier' || s.step === 'method') && kind) || (s.step === 'sign-up' && registrationKind)) && <form onSubmit={event => { event.preventDefault(); submit() }}>
@@ -70,9 +77,8 @@ export function CustomAuth(options: UseAuthFlowOptions & { providerNavigation?: 
           ? actions.startProvider(provider.id).then(url => window.location.assign(url))
           : actions.signInWithProvider(provider.id))
       }}>Continue with {provider.displayName}</button>)}
-      </>}
     </>}
-    {!s.recovery && (s.intent === 'sign-up' || canSignup) && ['identifier', 'method', 'unavailable', 'sign-up'].includes(s.step) && <button disabled={busy} onClick={() => { clearProof(); run(actions.setIntent(s.intent === 'sign-in' ? 'sign-up' : 'sign-in')) }}>{s.intent === 'sign-in' ? 'Create account' : 'Sign in instead'}</button>}
+    {(s.intent === 'sign-up' || canSignup) && ['identifier', 'method', 'unavailable', 'sign-up'].includes(s.step) && <button disabled={busy} onClick={() => { clearProof(); run(actions.setIntent(s.intent === 'sign-in' ? 'sign-up' : 'sign-in')) }}>{s.intent === 'sign-in' ? 'Create account' : 'Sign in instead'}</button>}
     {(s.error || localError) && <p role="alert">{localError ?? 'Authentication could not continue. Check your details and retry.'}</p>}
   </section>
 }

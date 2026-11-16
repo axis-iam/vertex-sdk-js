@@ -41,8 +41,6 @@ export interface IamLocalization {
   accountCenter: AccountCenterLocalization
   auth: {
     signIn: string
-    restartSignIn: string
-    retrySessionViews: string
     signedInAs: (email: string) => string
     loadingOptions: string
     optionsUnavailable: string
@@ -268,7 +266,6 @@ export const iamLocalizationEnglish: IamLocalization = {
   identity: identityEnglish,
   accountCenter: { ...accountCenterEnglish, profileStatus: (status) => formatProfileStatus(status, 'en') },
   auth: {
-    restartSignIn: 'Start sign-in again', retrySessionViews: 'Retry loading account',
     signIn: 'Sign in', signedInAs: (email) => `Signed in as ${email}`, loadingOptions: 'Loading sign-in options...',
     optionsUnavailable: 'Sign-in options are unavailable right now.', noMethodAvailable: 'No sign-in method is currently available.',
     identifierLabel: 'Email or phone number', identifierPlaceholder: 'you@example.com or phone number', identifierInvalid: 'Enter a valid email address or phone number.',
@@ -328,7 +325,6 @@ export const iamLocalizationZhCN: IamLocalization = {
     sessionCount: (count) => `${count} 个活跃会话`, revokeSessionAria: (sessionId) => `撤销会话 ${sessionId}`, permissionResult: (permission, allowed) => `${permission}：${allowed ? '允许' : '拒绝'}`, profileStatus: (status) => formatProfileStatus(status, 'zh-CN'), errorMessage: () => '无法完成该操作，请重试。', formatDateTime: (value) => formatDateTime(value, 'zh-CN'),
   },
   auth: {
-    restartSignIn: '重新登录', retrySessionViews: '重试加载账户',
     signIn: '登录', signedInAs: (email) => `已登录为 ${email}`, loadingOptions: '正在加载登录选项…', optionsUnavailable: '暂时无法使用登录选项。', noMethodAvailable: '当前没有可用的登录方式。', identifierLabel: '邮箱或手机号', identifierPlaceholder: '邮箱或手机号', identifierInvalid: '请输入有效的邮箱地址或手机号。', continue: '继续', signingInAs: (identifier) => `正在以 ${identifier} 登录`, change: '更改', noMethodForIdentifier: '此标识没有可用的登录方式。', or: '或', password: '密码', passwordPlaceholder: '请输入您的密码', email: '邮箱', emailPlaceholder: 'you@example.com', phone: '手机号', phonePlaceholder: '手机号', verificationCode: '验证码', verificationCodePlaceholder: '请输入 6 位验证码', sendCode: '发送验证码', resend: '重新发送', resendIn: (seconds) => `${seconds} 秒后重新发送`, verifying: '正在验证…', signInBusy: '正在登录…', forgotPassword: '忘记密码？', providerSignIn: (provider) => `使用 ${provider} 继续`, challengeExpired: '验证码或链接已过期，请重新发送后继续。', magicLinkSent: (email) => `我们已向 ${email} 发送登录链接。`, sendMagicLink: '发送登录链接', sendingMagicLink: '正在发送链接…', resendVerification: '重新发送验证邮件', verificationEmailSent: '验证邮件已发送。', verificationEmailFailed: '无法发送验证邮件，请稍后重试。', sending: '正在发送…', credentialMethod: (method) => ({ password: '密码', email_otp: '邮箱验证码', magic_link: '登录链接', sms: '短信验证码' })[method], redirecting: '正在跳转…', noAccount: '还没有账户？', haveAccount: '已有账户？', signUp: '注册', brandingLoading: '正在加载应用品牌…', brandingUnavailable: '无法加载应用品牌。', retryBranding: '重试品牌加载', logoAlt: '应用标志',
     mfaDescription: '请输入身份验证器中的验证码以完成登录。', authenticatorCode: '身份验证器验证码', verify: '验证并登录', back: '返回',
   },

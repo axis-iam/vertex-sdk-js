@@ -75,7 +75,11 @@ import { AuthenticationTransaction } from '@axis-iam/vertex'
 import { AuthProviderWindow, type AuthFlowActions, type AuthFlowState } from '@axis-iam/vertex-react'
 declare const actions: AuthFlowActions; declare const state: AuthFlowState; declare const tx: AuthenticationTransaction
 void actions.signInWithProvider('provider', { timeoutMs: 2000 })
-void actions.retrySessionViews(); void state.recovery; void tx.exchange({reconcileCompletion:true})
+void state.error; void tx.exchange({reconcileCompletion:true})
+// @ts-expect-error Removed incomplete-login recovery API must not remain consumable.
+void actions.retrySessionViews
+// @ts-expect-error Failures return to the form, without a separate recovery state.
+void state.recovery
 const callback: Promise<string> = new AuthProviderWindow('/callback').start(async () => 'https://provider.invalid')
 void callback
 `)
@@ -121,9 +125,12 @@ void callback
     return popup
   }
   const approve = async page => { const popup = await beginPopup(page); await popup.getByRole('link', { name: 'Approve controlled identity' }).click(); return popup }
-  const noManual = async page => check(!/I have signed in|Complete authorization|Continue login|Retry completion|完成授权|取消尚未确认/.test(await page.locator('body').innerText()), 'No internal recovery UI during normal busy')
+  const noManual = async page => {
+    check(!/I have signed in|Complete authorization|Continue login|Retry completion|完成授权|取消尚未确认/.test(await page.locator('body').innerText()), 'No internal recovery UI during busy or failure')
+    check(await page.getByRole('button', { name: /^(Retry loading account|Start sign-in again|重试加载账户|重新登录)$/ }).count() === 0, 'No extra recovery button replaces the login form')
+  }
   const primary = async page => {
-    await page.getByLabel('Email', { exact: true }).fill('member@example.invalid')
+    await page.getByLabel(/^Email$/i).fill('member@example.invalid')
     await page.getByLabel('Password', { exact: true }).fill('Controlled-fixture-pass')
     await page.getByRole('button', { name: 'Sign in', exact: true }).click()
   }
@@ -153,7 +160,7 @@ void callback
     await popup.getByRole('link', { name: 'Decline' }).click()
     await page.getByRole('alert').filter({ hasText: /declined/ }).waitFor()
     check(!c.counts.token, 'Denial never exchanges code')
-    await page.getByRole('button', { name: 'Start sign-in again', exact: true }).click()
+    await noManual(page)
     await approve(page); await ready(page)
     check(c.counts.token === 1, 'Safe login after denial')
     record('denial-and-relogin', c)
@@ -163,7 +170,7 @@ void callback
     const popup = await beginPopup(page)
     await popup.close()
     await page.getByRole('alert').filter({ hasText: /closed/ }).waitFor()
-    await page.getByRole('button', { name: 'Start sign-in again', exact: true }).click()
+    await noManual(page)
     await approve(page); await ready(page)
     record('closed-and-relogin', c)
   }
@@ -172,7 +179,7 @@ void callback
     const popup = await beginPopup(page)
     await page.waitForFunction(() => window.recovery.snapshot().errors.includes('AUTH_PROVIDER_TIMEOUT'))
     check(popup.isClosed() && !c.counts.token, 'Timeout closes window without exchange')
-    await action(page, 'reset')
+    check((await snap(page)).step === 'identifier', 'Timeout returns directly to the login form')
     await approve(page); await ready(page)
     record('timeout-and-relogin', c)
   }
@@ -199,7 +206,7 @@ void callback
     await page.getByRole('alert').waitFor()
     check(c.counts.token === 1 && !(await snap(page)).authenticated, 'Lost token response never replays code')
     c.loseToken = false
-    await page.getByRole('button', { name: 'Start sign-in again' }).click()
+    await noManual(page)
     await approve(page); await ready(page)
     check(c.counts.token === 2, 'Fresh attempt exchanges fresh code')
     record('lost-token-and-safe-relogin', c)
@@ -211,20 +218,43 @@ void callback
     await page.getByRole('alert').waitFor()
     check(!c.counts.token, 'Offline exchange not received by fixture')
     await page.unroute('**/token')
-    await page.getByRole('button', { name: 'Start sign-in again', exact: true }).click()
+    await noManual(page)
     await approve(page); await ready(page)
     record('network-failure-and-relogin', c)
   }
-  for (const part of ['profile', 'permissions']) {
-    const { c, page } = await start(`views-${part}`, { entry: 'embedded', failView: part })
-    await primary(page)
+  for (const entry of ['embedded', 'dialog', 'custom'])
+    for (const part of ['profile', 'permissions']) {
+      const { c, page, context } = await start(`views-${entry}-${part}`, { entry, failView: part, failLogout: true, logoutDelay: 500 })
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt === 0) await primary(page)
+        else await approve(page)
+        await page.getByRole('alert').waitFor()
+        const state = await snap(page)
+        check(!state.tokenPresent && !state.authenticated && state.successes === 0, 'Failed login discards local tokens and never reports success')
+        await noManual(page)
+        check(await page.getByRole('button', { name: 'Sign in', exact: true }).isEnabled(), 'Ordinary login form is ready without reset or logout')
+        check(c.counts.authenticate === 1 && c.counts.token === attempt + 1, 'Only manual fresh attempts send a new proof and exchange')
+      }
+      await page.screenshot({ path: join(output, `${c.id}-failure.png`) })
+      c.failView = null
+      c.user = 'second-user'
+      await primary(page); await ready(page)
+      await page.waitForTimeout(550)
+      check((await snap(page)).user === 'second-user' && (await snap(page)).successes === 1, 'Late failed logout cannot clear the new account')
+      check(c.counts.authenticate === 2 && c.counts.authorize === 1 && c.counts.token === 3 && c.counts.logout === 2, 'No hidden proof, code or view retry')
+      record(`failed-${entry}-${part}-direct-relogin`, c)
+      await context.close(); contexts.delete(context)
+    }
+  {
+    const { c, page, context } = await start('failure-mobile-zh', { entry: 'embedded', theme: 'dark', locale: 'zh-CN', failView: 'profile' })
+    await page.setViewportSize({ width: 390, height: 844 })
+    await approve(page)
     await page.getByRole('alert').waitFor()
-    check((await snap(page)).tokenPresent && !(await snap(page)).authenticated && (await snap(page)).successes === 0, 'Committed token differs from usable authenticated view')
-    c.failView = null
-    await page.getByRole('button', { name: 'Retry loading account', exact: true }).click()
-    await ready(page)
-    check(c.counts.authenticate === 1 && c.counts.token === 1, 'View recovery never replays primary proof or code')
-    record(`committed-${part}-recovery`, c)
+    await noManual(page)
+    check(!(await snap(page)).tokenPresent && !(await snap(page)).overflow, 'Chinese mobile failure keeps a usable, contained form')
+    await page.screenshot({ path: join(output, `${c.id}.png`) })
+    record('failure-mobile-dark-zh', c)
+    await context.close(); contexts.delete(context)
   }
   {
     const { c, page } = await start('duplicate')
@@ -263,7 +293,7 @@ void callback
   {
     const { c, page } = await start('wrong-state', { wrongState: true })
     await approve(page)
-    await page.waitForFunction(() => window.recovery.snapshot().recovery === 'restart')
+    await page.waitForFunction(() => window.recovery.snapshot().errors.length === 1 && window.recovery.snapshot().step === 'identifier')
     check(!c.counts.token, 'Wrong state refused before token transport')
     record('wrong-state-before-exchange', c)
   }

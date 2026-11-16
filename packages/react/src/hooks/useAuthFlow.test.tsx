@@ -717,7 +717,7 @@ describe('Custom flow required session views', () => {
       u.authenticationContext.clientId = 'flow-test'
       if (mode === 'cancel')
         await act(async () => {
-          await expect(h.result.current.actions.cancel()).rejects.toThrow(/explicitly sign out/)
+          await expect(h.result.current.actions.cancel()).rejects.toThrow(/Sign out/)
         })
       if (mode === 'unmount') h.unmount()
       const outcome =
@@ -762,7 +762,7 @@ describe('transaction recovery and cancellation boundaries', () => {
     await act(async () => {
       await expect(h.result.current.actions.signInWithProvider('provider', { timeoutMs: 50 })).rejects.toMatchObject({ code: 'AUTH_PROVIDER_TIMEOUT' })
     })
-    expect(h.result.current.state).toMatchObject({ pending: null, recovery: 'restart' })
+    expect(h.result.current.state).toMatchObject({ step: 'identifier', pending: null })
     await act(async () => h.result.current.actions.reset())
     await identify(h)
     await act(async () => h.result.current.actions.submitPassword('new-fixture'))
@@ -789,37 +789,136 @@ describe('transaction recovery and cancellation boundaries', () => {
     let completion!: Promise<void>
     act(() => { completion = h.result.current.actions.submitPassword('fixture') })
     await waitFor(() => expect(release).toBeTypeOf('function'))
-    expect(h.result.current.state).toMatchObject({ step: 'method', pending: 'password', recovery: null, error: null })
+    expect(h.result.current.state).toMatchObject({ step: 'method', pending: 'password', error: null })
     expect(onSignInSuccess).not.toHaveBeenCalled()
     await act(async () => { release(); await completion })
-    expect(h.result.current.state).toMatchObject({ step: 'success', recovery: null })
+    expect(h.result.current.state).toMatchObject({ step: 'success' })
     expect(onSignInSuccess).toHaveBeenCalledOnce()
   })
-  it.each(['profile', 'permissions'] as const)('recovers committed token %s reads without credentials or code replay', async part => {
+  it.each(['profile', 'permissions'] as const)('ends failed %s login reads and immediately permits a new login', async part => {
     const base = globalThis.fetch
     let fail = true
     let exchanges = 0
+    let revocations = 0
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url.endsWith('/token')) exchanges++
+      if (url.endsWith('/logout')) { revocations++; return response({}, 503) }
       if (fail && url.endsWith(part === 'profile' ? '/me' : '/me/permissions')) return response({}, 503)
       return base(input, init)
     })
-    const onSignInSuccess = vi.fn()
-    const h = await setup({ onSignInSuccess })
-    await identify(h)
-    await act(async () => { await expect(h.result.current.actions.submitPassword('fixture')).rejects.toThrow() })
-    expect(h.result.current.state).toMatchObject({ recovery: 'session-views', pending: null })
-    expect(currentClient.getAccessToken()).not.toBeNull()
-    expect(currentClient.isAuthenticated()).toBe(false)
-    expect(onSignInSuccess).not.toHaveBeenCalled()
-    await act(async () => { await expect(h.result.current.actions.reset()).rejects.toThrow(/session views/) })
+    const onSignInSuccess = vi.fn(), onError = vi.fn()
+    const h = await setup({ onSignInSuccess, onError })
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await identify(h)
+      await act(async () => { await expect(h.result.current.actions.submitPassword('fixture')).rejects.toMatchObject({ status: 503 }) })
+      expect(h.result.current.state).toMatchObject({ step: 'identifier', pending: null, error: { status: 503 } })
+      expect(currentClient.getAccessToken()).toBeNull()
+      expect(currentClient.state.getUser()).toBeNull()
+      expect(currentClient.isAuthenticated()).toBe(false)
+      expect(onSignInSuccess).not.toHaveBeenCalled()
+      expect(exchanges).toBe(attempt + 1)
+      expect(revocations).toBe(attempt + 1)
+    }
     fail = false
-    await act(async () => h.result.current.actions.retrySessionViews())
+    await identify(h, 'new@example.invalid')
+    await act(async () => h.result.current.actions.submitPassword('new-fixture'))
     expect(h.result.current.state.step).toBe('success')
-    expect(exchanges).toBe(1)
-    expect(fetchMock.mock.calls.filter(c => String(c[0]).endsWith('/authenticate'))).toHaveLength(1)
+    expect(exchanges).toBe(3)
+    expect(fetchMock.mock.calls.filter(c => String(c[0]).endsWith('/authenticate'))).toHaveLength(3)
     expect(onSignInSuccess).toHaveBeenCalledOnce()
+    expect(onError).toHaveBeenCalledTimes(2)
+  })
+  it.each(['reject', 'network', 'pending'] as const)('does not wait for %s remote logout or let its late failure disturb the next user', async mode => {
+    const base = globalThis.fetch
+    let fail = true
+    let release!: () => void
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/me') && fail) return response({}, 503)
+      if (url.endsWith('/logout')) {
+        if (mode === 'pending') await new Promise<void>(resolve => { release = resolve })
+        if (mode === 'network') throw new TypeError('fixture offline')
+        return response({}, 503)
+      }
+      if (url.endsWith('/me')) {
+        const user = makeTestUser({ id: 'second-user' })
+        user.authenticationContext.clientId = 'flow-test'
+        return response(user)
+      }
+      return base(input, init)
+    })
+    const onError = vi.fn(), onSignInSuccess = vi.fn()
+    const h = await setup({ onError, onSignInSuccess })
+    await identify(h)
+    await act(async () => { await expect(h.result.current.actions.submitPassword('first')).rejects.toMatchObject({ status: 503 }) })
+    expect(h.result.current.state).toMatchObject({ step: 'identifier', pending: null })
+    expect(currentClient.getAccessToken()).toBeNull()
+    fail = false
+    await identify(h, 'second@example.invalid')
+    await act(async () => h.result.current.actions.submitPassword('second'))
+    const generation = currentClient.state.generation
+    if (mode === 'pending') await act(async () => { release(); await Promise.resolve() })
+    expect(currentClient.state.generation).toBe(generation)
+    expect(currentClient.state.getUser()?.id).toBe('second-user')
+    expect(h.result.current.state).toMatchObject({ step: 'success', error: null })
+    expect(onSignInSuccess).toHaveBeenCalledOnce()
+    expect(onError).toHaveBeenCalledOnce()
+  })
+  it('removes explicitly persisted tokens when required login views fail', async () => {
+    const discover = currentClient.discover
+    const methods = currentClient.getPublicAuthMethods
+    const policy = currentClient.getPublicAuthPolicy
+    currentClient.dispose()
+    currentClient = new OAuthClient({ issuerUri: 'https://auth.test.com', clientId: 'flow-test',
+      redirectUri: 'https://app.test/callback', tokenStorage: 'sessionStorage' })
+    vi.spyOn(currentClient, 'discover').mockImplementation(discover)
+    vi.spyOn(currentClient, 'getPublicAuthMethods').mockImplementation(methods)
+    vi.spyOn(currentClient, 'getPublicAuthPolicy').mockImplementation(policy)
+    const base = globalThis.fetch
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).endsWith('/me/permissions') ? response({}, 503) : base(input, init))
+    const h = await setup()
+    await identify(h)
+    await act(async () => { await expect(h.result.current.actions.submitPassword('fixture')).rejects.toMatchObject({ status: 503 }) })
+    expect(currentClient.getAccessToken()).toBeNull()
+    expect(sessionStorage.getItem('axis_iam_session')).toBeNull()
+    expect(h.result.current.state).toMatchObject({ step: 'identifier', pending: null, error: { status: 503 } })
+  })
+  it.each([200, 503] as const)('does not clear a replacement user when old profile finishes with %s', async status => {
+    const base = globalThis.fetch
+    let release!: (value: Response) => void
+    let first = true
+    let revocations = 0
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/logout')) revocations++
+      if (url.endsWith('/me') && first) {
+        first = false
+        return new Promise<Response>(resolve => { release = resolve })
+      }
+      return base(input, init)
+    })
+    const onError = vi.fn(), onSignInSuccess = vi.fn()
+    const h = await setup({ onError, onSignInSuccess })
+    await identify(h)
+    let old!: Promise<void>
+    act(() => { old = h.result.current.actions.submitPassword('old') })
+    const rejected = expect(old).rejects.toBeInstanceOf(SessionInvalidatedError)
+    await waitFor(() => expect(release).toBeTypeOf('function'))
+    act(() => currentClient.state.clear())
+    h.rerender()
+    await waitFor(() => expect(h.result.current.state.step).toBe('identifier'))
+    await identify(h, 'second@example.invalid')
+    await act(async () => h.result.current.actions.submitPassword('second'))
+    const generation = currentClient.state.generation
+    await act(async () => { release(response({}, status)); await rejected })
+    expect(currentClient.state.generation).toBe(generation)
+    expect(currentClient.isAuthenticated()).toBe(true)
+    expect(h.result.current.state).toMatchObject({ step: 'success', error: null })
+    expect(onSignInSuccess).toHaveBeenCalledOnce()
+    expect(onError).not.toHaveBeenCalled()
+    expect(revocations).toBe(0)
   })
   it('bounds failed completion reconciliation and permits a fresh login without proof replay', async () => {
     const base = globalThis.fetch
@@ -836,7 +935,7 @@ describe('transaction recovery and cancellation boundaries', () => {
     await act(async () => { await expect(h.result.current.actions.submitPassword('fixture')).rejects.toMatchObject({ code: 'AUTH_TRANSACTION_UNCERTAIN' }) })
     expect(completes).toBe(2)
     expect(exchanges).toBe(0)
-    expect(h.result.current.state.recovery).toBe('restart')
+    expect(h.result.current.state).toMatchObject({ step: 'identifier', pending: null })
     await act(async () => h.result.current.actions.reset())
     lost = false
     await identify(h)
@@ -980,7 +1079,9 @@ describe('auth experience producer contract', () => {
     act(() => h.result.current.actions.selectMethod('email_otp'))
     fetchMock.mockRejectedValueOnce(new Error('fixture network failure'))
     await act(async () => { await expect(h.result.current.actions.sendCode()).rejects.toThrow() })
-    expect(h.result.current.state).toMatchObject({ phase: 'credentials', codeSent: false })
+    expect(h.result.current.state).toMatchObject({ step: 'identifier', pending: null })
+    await identify(h)
+    act(() => h.result.current.actions.selectMethod('email_otp'))
     await act(async () => h.result.current.actions.sendCode())
     expect(h.result.current.state).toMatchObject({ phase: 'code', codeSent: true, retryAfterSeconds: 30 })
     act(() => h.result.current.actions.selectMethod('password'))
@@ -1023,7 +1124,7 @@ it('waits for old challenge cancellation before a different credential may creat
   expect(h.result.current.state.step).toBe('success')
 })
 
-it('fails closed after a credential-switch cancellation refusal and exposes explicit retry', async () => {
+it('reports credential-switch cancellation refusal and permits a fresh transaction', async () => {
   const h = await setup()
   await identify(h)
   act(() => h.result.current.actions.selectMethod('email_otp'))
@@ -1036,14 +1137,9 @@ it('fails closed after a credential-switch cancellation refusal and exposes expl
   )
   act(() => h.result.current.actions.selectMethod('password'))
   await waitFor(() => expect(h.result.current.state).toMatchObject({
-    step: 'unavailable', cancellationUnconfirmed: true,
+    step: 'method', cancellationUnconfirmed: true,
   }))
-  const before = fetchMock.mock.calls.length
-  await act(async () => {
-    await expect(h.result.current.actions.submitPassword('test-only-password')).rejects.toThrow()
-  })
-  expect(fetchMock.mock.calls.length).toBe(before)
-  await act(async () => h.result.current.actions.retryOptions())
-  await waitFor(() => expect(h.result.current.state.step).toBe('identifier'))
-  expect(h.result.current.state.cancellationUnconfirmed).toBe(false)
+  await act(async () => h.result.current.actions.submitPassword('test-only-password'))
+  expect(h.result.current.state.step).toBe('success')
+  expect(currentClient.isAuthenticated()).toBe(true)
 })

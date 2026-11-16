@@ -75,7 +75,7 @@ window.recovery = {
     return {
       loaded: auth?.isLoaded, authenticated: auth?.isAuthenticated, user: auth?.user?.id ?? null,
       clientId: auth?.user?.authenticationContext.clientId ?? null,
-      step: flow?.state.step, pending: flow?.state.pending, recovery: flow?.state.recovery,
+      step: flow?.state.step, pending: flow?.state.pending,
       successes, errors, tokenPresent: config.mode === 'server_session' ? false : Boolean(auth?.getAccessToken()),
       persistentTokens: ['axis_iam_session', 'axis_iam_tokens'].some(key => localStorage.getItem(key) || sessionStorage.getItem(key)),
       overflow: document.documentElement.scrollWidth > innerWidth,

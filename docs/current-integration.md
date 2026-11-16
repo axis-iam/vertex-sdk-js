@@ -20,8 +20,10 @@ MFA; it is not a login result or token. Keep the initiating tab and exact regist
 
 Provider popup completion is automatic through `useAuthFlow().actions.signInWithProvider(id)`, shared by
 Embedded/Dialog and Custom. Full-page CUSTOM returns auto-consume only a matching pending Client/issuer/redirect;
-HOSTED keeps its separate callback entry. Render normal `pending` as busy and `recovery` only after failure.
-`retrySessionViews` preserves committed Tokens and retries only authoritative reads. A sent code is not replayed.
+HOSTED keeps its separate callback entry. Render `pending` as ordinary busy. Final `useAuthFlow` login failures
+restore the normal form with `error` and immediately discard tokens belonging to that failed attempt. Remote
+revocation is best effort and never blocks a fresh login; do not claim remote logout confirmation. Remove the old
+`recovery` / `retrySessionViews` screen. A sent code is not replayed.
 
 Choose identifier kind explicitly from effective capabilities (`EMAIL`/`USERNAME`/`PHONE` for login;
 server-allowed `EMAIL`/`USERNAME` for registration). `clientId` locates the ApplicationClient's owning Application;

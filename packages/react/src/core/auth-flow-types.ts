@@ -24,7 +24,6 @@ export type AuthFlowPending =
   | 'verify-code'
   | 'magic-link'
   | 'complete-magic-link'
-  | 'session-views'
   | 'mfa'
   | 'sign-up'
   | 'resend-verification'
@@ -46,8 +45,6 @@ interface AuthFlowCommon {
   readonly transactionExpiresAt: string | null
   readonly challengeExpiresAt: string | null
   readonly cancellationUnconfirmed: boolean
-  /** Recovery is never ordinary busy. Session views means tokens are already committed. */
-  readonly recovery: 'restart' | 'session-views' | null
 }
 export type AuthFlowState = AuthFlowCommon &
   (
@@ -93,7 +90,6 @@ export interface UseAuthFlowOptions {
 export interface AuthFlowActions {
   retryOptions(): Promise<void>
   resumeProviderCallback(url: string): Promise<void>
-  retrySessionViews(): Promise<void>
   setIntent(intent: AuthFlowIntent): Promise<void>
   continueWithIdentifier(identifier: LoginIdentifier): void
   selectMethod(method: AuthCredentialMethod): void

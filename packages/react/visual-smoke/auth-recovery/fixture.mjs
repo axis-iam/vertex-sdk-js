@@ -234,7 +234,17 @@ export async function createFixture(consumer) {
           expiresAt: new Date(Date.now() + 600000).toISOString(), nextAction: 'VERIFY_EMAIL', controlSecret: random(),
         }, 201)
       }
-      if (url.pathname.endsWith('/logout')) { res.writeHead(204); return res.end() }
+      if (url.pathname.endsWith('/logout')) {
+        const token = req.headers.authorization?.slice(7)
+        const c = tokens.get(token)
+        if (!c) return json(res, { error: 'UNAUTHORIZED' }, 401)
+        count(c, 'logout')
+        const fail = c.failLogout
+        if (c.logoutDelay) await delay(c.logoutDelay)
+        if (fail) return json(res, { error: 'TEMPORARILY_UNAVAILABLE' }, 503)
+        tokens.delete(token)
+        res.writeHead(204); return res.end()
+      }
       return json(res, {}, 404)
     } catch (error) {
       errors.push(error.name)

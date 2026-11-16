@@ -510,7 +510,7 @@ For custom login pages, use the headless hooks:
 function CustomProviderLogin() {
   const { state, actions } = useAuthFlow()
   if (state.step === 'loading') return <p>Loading sign-in options...</p>
-  // A complete host form also renders required MFA and state.recovery actions;
+  // A complete host form also renders required MFA and state.error beside the normal form;
   // see packages/react/examples/CustomAuth.tsx.
 
   return (
@@ -518,7 +518,7 @@ function CustomProviderLogin() {
       {state.providers.map((provider) => (
         <button key={provider.id} disabled={state.pending !== null}
           onClick={() => void actions.signInWithProvider(provider.id).catch(() => {
-            // state.error carries the typed failure; render an ordinary recovery action.
+            // state.error carries the typed failure; show it beside the normal login form.
           })}>
           Continue with {provider.displayName}
         </button>
@@ -528,7 +528,7 @@ function CustomProviderLogin() {
 }
 ```
 
-Use `state.pending` for ordinary busy. `state.recovery` distinguishes safe restart from failed profile/permission reads after Token commit; `retrySessionViews()` retries only those reads. Completion response uncertainty receives one bounded original-key reconciliation; credentials/messages and a sent code exchange are never replayed by the SDK. Existing vendored hosts require a separate bundle upgrade; package version `0.1.0` alone does not identify this unpublished candidate.
+Use `state.pending` for ordinary busy. A final `useAuthFlow` login failure restores the form and exposes `state.error`; locally committed tokens belonging to that failed attempt are discarded immediately, with best-effort remote revocation that never blocks a new login. Do not add a separate “reload account” state or require logout/reset before retrying. Remove the former `state.recovery` / `retrySessionViews()` integration. No success callback fires until authoritative profile and permissions are ready. Completion response uncertainty receives one bounded original-key reconciliation; credentials/messages and a sent code exchange are never replayed by the SDK. Existing vendored hosts require a separate bundle upgrade; package version `0.1.0` alone does not identify this unpublished candidate.
 
 Sign-in methods, registration capabilities, provider IDs and labels come from IAM discovery for the current `ApplicationClient`. `IamConfig` does not accept static `authMethods` or `socialProviders`; these retired options fail configuration validation. Customize presentation through `appearance`, `colorScheme`, localization or `renderProviderButton`, without changing the discovered provider identity or availability.
 

@@ -328,9 +328,7 @@ export function AuthFlowForm({
         </p>{textButton(l.identity.retry, () => consume(actions.retryOptions()))}</div>
       )}
       {s.pending === 'provider-callback' && <p role="status">{l.auth.signInBusy}</p>}
-      {s.recovery === 'session-views' && <div>{button(l.auth.retrySessionViews, () => consume(actions.retrySessionViews()), busy)}</div>}
-      {s.recovery === 'restart' && <div>{button(l.auth.restartSignIn, () => consume(actions.reset(), clearProofs), busy)}</div>}
-      {(s.step === 'identifier' || s.step === 'method') && !s.recovery && <>
+      {(s.step === 'identifier' || s.step === 'method') && <>
         {kind !== null && (s.step !== 'method' || (!s.codeSent && !s.magicLinkSent)) && <form onSubmit={formSubmit(() => sync(() => {
           const value = typedIdentifier()
           if (s.step !== 'method' || s.loginIdentifier.kind !== value.kind || s.loginIdentifier.value !== value.value) {
@@ -352,7 +350,7 @@ export function AuthFlowForm({
             : field('identifier', l.identity[kind], kind === 'EMAIL' ? 'email' : 'text', identifier, setIdentifier, { autoComplete: 'username', disabled: busy, placeholder: kind === 'EMAIL' ? l.auth.emailPlaceholder : l.signUp.usernamePlaceholder })}
           {methods.length > 1 && segments(methods, credential, next => { setSelectedMethod(next); clearProofs(); if (s.step === 'method') actions.selectMethod(next) }, method => l.auth.credentialMethod(method), l.connectedAccounts.credential)}
           {credential === 'password' && field('password', l.auth.password, 'password', password, setPassword, { autoComplete: 'current-password', placeholder: l.auth.passwordPlaceholder, disabled: busy })}
-          {credential && button(busy ? l.auth.signInBusy : credential === 'password' ? (branding?.loginButtonText ?? l.auth.signIn) : credential === 'magic_link' ? magicCallback ? l.auth.signIn : l.auth.sendMagicLink : l.auth.sendCode, undefined, busy || s.cancellationUnconfirmed || (credential !== 'password' && s.retryAfterSeconds > 0))}
+          {credential && button(busy ? l.auth.signInBusy : credential === 'password' ? (branding?.loginButtonText ?? l.auth.signIn) : credential === 'magic_link' ? magicCallback ? l.auth.signIn : l.auth.sendMagicLink : l.auth.sendCode, undefined, busy || (credential !== 'password' && s.retryAfterSeconds > 0))}
           {credential === 'password' && (onForgotPassword || forgotPasswordUrl) && <p style={{ margin: '12px 0 0' }}>{onForgotPassword ? textButton(l.auth.forgotPassword, onForgotPassword) : <a href={forgotPasswordUrl} style={linkStyle(a)}>{l.auth.forgotPassword}</a>}</p>}
         </form>}
         {s.step === 'method' && !s.codeSent && !s.magicLinkSent && textButton(l.auth.change, () => consume(actions.back(), clearProofs), false)}
@@ -376,7 +374,7 @@ export function AuthFlowForm({
         {resend}
         {providers}
       </>}
-      {s.step === 'mfa' && !s.recovery && (
+      {s.step === 'mfa' && (
         <form
           onSubmit={formSubmit(() =>
             consume(actions.verifyMfa(code, mfaMethod)),
@@ -543,7 +541,7 @@ export function AuthFlowForm({
           {providers}
         </>
       )}
-      {showIntentSwitch && !s.recovery &&
+      {showIntentSwitch &&
         ['identifier', 'method', 'sign-up', 'unavailable'].includes(s.step) &&
         (s.intent === 'sign-up' ||
           (allowSignUp &&

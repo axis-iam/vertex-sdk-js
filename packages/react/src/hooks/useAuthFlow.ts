@@ -59,7 +59,6 @@ const initial = (intent: AuthFlowIntent): AuthFlowState => ({
   verificationEmail: null,
   registrationCancelUnconfirmed: false,
   cancellationUnconfirmed: false,
-  recovery: null,
   transactionExpiresAt: null,
   challengeExpiresAt: null,
 })
@@ -100,6 +99,7 @@ export function useAuthFlow(
     providerWindow.current?.close()
     providerWindow.current = null
     operation.current = null
+    selectionCancellation.current = null
     cooldown.current = 0
   }
   const idle = (intent: AuthFlowIntent): AuthFlowState => {
@@ -273,8 +273,6 @@ export function useAuthFlow(
       key: string,
       work: (check: () => void, committed: () => void) => Promise<T>,
     ): Promise<T> {
-      if (snapshot.current.recovery === 'session-views' && name !== 'session-views')
-        return Promise.reject(new AuthFlowStateError('Retry session views or explicitly sign out before starting another login'))
       const pending = operation.current
       if (pending) {
         if (pending.name === name && pending.key === key)
@@ -307,7 +305,8 @@ export function useAuthFlow(
         })
         .catch((error: unknown) => {
           // A 401 view read clears the token and advances generation after commit.
-          if (tokenCommitted && client.mode === 'oauth_tokens' &&
+          if (tokenCommitted && error instanceof IamApiError && error.status === 401 &&
+              client.mode === 'oauth_tokens' &&
               client.state.generation === generation + 1 && !client.getAccessToken()) committed()
           check()
           const next =
@@ -317,7 +316,6 @@ export function useAuthFlow(
             next instanceof AuthenticationTransactionError || next instanceof SessionTransportError
               ? next.retryAfterSeconds
               : undefined
-          if (retry !== undefined) cooldown.current = Date.now() + retry * 1000
           const restart = name === 'provider' || name === 'provider-callback' ||
             (next instanceof SessionTransportError && ['password', 'verify-code', 'mfa'].includes(name) &&
               (next.status === 0 || next.status >= 500)) ||
@@ -325,19 +323,24 @@ export function useAuthFlow(
               ['AUTH_TRANSACTION_UNCERTAIN', 'AUTH_TRANSACTION_RETRY_REQUIRED',
                 'AUTH_TRANSACTION_INVALIDATED', 'TOKEN_EXCHANGE_UNCERTAIN',
                 'TOKEN_EXCHANGE_REJECTED', 'AUTH_TRANSACTION_INVALID_RESPONSE'].includes(next.code))
-          if (restart && !tokenCommitted && client.mode === 'oauth_tokens') {
-            // A timed-out popup's authorization request may still finish. Retire its epoch.
-            epoch.current++
+          if (restart || tokenCommitted) {
+            if (tokenCommitted && client.mode === 'oauth_tokens' && client.getAccessToken()) {
+              // logout discards this attempt's tokens synchronously, before remote revocation.
+              // Revocation is best effort: a failed/hung endpoint must not trap the login form.
+              // Preserve the original typed login error; do not claim remote logout succeeded.
+              void client.logout({ redirect: false }).catch(() => {
+                // Local state is already discarded; the login error remains authoritative.
+              })
+              observedGeneration.current = client.state.generation
+            }
             transaction.current?.invalidate()
             transaction.current = null
+            invalidate()
           }
+          if (retry !== undefined) cooldown.current = Date.now() + retry * 1000
           update({
-            ...snapshot.current,
+            ...(restart || tokenCommitted ? idle(snapshot.current.intent) : snapshot.current),
             error: next,
-            ...(restart ? { pending: null } : {}),
-            recovery: tokenCommitted && client.mode === 'oauth_tokens' && client.getAccessToken()
-              ? 'session-views' : restart || tokenCommitted ? 'restart' : snapshot.current.recovery,
-            ...(restart || tokenCommitted ? { transactionExpiresAt: null, challengeExpiresAt: null } : {}),
             ...(retry !== undefined ? { retryAfterSeconds: retry } : {}),
             ...((next instanceof IamApiError ||
               next instanceof AuthenticationTransactionError) &&
@@ -365,7 +368,7 @@ export function useAuthFlow(
           }
         })
       operation.current = { name, key, promise }
-      update({ ...snapshot.current, pending: name, error: null, recovery: null })
+      update({ ...snapshot.current, pending: name, error: null })
       return promise
     }
     async function getTransaction(check: () => void) {
@@ -415,7 +418,6 @@ export function useAuthFlow(
           transaction.current = null
           update({
             ...snapshot.current,
-            recovery: null,
             transactionExpiresAt: null,
             challengeExpiresAt: null,
           })
@@ -435,14 +437,13 @@ export function useAuthFlow(
         step: 'success',
         user,
         error: null,
-        recovery: null,
       })
       latest.current.onSignInSuccess?.(user)
     }
     function reset(intent = snapshot.current.intent): Promise<void> {
       const current = snapshot.current
-      if (current.recovery === 'session-views' || (client.mode === 'oauth_tokens' && client.getAccessToken()))
-        return Promise.reject(new AuthFlowStateError('Retry session views or explicitly sign out before starting another login'))
+      if (client.mode === 'oauth_tokens' && client.getAccessToken())
+        return Promise.reject(new AuthFlowStateError('Sign out before starting another login'))
       if (current.step === 'verification' && current.registration.status === 'PENDING_VERIFICATION' &&
         Date.parse(current.registration.expiresAt) > Date.now())
         return Promise.reject(new AuthFlowStateError('Complete or explicitly cancel the pending registration before leaving'))
@@ -470,7 +471,6 @@ export function useAuthFlow(
             update({
               ...snapshot.current,
               cancellationUnconfirmed: true,
-              recovery: 'restart',
               error: failure,
             })
             latest.current.onError?.(failure)
@@ -485,7 +485,7 @@ export function useAuthFlow(
       if (!previous) return
       const currentEpoch = epoch.current
       const generation = client.state.generation
-      const cancellation = previous.cancel().then(() => undefined).catch((error: unknown) => {
+      const cancellation: Promise<void> = previous.cancel().then(() => undefined).catch((error: unknown) => {
         if (
           !mounted.current ||
           epoch.current !== currentEpoch ||
@@ -498,12 +498,14 @@ export function useAuthFlow(
             : new AuthFlowStateError('Cancellation was not confirmed')
         update({
           ...snapshot.current,
-          step: 'unavailable',
+          ...(client.mode === 'server_session' ? { step: 'unavailable' as const } : {}),
           cancellationUnconfirmed: true,
           error: failure,
         })
         latest.current.onError?.(failure)
         throw failure
+      }).finally(() => {
+        if (selectionCancellation.current === cancellation) selectionCancellation.current = null
       })
       selectionCancellation.current = cancellation
       // Record uncertainty in public state even if no subsequent credential action awaits it.
@@ -566,16 +568,6 @@ export function useAuthFlow(
         invalidate()
         reloadMetadata((revision) => revision + 1)
         return Promise.resolve()
-      },
-      retrySessionViews() {
-        if (snapshot.current.recovery !== 'session-views' || client.mode !== 'oauth_tokens')
-          return Promise.reject(new AuthFlowStateError('No committed session views require recovery'))
-        return run('session-views', '', async (check, committed) => {
-          committed()
-          await client.fetchPermissions()
-          check()
-          finishSignIn()
-        })
       },
       setIntent: reset,
       reset: () => reset(latest.current.initialIntent ?? 'sign-in'),
@@ -951,7 +943,7 @@ export function useAuthFlow(
   useEffect(() => {
     if (latest.current.autoProviderCallback === false || typeof window === 'undefined' ||
         AuthProviderWindow.isCallbackWindow() || state.step === 'loading' || state.pending ||
-        state.step === 'success' || state.recovery) return
+        state.step === 'success') return
     const url = window.location.href
     if (automaticCallback.current === url) return
     const matches = client.mode === 'oauth_tokens'
@@ -968,7 +960,7 @@ export function useAuthFlow(
       }
     })
     return () => { cancelled = true }
-  }, [client, actions, state.step, state.pending, state.recovery])
+  }, [client, actions, state.step, state.pending])
 
   useEffect(() => {
     if (observedGeneration.current === client.state.generation) return
