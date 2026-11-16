@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
-import { AuthProviderWindow, useAuthFlow, phoneCountries, parsePhoneIdentifier, normalizePhoneIdentifier } from '@axis-iam/vertex-react'
+import { useEffect, useState } from 'react'
+import { useAuthFlow, phoneCountries, parsePhoneIdentifier, normalizePhoneIdentifier } from '@axis-iam/vertex-react'
 import type { AuthCredentialMethod, UseAuthFlowOptions } from '@axis-iam/vertex-react'
 import type { LoginIdentifier, SignupIdentifierKind } from '@axis-iam/vertex'
 
 /** Host-owned markup. Capabilities, transactions and signup gates remain authoritative. */
-export function CustomAuth(options: UseAuthFlowOptions & { providerPopupRedirectUri?: string }) {
+export function CustomAuth(options: UseAuthFlowOptions & { providerNavigation?: 'popup' | 'redirect' }) {
   const { state: s, actions } = useAuthFlow(options)
   const [identifier, setIdentifier] = useState('')
   const [country, setCountry] = useState('')
@@ -14,9 +14,6 @@ export function CustomAuth(options: UseAuthFlowOptions & { providerPopupRedirect
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
   const [localError, setLocalError] = useState<string | null>(null)
-  const [providerPending, setProviderPending] = useState(false)
-  const providerPopup = useMemo(() => options.providerPopupRedirectUri ? new AuthProviderWindow(options.providerPopupRedirectUri) : null, [options.providerPopupRedirectUri])
-  useEffect(() => () => providerPopup?.close(), [providerPopup])
   const kinds = s.capabilities?.identifierMethods ?? []
   const kind = selectedKind ?? s.capabilities?.defaultIdentifierKind ?? null
   const registrationKinds = s.capabilities?.allowedSignupIdentifierKinds ?? []
@@ -52,7 +49,9 @@ export function CustomAuth(options: UseAuthFlowOptions & { providerPopupRedirect
   return <section aria-label="Custom authentication">
     <h2>{s.intent === 'sign-up' ? 'Create account' : 'Sign in'}</h2>
     {s.step === 'unavailable' ? <><p role="status">Authentication is unavailable.</p><button onClick={() => run(actions.retryOptions())}>Retry</button></> : <>
-      {s.completionPending && <button onClick={() => run(actions.retryCompletion())}>Retry completion</button>}
+      {s.recovery === 'session-views' && <button disabled={busy} onClick={() => run(actions.retrySessionViews())}>Retry loading account</button>}
+      {s.recovery === 'restart' && <button disabled={busy} onClick={() => { clearProof(); run(actions.reset()) }}>Start sign-in again</button>}
+      {!s.recovery && <>
       {!waiting && (s.step === 'identifier' || s.step === 'method') && kinds.length > 1 && <div role="group" aria-label="Identifier kind">{kinds.map(entry => <button key={entry.kind} aria-pressed={kind === entry.kind} disabled={busy} onClick={() => { if (s.step === 'method') run(actions.back()); setKind(entry.kind); setIdentifier(''); setCountry(''); setMethod(null); clearProof() }}>{entry.kind}</button>)}</div>}
       {s.step === 'sign-up' && registrationKinds.length > 1 && <div role="group" aria-label="Signup identifier">{registrationKinds.map(value => <button key={value} disabled={busy} aria-pressed={registrationKind === value} onClick={() => { setSignupKind(value); setIdentifier(''); clearProof() }}>{value}</button>)}</div>}
       {((!waiting && (s.step === 'identifier' || s.step === 'method') && kind) || (s.step === 'sign-up' && registrationKind)) && <form onSubmit={event => { event.preventDefault(); submit() }}>
@@ -67,16 +66,13 @@ export function CustomAuth(options: UseAuthFlowOptions & { providerPopupRedirect
       {waiting && <><p>{s.identifier}</p><button disabled={busy} onClick={() => { clearProof(); run(actions.back()) }}>Change identifier</button><button disabled={busy || s.retryAfterSeconds > 0} onClick={() => run(s.magicLinkSent ? actions.sendMagicLink() : actions.sendCode())}>{s.retryAfterSeconds ? `Resend in ${s.retryAfterSeconds}s` : 'Resend'}</button></>}
       {s.step === 'verification' && <><p role="status">{s.registration.status}</p>{s.registration.status === 'PENDING_VERIFICATION' && <><button disabled={busy || s.retryAfterSeconds > 0 || s.registrationCancelUnconfirmed} onClick={() => run(actions.resendVerification())}>Resend</button><button disabled={busy} onClick={() => run(actions.cancelRegistration())}>Cancel registration</button></>}{s.registrationCancelUnconfirmed && <button onClick={() => run(actions.resumeRegistration(s.registration.registrationId))}>Refresh status</button>}</>}
       {s.providers.map(provider => <button key={provider.id} disabled={busy} onClick={() => {
-        const work = providerPopup ? providerPopup.start(() => actions.startProvider(provider.id)).then(() => setProviderPending(true))
-          : actions.startProvider(provider.id).then(url => window.location.assign(url))
-        void work.catch(() => setLocalError('Provider sign-in could not open. Check the browser popup setting.'))
+        run(options.providerNavigation === 'redirect'
+          ? actions.startProvider(provider.id).then(url => window.location.assign(url))
+          : actions.signInWithProvider(provider.id))
       }}>Continue with {provider.displayName}</button>)}
-      {providerPending && providerPopup && <button disabled={busy} onClick={() => {
-        try { run(actions.resumeProviderCallback(providerPopup.callback()).then(() => { providerPopup.close(); setProviderPending(false) })) }
-        catch { setLocalError('Provider has not returned to the registered callback.') }
-      }}>I have signed in</button>}
+      </>}
     </>}
-    {(s.intent === 'sign-up' || canSignup) && ['identifier', 'method', 'unavailable', 'sign-up'].includes(s.step) && <button disabled={busy} onClick={() => { clearProof(); run(actions.setIntent(s.intent === 'sign-in' ? 'sign-up' : 'sign-in')) }}>{s.intent === 'sign-in' ? 'Create account' : 'Sign in instead'}</button>}
+    {!s.recovery && (s.intent === 'sign-up' || canSignup) && ['identifier', 'method', 'unavailable', 'sign-up'].includes(s.step) && <button disabled={busy} onClick={() => { clearProof(); run(actions.setIntent(s.intent === 'sign-in' ? 'sign-up' : 'sign-in')) }}>{s.intent === 'sign-in' ? 'Create account' : 'Sign in instead'}</button>}
     {(s.error || localError) && <p role="alert">{localError ?? 'Authentication could not continue. Check your details and retry.'}</p>}
   </section>
 }

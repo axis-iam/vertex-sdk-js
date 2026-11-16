@@ -255,3 +255,5 @@ from explicit `cleared`, session `replaced`, and `disposed` lifecycle changes. E
 invalidates the old generation and authentication as before; an old response cannot invalidate a
 new session. Adapters may use this signal for a non-sensitive, owner-bound read receipt, never
 to retain old-session credentials, proofs or mutation authority.
+
+`exchange({ reconcileCompletion: true })` opts into one automatic reconciliation of an uncertain `/complete` with the same body and original key. It never replays password/OTP/MFA, sends a challenge, or retries a sent `/token` exchange. The default low-level exchange remains explicitly controlled. React uses this bounded option. `AuthenticationTransaction.isProviderCallback(binding, url)` inspects an exact pending CUSTOM return without consuming it; an `error=access_denied&state=...` return is validated, consumed and surfaced as `AUTH_PROVIDER_DENIED`, without token I/O.

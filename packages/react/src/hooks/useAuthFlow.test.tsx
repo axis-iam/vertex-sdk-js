@@ -1,4 +1,5 @@
 import { webcrypto } from 'node:crypto'
+import { createElement, StrictMode } from 'react'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionInvalidatedError } from '@axis-iam/vertex'
@@ -716,11 +717,11 @@ describe('Custom flow required session views', () => {
       u.authenticationContext.clientId = 'flow-test'
       if (mode === 'cancel')
         await act(async () => {
-          await h.result.current.actions.cancel()
+          await expect(h.result.current.actions.cancel()).rejects.toThrow(/explicitly sign out/)
         })
       if (mode === 'unmount') h.unmount()
       const outcome =
-        mode === 'cancel' || mode === 'unmount'
+        mode === 'unmount'
           ? expect(pending).rejects.toMatchObject({
               code: 'SESSION_INVALIDATED',
             })
@@ -738,7 +739,7 @@ describe('Custom flow required session views', () => {
         )
         await outcome
       })
-      expect(onSignInSuccess).toHaveBeenCalledTimes(mode === 'complete' ? 1 : 0)
+      expect(onSignInSuccess).toHaveBeenCalledTimes(mode === 'complete' || mode === 'cancel' ? 1 : 0)
       expect(onError).toHaveBeenCalledTimes(
         mode === 'failure' || mode === 'unauthorized' ? 1 : 0,
       )
@@ -749,7 +750,130 @@ describe('Custom flow required session views', () => {
 })
 
 describe('transaction recovery and cancellation boundaries', () => {
-  it('recovers lost completion with status and the original key without resending primary proof', async () => {
+  it('retires a timed-out popup epoch before its delayed authorization can affect a new login', async () => {
+    currentClient.config.redirectUri = `${location.origin}/callback`
+    const popup = { closed: false, location: { href: 'about:blank' }, history: { replaceState: vi.fn() }, close: vi.fn() }
+    vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
+    let release!: (value: Response) => void
+    fetchMock.mockImplementationOnce(() => new Promise<Response>(resolve => { release = resolve }))
+    const onSignInSuccess = vi.fn()
+    const onError = vi.fn()
+    const h = await setup({ onSignInSuccess, onError })
+    await act(async () => {
+      await expect(h.result.current.actions.signInWithProvider('provider', { timeoutMs: 50 })).rejects.toMatchObject({ code: 'AUTH_PROVIDER_TIMEOUT' })
+    })
+    expect(h.result.current.state).toMatchObject({ pending: null, recovery: 'restart' })
+    await act(async () => h.result.current.actions.reset())
+    await identify(h)
+    await act(async () => h.result.current.actions.submitPassword('new-fixture'))
+    await act(async () => {
+      release(response({ authorizationUrl: 'https://provider.test/old', expiresAt: transactionExpiry }))
+      await Promise.resolve()
+    })
+    expect(h.result.current.state.step).toBe('success')
+    expect(onSignInSuccess).toHaveBeenCalledOnce()
+    expect(onError).toHaveBeenCalledOnce()
+    expect(popup.location.href).toBe('about:blank')
+    expect(popup.close).toHaveBeenCalledOnce()
+  })
+  it('keeps the original form busy during slow exchange without recovery or early success', async () => {
+    let release!: () => void
+    const base = globalThis.fetch
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/token')) await new Promise<void>(resolve => { release = resolve })
+      return base(input, init)
+    })
+    const onSignInSuccess = vi.fn()
+    const h = await setup({ onSignInSuccess })
+    await identify(h)
+    let completion!: Promise<void>
+    act(() => { completion = h.result.current.actions.submitPassword('fixture') })
+    await waitFor(() => expect(release).toBeTypeOf('function'))
+    expect(h.result.current.state).toMatchObject({ step: 'method', pending: 'password', recovery: null, error: null })
+    expect(onSignInSuccess).not.toHaveBeenCalled()
+    await act(async () => { release(); await completion })
+    expect(h.result.current.state).toMatchObject({ step: 'success', recovery: null })
+    expect(onSignInSuccess).toHaveBeenCalledOnce()
+  })
+  it.each(['profile', 'permissions'] as const)('recovers committed token %s reads without credentials or code replay', async part => {
+    const base = globalThis.fetch
+    let fail = true
+    let exchanges = 0
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/token')) exchanges++
+      if (fail && url.endsWith(part === 'profile' ? '/me' : '/me/permissions')) return response({}, 503)
+      return base(input, init)
+    })
+    const onSignInSuccess = vi.fn()
+    const h = await setup({ onSignInSuccess })
+    await identify(h)
+    await act(async () => { await expect(h.result.current.actions.submitPassword('fixture')).rejects.toThrow() })
+    expect(h.result.current.state).toMatchObject({ recovery: 'session-views', pending: null })
+    expect(currentClient.getAccessToken()).not.toBeNull()
+    expect(currentClient.isAuthenticated()).toBe(false)
+    expect(onSignInSuccess).not.toHaveBeenCalled()
+    await act(async () => { await expect(h.result.current.actions.reset()).rejects.toThrow(/session views/) })
+    fail = false
+    await act(async () => h.result.current.actions.retrySessionViews())
+    expect(h.result.current.state.step).toBe('success')
+    expect(exchanges).toBe(1)
+    expect(fetchMock.mock.calls.filter(c => String(c[0]).endsWith('/authenticate'))).toHaveLength(1)
+    expect(onSignInSuccess).toHaveBeenCalledOnce()
+  })
+  it('bounds failed completion reconciliation and permits a fresh login without proof replay', async () => {
+    const base = globalThis.fetch
+    let lost = true
+    let completes = 0
+    let exchanges = 0
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/complete')) { completes++; if (lost) throw new TypeError('lost') }
+      if (String(input).endsWith('/token')) exchanges++
+      return base(input, init)
+    })
+    const h = await setup()
+    await identify(h)
+    await act(async () => { await expect(h.result.current.actions.submitPassword('fixture')).rejects.toMatchObject({ code: 'AUTH_TRANSACTION_UNCERTAIN' }) })
+    expect(completes).toBe(2)
+    expect(exchanges).toBe(0)
+    expect(h.result.current.state.recovery).toBe('restart')
+    await act(async () => h.result.current.actions.reset())
+    lost = false
+    await identify(h)
+    await act(async () => h.result.current.actions.submitPassword('new-fixture'))
+    expect(h.result.current.state.step).toBe('success')
+    expect(fetchMock.mock.calls.filter(c => String(c[0]).endsWith('/authenticate'))).toHaveLength(2)
+  })
+  it('automatically consumes a bound top-level return once under StrictMode', async () => {
+    currentClient = new OAuthClient({ issuerUri: 'https://auth.test.com', clientId: 'flow-test', redirectUri: `${location.origin}/callback` })
+    vi.spyOn(currentClient, 'discover').mockResolvedValue({
+      issuer: 'https://auth.test.com', token_endpoint: 'https://auth.test.com/token',
+      authorization_endpoint: 'https://auth.test.com/authorize', userinfo_endpoint: 'https://auth.test.com/userinfo', jwks_uri: 'https://auth.test.com/jwks',
+    })
+    vi.spyOn(currentClient, 'getPublicAuthMethods').mockResolvedValue(structuredClone(flowCapabilities))
+    vi.spyOn(currentClient, 'getPublicAuthPolicy').mockResolvedValue({ ...flowPolicy })
+    const tx = await currentClient.beginAuthentication()
+    tx.persistForNavigation()
+    transactionState = 'COMPLETED'
+    const callback = `/callback?code=one&state=${created.state}`
+    history.replaceState(null, '', callback)
+    let exchanges = 0
+    const base = globalThis.fetch
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/token')) exchanges++
+      return base(input, init)
+    })
+    const onSignInSuccess = vi.fn()
+    const h = renderHook(() => useAuthFlow({ onSignInSuccess }), {
+      wrapper: ({ children }) => createElement(StrictMode, null, children),
+    })
+    await waitFor(() => expect(h.result.current.state.step).toBe('success'))
+    expect(exchanges).toBe(1)
+    expect(onSignInSuccess).toHaveBeenCalledOnce()
+    expect(location.search).toBe('')
+    history.replaceState(null, '', '/')
+  })
+  it('automatically reconciles one lost completion using the original key without resending primary proof', async () => {
     const base = globalThis.fetch
     const keys: string[] = []
     let lost = true
@@ -771,14 +895,7 @@ describe('transaction recovery and cancellation boundaries', () => {
     const h = await setup({ onSignInSuccess })
     await identify(h)
     await act(async () => {
-      await expect(
-        h.result.current.actions.submitPassword('p'),
-      ).rejects.toMatchObject({ code: 'AUTH_TRANSACTION_UNCERTAIN' })
-    })
-    expect(h.result.current.state.completionPending).toBe(true)
-    expect(currentClient.getAccessToken()).toBeNull()
-    await act(async () => {
-      await h.result.current.actions.retryCompletion()
+      await h.result.current.actions.submitPassword('p')
     })
     expect(keys).toHaveLength(2)
     expect(keys[0]).toBe(keys[1])

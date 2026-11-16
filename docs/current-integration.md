@@ -18,6 +18,11 @@ Authentication Transaction, followed by code completion and OAuth token exchange
 login/refresh endpoints. Handle Provider `continuation` by resuming the original transaction and completing required
 MFA; it is not a login result or token. Keep the initiating tab and exact registered callback binding.
 
+Provider popup completion is automatic through `useAuthFlow().actions.signInWithProvider(id)`, shared by
+Embedded/Dialog and Custom. Full-page CUSTOM returns auto-consume only a matching pending Client/issuer/redirect;
+HOSTED keeps its separate callback entry. Render normal `pending` as busy and `recovery` only after failure.
+`retrySessionViews` preserves committed Tokens and retries only authoritative reads. A sent code is not replayed.
+
 Choose identifier kind explicitly from effective capabilities (`EMAIL`/`USERNAME`/`PHONE` for login;
 server-allowed `EMAIL`/`USERNAME` for registration). `clientId` locates the ApplicationClient's owning Application;
 it is not an internal Application UUID or a policy override. Permissions load from authenticated `/me/permissions`,

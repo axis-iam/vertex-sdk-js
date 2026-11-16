@@ -15,7 +15,7 @@ const common = {
   intent: 'sign-in', step: 'identifier', capabilities: flowCapabilities, policy: flowPolicy,
   providers: [], pending: null, error: null, retryAfterSeconds: 0, verificationResendDeadline: null,
   registrationCancelUnconfirmed: false, verificationEmail: null, transactionExpiresAt: null,
-  challengeExpiresAt: null, cancellationUnconfirmed: false, completionPending: false,
+  challengeExpiresAt: null, cancellationUnconfirmed: false, recovery: null,
 } satisfies AuthFlowState
 function setup(patch: Partial<AuthFlowState> = {}, locale: 'en' | 'zh-CN' = 'en') {
   const actions = Object.fromEntries([

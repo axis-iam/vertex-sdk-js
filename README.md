@@ -502,29 +502,24 @@ Primary password, email OTP, SMS OTP and Magic link actions use the Core `Authen
 
 See the [React transaction guide](packages/react/README.md#public-transaction-flow) for exact public actions, Magic link original-tab requirements, TOTP/recovery-code MFA, parent/challenge deadlines, cancellation failure and lost-response recovery. Core exposes the same framework-neutral `AuthenticationTransaction` class. Java, Go and Python currently expose server verification/account APIs and no public primary browser login API; this migration adds no browser protocol facade to those packages.
 
-For embedded provider buttons, discovery still determines availability. Starting a selected provider creates the same public authentication transaction and sends `POST /api/v1/auth/transactions/{id}/authorize` with exact `{ "providerId": "..." }` and original transaction control. The backend returns `{authorizationUrl,expiresAt}`; the SDK never constructs Google/GitHub URLs or accepts provider secrets. On return, `handleRedirectCallback()` exchanges a normal code once, or returns `status: "continuation"` for transaction MFA. `useAuthFlow().actions.resumeProviderCallback(url)` restores that MFA in Custom/Embedded/Dialog. See the React guide for precise original-tab storage and callback requirements.
+For embedded provider buttons, discovery determines availability. Provider authorization uses the same public authentication transaction and exact `{ "providerId": "..." }`, original control and backend-returned URL. Embedded/Dialog and Custom share `useAuthFlow` automatic popup/full-page return handling, including required MFA. Use `actions.signInWithProvider(id)` from a user action for the complete popup flow. Full-page navigation uses `actions.startProvider(id)` and the same hook on the registered callback route. No normal completion click is needed. See the React guide for original-tab binding, busy state and safe recovery.
 
 For custom login pages, use the headless hooks:
 
 ```tsx
 function CustomProviderLogin() {
-  const { providers, isLoading, error } = useIdentityProviders()
-  const { startProviderLogin } = useProviderLogin()
-
-  async function login(providerId: string) {
-    const provider = providers.find((item) => item.id === providerId)
-    if (!provider) return
-    const authorizationUrl = await startProviderLogin(provider)
-    window.location.href = authorizationUrl
-  }
-
-  if (isLoading) return <p>Loading sign-in options...</p>
-  if (error) return <p>Provider sign-in is unavailable.</p>
+  const { state, actions } = useAuthFlow()
+  if (state.step === 'loading') return <p>Loading sign-in options...</p>
+  // A complete host form also renders required MFA and state.recovery actions;
+  // see packages/react/examples/CustomAuth.tsx.
 
   return (
     <>
-      {providers.map((provider) => (
-        <button key={provider.id} onClick={() => void login(provider.id)}>
+      {state.providers.map((provider) => (
+        <button key={provider.id} disabled={state.pending !== null}
+          onClick={() => void actions.signInWithProvider(provider.id).catch(() => {
+            // state.error carries the typed failure; render an ordinary recovery action.
+          })}>
           Continue with {provider.displayName}
         </button>
       ))}
@@ -532,6 +527,8 @@ function CustomProviderLogin() {
   )
 }
 ```
+
+Use `state.pending` for ordinary busy. `state.recovery` distinguishes safe restart from failed profile/permission reads after Token commit; `retrySessionViews()` retries only those reads. Completion response uncertainty receives one bounded original-key reconciliation; credentials/messages and a sent code exchange are never replayed by the SDK. Existing vendored hosts require a separate bundle upgrade; package version `0.1.0` alone does not identify this unpublished candidate.
 
 Sign-in methods, registration capabilities, provider IDs and labels come from IAM discovery for the current `ApplicationClient`. `IamConfig` does not accept static `authMethods` or `socialProviders`; these retired options fail configuration validation. Customize presentation through `appearance`, `colorScheme`, localization or `renderProviderButton`, without changing the discovered provider identity or availability.
 

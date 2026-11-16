@@ -33,7 +33,7 @@ export function DialogInvitation() {
 }
 export function CustomInvitation() {
   // Authentication stays ordinary Client OAuth. Invitation registration uses the dedicated form.
-  return <OrganizationInvitationAccept renderLogin={() => <CustomAuth initialIntent="sign-in" providerPopupRedirectUri="/callback" />} />
+  return <OrganizationInvitationAccept renderLogin={() => <CustomAuth initialIntent="sign-in" providerNavigation="popup" />} />
 }
 /** The host captures/scrubs continuation before mounting this Headless example. */
 export function HeadlessInvitation({ continuation, journeyRef }: { continuation?: string; journeyRef?: string }) {

@@ -39,11 +39,12 @@ it('fails closed on injected callback tokens, another origin, or a blocked popup
 it('normal selected-provider popup returns only the callback to the existing Client flow and supports explicit disposal', async () => {
   const { client, popup } = fixture(), provider = new AuthProviderWindow('/callback')
   const authorize = vi.fn(async () => 'https://issuer.example.test/selected-provider?state=ordinary')
-  await provider.start(authorize)
+  const completion = provider.start(authorize)
+  await vi.waitFor(() => expect(authorize).toHaveBeenCalledTimes(1))
   expect(authorize).toHaveBeenCalledTimes(1)
   popup.location.href = window.location.origin + '/callback?kind=AUTH_PROOF&state=ordinary'
-  expect(provider.callback()).toBe(popup.location.href)
-  expect(popup.history.replaceState).toHaveBeenCalledWith(null, '', '/callback')
+  await expect(completion).resolves.toContain('kind=AUTH_PROOF&state=ordinary')
+  expect(popup.history.replaceState).toHaveBeenCalledWith(null, '', window.location.origin + '/callback')
   provider.close(); expect(popup.close).toHaveBeenCalledTimes(1)
   client.dispose()
 })

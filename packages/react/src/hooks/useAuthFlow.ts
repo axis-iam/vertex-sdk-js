@@ -14,6 +14,7 @@ import { useIamContext } from '../provider/IamProvider'
 import { IamApiError } from '../core/types'
 import type { RegistrationGrantInput } from '../core/types'
 import { AuthFlowStateError } from '../core/auth-flow-types'
+import { AuthProviderWindow } from '../core/auth-provider-window'
 import type {
   AuthFlowState,
   AuthFlowIntent,
@@ -58,7 +59,7 @@ const initial = (intent: AuthFlowIntent): AuthFlowState => ({
   verificationEmail: null,
   registrationCancelUnconfirmed: false,
   cancellationUnconfirmed: false,
-  completionPending: false,
+  recovery: null,
   transactionExpiresAt: null,
   challengeExpiresAt: null,
 })
@@ -81,6 +82,8 @@ export function useAuthFlow(
   const mounted = useRef(true)
   const registrationAttempt = useRef<{ body: string; key: string } | null>(null)
   const transaction = useRef<AuthenticationFlow | null>(null)
+  const providerWindow = useRef<AuthProviderWindow | null>(null)
+  const automaticCallback = useRef<string | null>(null)
   const selectionCancellation = useRef<Promise<void> | null>(null)
   const cooldown = useRef(0)
   const operation = useRef<{
@@ -94,6 +97,8 @@ export function useAuthFlow(
   }
   const invalidate = () => {
     epoch.current++
+    providerWindow.current?.close()
+    providerWindow.current = null
     operation.current = null
     cooldown.current = 0
   }
@@ -268,6 +273,8 @@ export function useAuthFlow(
       key: string,
       work: (check: () => void, committed: () => void) => Promise<T>,
     ): Promise<T> {
+      if (snapshot.current.recovery === 'session-views' && name !== 'session-views')
+        return Promise.reject(new AuthFlowStateError('Retry session views or explicitly sign out before starting another login'))
       const pending = operation.current
       if (pending) {
         if (pending.name === name && pending.key === key)
@@ -278,12 +285,14 @@ export function useAuthFlow(
       }
       const attempt = epoch.current
       let generation = client.state.generation
+      let tokenCommitted = false
       const check = () => {
         if (!mounted.current || epoch.current !== attempt)
           throw new SessionInvalidatedError()
         client.state.assertCurrent(generation)
       }
       const committed = () => {
+        tokenCommitted = true
         generation = client.state.generation
         observedGeneration.current = generation
       }
@@ -297,6 +306,9 @@ export function useAuthFlow(
           return result
         })
         .catch((error: unknown) => {
+          // A 401 view read clears the token and advances generation after commit.
+          if (tokenCommitted && client.mode === 'oauth_tokens' &&
+              client.state.generation === generation + 1 && !client.getAccessToken()) committed()
           check()
           const next =
             error instanceof Error ? error : new Error('Authentication failed')
@@ -306,9 +318,26 @@ export function useAuthFlow(
               ? next.retryAfterSeconds
               : undefined
           if (retry !== undefined) cooldown.current = Date.now() + retry * 1000
+          const restart = name === 'provider' || name === 'provider-callback' ||
+            (next instanceof SessionTransportError && ['password', 'verify-code', 'mfa'].includes(name) &&
+              (next.status === 0 || next.status >= 500)) ||
+            (next instanceof AuthenticationTransactionError &&
+              ['AUTH_TRANSACTION_UNCERTAIN', 'AUTH_TRANSACTION_RETRY_REQUIRED',
+                'AUTH_TRANSACTION_INVALIDATED', 'TOKEN_EXCHANGE_UNCERTAIN',
+                'TOKEN_EXCHANGE_REJECTED', 'AUTH_TRANSACTION_INVALID_RESPONSE'].includes(next.code))
+          if (restart && !tokenCommitted && client.mode === 'oauth_tokens') {
+            // A timed-out popup's authorization request may still finish. Retire its epoch.
+            epoch.current++
+            transaction.current?.invalidate()
+            transaction.current = null
+          }
           update({
             ...snapshot.current,
             error: next,
+            ...(restart ? { pending: null } : {}),
+            recovery: tokenCommitted && client.mode === 'oauth_tokens' && client.getAccessToken()
+              ? 'session-views' : restart || tokenCommitted ? 'restart' : snapshot.current.recovery,
+            ...(restart || tokenCommitted ? { transactionExpiresAt: null, challengeExpiresAt: null } : {}),
             ...(retry !== undefined ? { retryAfterSeconds: retry } : {}),
             ...((next instanceof IamApiError ||
               next instanceof AuthenticationTransactionError) &&
@@ -336,7 +365,7 @@ export function useAuthFlow(
           }
         })
       operation.current = { name, key, promise }
-      update({ ...snapshot.current, pending: name, error: null })
+      update({ ...snapshot.current, pending: name, error: null, recovery: null })
       return promise
     }
     async function getTransaction(check: () => void) {
@@ -380,31 +409,21 @@ export function useAuthFlow(
         !transaction.current
       )
         throw new AuthFlowStateError('Authentication is not ready to complete')
-      update({ ...snapshot.current, completionPending: true })
-      let generation = client.state.generation
-      try {
-        await client.completeAuthentication(transaction.current, () => {
+      const active = transaction.current
+      await client.completeAuthentication(active, () => {
           committed()
-          generation = client.state.generation
           transaction.current = null
           update({
             ...snapshot.current,
-            completionPending: false,
+            recovery: null,
             transactionExpiresAt: null,
             challengeExpiresAt: null,
           })
-        })
-      } catch (error) {
-        if (
-          error instanceof IamApiError &&
-          error.status === 401 &&
-          client.state.generation === generation + 1 &&
-          !client.isAuthenticated()
-        )
-          committed()
-        throw error
-      }
+      })
       check()
+      finishSignIn()
+    }
+    function finishSignIn() {
       const user = client.state.getUser()
       if (!user)
         throw new AuthFlowStateError('Required session views are unavailable')
@@ -416,11 +435,14 @@ export function useAuthFlow(
         step: 'success',
         user,
         error: null,
+        recovery: null,
       })
       latest.current.onSignInSuccess?.(user)
     }
     function reset(intent = snapshot.current.intent): Promise<void> {
       const current = snapshot.current
+      if (current.recovery === 'session-views' || (client.mode === 'oauth_tokens' && client.getAccessToken()))
+        return Promise.reject(new AuthFlowStateError('Retry session views or explicitly sign out before starting another login'))
       if (current.step === 'verification' && current.registration.status === 'PENDING_VERIFICATION' &&
         Date.parse(current.registration.expiresAt) > Date.now())
         return Promise.reject(new AuthFlowStateError('Complete or explicitly cancel the pending registration before leaving'))
@@ -448,6 +470,7 @@ export function useAuthFlow(
             update({
               ...snapshot.current,
               cancellationUnconfirmed: true,
+              recovery: 'restart',
               error: failure,
             })
             latest.current.onError?.(failure)
@@ -509,6 +532,33 @@ export function useAuthFlow(
         })
       return input ?? latest.current.registrationGrant
     }
+    async function authorizeProvider(providerId: string, suppliedGrant: RegistrationGrantInput | undefined, check: () => void) {
+      const current = assertAvailable()
+      const provider = current.providers.find((x) => x.id === providerId)
+      if (!provider) throw new AuthFlowStateError('This provider is unavailable')
+      const grant = signupGrant(suppliedGrant)
+      if (current.intent === 'sign-up') assertSignup(grant)
+      if (grant?.type === 'ORG_INVITATION')
+        throw new IamApiError('Organization invitation proof is unsupported for provider authorization.',
+          { status: 400, code: 'REGISTRATION_GRANT_HOSTED_UNSUPPORTED' })
+      const tx = await getTransaction(check)
+      const result = await tx.authorizeProvider(provider.id, registrationGrantBody(current.intent === 'sign-up' ? grant : undefined))
+      check()
+      return result.authorizationUrl
+    }
+    async function consumeProvider(url: string, check: () => void, committed: () => void) {
+      const result = await client.resumeProviderCallback(url, () => {
+        committed()
+        transaction.current = null
+        update({ ...snapshot.current, transactionExpiresAt: null, challengeExpiresAt: null })
+      }, check)
+      check()
+      if (result.kind === 'continuation') {
+        transaction.current = result.transaction
+        update({ ...snapshot.current, transactionExpiresAt: result.view.expiresAt })
+        await advance(result.view, check, committed)
+      } else finishSignIn()
+    }
     return {
       retryOptions() {
         if (snapshot.current.step !== 'unavailable')
@@ -517,11 +567,14 @@ export function useAuthFlow(
         reloadMetadata((revision) => revision + 1)
         return Promise.resolve()
       },
-      retryCompletion() {
-        return run('retry-completion', '', async (check, committed) => {
-          if (!snapshot.current.completionPending || !transaction.current)
-            throw new AuthFlowStateError('No completion is pending')
-          await advance(await transaction.current.get(), check, committed)
+      retrySessionViews() {
+        if (snapshot.current.recovery !== 'session-views' || client.mode !== 'oauth_tokens')
+          return Promise.reject(new AuthFlowStateError('No committed session views require recovery'))
+        return run('session-views', '', async (check, committed) => {
+          committed()
+          await client.fetchPermissions()
+          check()
+          finishSignIn()
         })
       },
       setIntent: reset,
@@ -696,36 +749,11 @@ export function useAuthFlow(
         })
       },
       resumeProviderCallback(url) {
+        if (snapshot.current.step === 'success')
+          return Promise.reject(new AuthFlowStateError('Authentication is already complete'))
         return run('provider-callback', url, async (check, committed) => {
           try {
-            const result = await client.resumeProviderCallback(
-              url,
-              committed,
-              check,
-            )
-            check()
-            if (result.kind === 'continuation') {
-              transaction.current = result.transaction
-              update({
-                ...snapshot.current,
-                transactionExpiresAt: result.view.expiresAt,
-              })
-              await advance(result.view, check, committed)
-            } else {
-              const user = client.state.getUser()
-              if (!user)
-                throw new AuthFlowStateError(
-                  'Required session views are unavailable',
-                )
-              update({
-                ...snapshot.current,
-                step: 'success',
-                user,
-                transactionExpiresAt: null,
-                error: null,
-              })
-              latest.current.onSignInSuccess?.(user)
-            }
+            await consumeProvider(url, check, committed)
           } finally {
             if (typeof window !== 'undefined' && window.location.href === url) {
               const clean = new URL(url)
@@ -734,6 +762,7 @@ export function useAuthFlow(
                 'auth_transaction_id',
                 'state',
                 'code',
+                'error',
               ])
                 clean.searchParams.delete(key)
               window.history.replaceState(window.history.state, '', clean.href)
@@ -898,34 +927,57 @@ export function useAuthFlow(
         })
       },
       startProvider(providerId, suppliedGrant) {
-        return run('provider', providerId, async (check) => {
-          const current = assertAvailable()
-          const provider = current.providers.find((x) => x.id === providerId)
-          if (!provider)
-            throw new AuthFlowStateError('This provider is unavailable')
-          const grant = signupGrant(suppliedGrant)
-          if (current.intent === 'sign-up') assertSignup(grant)
-          if (grant?.type === 'ORG_INVITATION')
-            throw new IamApiError(
-              'Organization invitation proof is unsupported for provider authorization.',
-              { status: 400, code: 'REGISTRATION_GRANT_HOSTED_UNSUPPORTED' },
-            )
-          const tx = await getTransaction(check)
-          const result = await tx.authorizeProvider(provider.id, registrationGrantBody(current.intent === 'sign-up' ? grant : undefined))
-          const url = result.authorizationUrl
-          check()
-          return url
+        return run('provider', providerId, check => authorizeProvider(providerId, suppliedGrant, check))
+      },
+      signInWithProvider(providerId, options = {}) {
+        return run('provider', providerId, async (check, committed) => {
+          const redirectUri = client.mode === 'server_session' ? client.config.sessionProviderReturnUri : client.config.redirectUri
+          if (!redirectUri) throw new AuthFlowStateError('A provider return URI is required')
+          const popup = new AuthProviderWindow(redirectUri, options.timeoutMs, client.mode === 'server_session' ? 'server-session' : 'oauth')
+          providerWindow.current = popup
+          try {
+            const url = await popup.start(() => authorizeProvider(providerId, options.registrationGrant, check))
+            check()
+            await consumeProvider(url, check, committed)
+          } finally {
+            popup.close()
+            if (providerWindow.current === popup) providerWindow.current = null
+          }
         })
       },
     }
   }, [client])
 
   useEffect(() => {
+    if (latest.current.autoProviderCallback === false || typeof window === 'undefined' ||
+        AuthProviderWindow.isCallbackWindow() || state.step === 'loading' || state.pending ||
+        state.step === 'success' || state.recovery) return
+    const url = window.location.href
+    if (automaticCallback.current === url) return
+    const matches = client.mode === 'oauth_tokens'
+      ? client.canResumeProviderCallback(url)
+      : Boolean(client.config.sessionProviderReturnUri &&
+          new URL(client.config.sessionProviderReturnUri, window.location.origin).href === url)
+    if (!matches) return
+    // StrictMode's discarded effect must never claim the one-use callback.
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        automaticCallback.current = url
+        void actions.resumeProviderCallback(url).catch(() => { /* Public state carries failure. */ })
+      }
+    })
+    return () => { cancelled = true }
+  }, [client, actions, state.step, state.pending, state.recovery])
+
+  useEffect(() => {
     if (observedGeneration.current === client.state.generation) return
     observedGeneration.current = client.state.generation
-    void actions.cancel().catch(() => {
-      /* The engine exposes cancellation failure. */
-    })
+    // An external logout/replacement already owns the session. Only retire this hook's work.
+    transaction.current?.invalidate()
+    transaction.current = null
+    invalidate()
+    update(idle(snapshot.current.intent))
   }, [client, sessionGeneration, actions])
 
   return { state, actions }

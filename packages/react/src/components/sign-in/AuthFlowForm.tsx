@@ -1,5 +1,5 @@
 import type { LoginIdentifier, MfaProofMethod } from '@axis-iam/vertex'
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { SessionInvalidatedError } from '@axis-iam/vertex'
 import { useIamUi } from '../../provider/IamUiProvider'
@@ -20,8 +20,6 @@ import { getAvailableCredentialMethods } from './sign-in-flow'
 import { hasLocalRegistration } from '../../core/auth-flow-client'
 import { PhoneIdentifierInput } from './PhoneIdentifierInput'
 import { normalizePhoneIdentifier, PhoneIdentifierError } from './phone-identifier'
-import { AuthProviderWindow } from '../../core/auth-provider-window'
-import { useIamContext } from '../../provider/IamProvider'
 
 export function AuthFlowForm({
   flow,
@@ -48,10 +46,6 @@ export function AuthFlowForm({
 }) {
   const { state: s, actions } = flow
   const { localization: l, locale } = useIamUi()
-  const { client } = useIamContext()
-  const providerPopup = useMemo(() => new AuthProviderWindow(client.config.redirectUri), [client])
-  const [providerWindowStarted, setProviderWindowStarted] = useState(false)
-  useEffect(() => () => providerPopup.close(), [providerPopup])
   const prefix = useId()
   const root = useRef<HTMLDivElement>(null)
   const mounted = useRef(true)
@@ -81,8 +75,6 @@ export function AuthFlowForm({
     typeof window !== 'undefined' &&
     new URLSearchParams(window.location.hash.slice(1)).get('kind') ===
       'AUTH_PROOF'
-  const providerCallback = typeof window !== 'undefined' &&
-    (new URLSearchParams(window.location.search).has('kind') || new URLSearchParams(window.location.search).has('code'))
   const [accessCode, setAccessCode] = useState('')
   const canRegister =
     s.step === 'sign-up' &&
@@ -279,13 +271,12 @@ export function AuthFlowForm({
         const onClick = async () => {
           const revision = ownership.current.revision
           try {
-            const authorize = () => actions.startProvider(provider.id, s.intent === 'sign-up' && acceptsAccessCode && accessCode.trim() ? { type: 'ACCESS_CODE', registrationAccessCode: accessCode } : undefined)
+            const grant = s.intent === 'sign-up' && acceptsAccessCode && accessCode.trim() ? { type: 'ACCESS_CODE' as const, registrationAccessCode: accessCode } : undefined
             if (providerNavigation === 'popup') {
-              await providerPopup.start(authorize)
-              if (mounted.current) setProviderWindowStarted(true)
+              await actions.signInWithProvider(provider.id, { registrationGrant: grant })
               return
             }
-            const url = await authorize()
+            const url = await actions.startProvider(provider.id, grant)
             if (mounted.current && ownership.current.revision === revision)
               window.location.href = url
           } catch (error) {
@@ -327,14 +318,6 @@ export function AuthFlowForm({
     >
       <style>{`.axis-iam-auth-form input,.axis-iam-auth-form select,.axis-iam-auth-form button{font-family:inherit;letter-spacing:normal;text-transform:none}.axis-iam-auth-form input::placeholder{color:inherit;opacity:.72}.axis-iam-auth-form input:focus-visible,.axis-iam-auth-form select:focus-visible,.axis-iam-auth-form button:focus-visible,.axis-iam-auth-form a:focus-visible{outline:2px solid var(--axis-auth-focus);outline-offset:3px}.axis-iam-auth-form button:disabled{cursor:not-allowed}.axis-iam-auth-form button:not(:disabled):hover{filter:brightness(.95)}.axis-iam-auth-form .axis-auth-text-action{text-decoration:none}.axis-iam-auth-form .axis-auth-text-action:not(:disabled):hover{text-decoration:underline;text-underline-offset:3px}.axis-iam-auth-form{min-width:0;overflow-wrap:anywhere}@media(prefers-reduced-motion:reduce){.axis-iam-auth-form *{transition:none!important}}`}</style>
       {s.step === 'loading' && <p role="status">{l.auth.loadingOptions}</p>}
-      {providerWindowStarted && <button type="button" disabled={busy} style={buttonStyle(a, 'ghost')} onClick={() => {
-        try {
-          const callback = providerPopup.callback()
-          void actions.resumeProviderCallback(callback).then(() => {
-            providerPopup.close(); if (mounted.current) setProviderWindowStarted(false)
-          }).catch(error => { if (mounted.current) setValidation(localizeError(error, l, 'signInFailed')) })
-        } catch (error) { setValidation(localizeError(error, l, 'signInFailed')) }
-      }}>{l.invitation.loginCompleted}</button>}
       {s.step === 'unavailable' && (
         <div><p role="status">
           {s.intent === 'sign-up'
@@ -344,11 +327,10 @@ export function AuthFlowForm({
               : l.auth.noMethodAvailable}
         </p>{textButton(l.identity.retry, () => consume(actions.retryOptions()))}</div>
       )}
-      {s.step === 'identifier' && providerCallback && (
-        <div>{button(l.auth.continue, () => consume(actions.resumeProviderCallback(window.location.href)))}</div>
-      )}
-      {s.completionPending && <div>{button(l.identity.retry, () => consume(actions.retryCompletion()))}{textButton(l.auth.back, () => leave(actions.cancel))}</div>}
-      {((s.step === 'identifier' && !providerCallback) || (s.step === 'method' && !s.completionPending)) && <>
+      {s.pending === 'provider-callback' && <p role="status">{l.auth.signInBusy}</p>}
+      {s.recovery === 'session-views' && <div>{button(l.auth.retrySessionViews, () => consume(actions.retrySessionViews()), busy)}</div>}
+      {s.recovery === 'restart' && <div>{button(l.auth.restartSignIn, () => consume(actions.reset(), clearProofs), busy)}</div>}
+      {(s.step === 'identifier' || s.step === 'method') && !s.recovery && <>
         {kind !== null && (s.step !== 'method' || (!s.codeSent && !s.magicLinkSent)) && <form onSubmit={formSubmit(() => sync(() => {
           const value = typedIdentifier()
           if (s.step !== 'method' || s.loginIdentifier.kind !== value.kind || s.loginIdentifier.value !== value.value) {
@@ -394,7 +376,7 @@ export function AuthFlowForm({
         {resend}
         {providers}
       </>}
-      {s.step === 'mfa' && !s.completionPending && (
+      {s.step === 'mfa' && !s.recovery && (
         <form
           onSubmit={formSubmit(() =>
             consume(actions.verifyMfa(code, mfaMethod)),
@@ -561,7 +543,7 @@ export function AuthFlowForm({
           {providers}
         </>
       )}
-      {showIntentSwitch &&
+      {showIntentSwitch && !s.recovery &&
         ['identifier', 'method', 'sign-up', 'unavailable'].includes(s.step) &&
         (s.intent === 'sign-up' ||
           (allowSignUp &&

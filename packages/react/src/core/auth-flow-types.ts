@@ -24,7 +24,7 @@ export type AuthFlowPending =
   | 'verify-code'
   | 'magic-link'
   | 'complete-magic-link'
-  | 'retry-completion'
+  | 'session-views'
   | 'mfa'
   | 'sign-up'
   | 'resend-verification'
@@ -46,7 +46,8 @@ interface AuthFlowCommon {
   readonly transactionExpiresAt: string | null
   readonly challengeExpiresAt: string | null
   readonly cancellationUnconfirmed: boolean
-  readonly completionPending: boolean
+  /** Recovery is never ordinary busy. Session views means tokens are already committed. */
+  readonly recovery: 'restart' | 'session-views' | null
 }
 export type AuthFlowState = AuthFlowCommon &
   (
@@ -86,11 +87,13 @@ export interface UseAuthFlowOptions {
   onSignInSuccess?: (user: IamUser) => void
   onSignUpSuccess?: (operation: RegistrationOperation) => void
   onError?: (error: Error) => void
+  /** Automatically consume an exactly bound CUSTOM return in this tab (default true). */
+  autoProviderCallback?: boolean
 }
 export interface AuthFlowActions {
   retryOptions(): Promise<void>
   resumeProviderCallback(url: string): Promise<void>
-  retryCompletion(): Promise<void>
+  retrySessionViews(): Promise<void>
   setIntent(intent: AuthFlowIntent): Promise<void>
   continueWithIdentifier(identifier: LoginIdentifier): void
   selectMethod(method: AuthCredentialMethod): void
@@ -113,6 +116,8 @@ export interface AuthFlowActions {
   resumeRegistration(id: string): Promise<void>
   resendVerification(): Promise<void>
   startProvider(providerId: string, registrationGrant?: RegistrationGrantInput): Promise<string>
+  /** Shared popup flow: open, await, validate, continue, close. Call from a user action. */
+  signInWithProvider(providerId: string, options?: { registrationGrant?: RegistrationGrantInput; timeoutMs?: number }): Promise<void>
 }
 export interface UseAuthFlowResult {
   readonly state: AuthFlowState

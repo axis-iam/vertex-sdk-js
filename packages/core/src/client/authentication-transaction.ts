@@ -280,7 +280,7 @@ export class AuthenticationTransaction {
   }
 
   /** Complete idempotently, then send the code exactly once. Concurrent callers share one flight. */
-  exchange(): Promise<AuthenticationTokens> {
+  exchange(options: { reconcileCompletion?: boolean } = {}): Promise<AuthenticationTokens> {
     this.assertActive()
     if (
       this.view.state !== 'AUTHENTICATED' &&
@@ -291,7 +291,7 @@ export class AuthenticationTransaction {
       )
     )
       fail('AUTH_TRANSACTION_STATE_INVALID')
-    return this.run('complete', {}, true, async (data) => {
+    const completion = this.run('complete', {}, true, async (data) => {
       const d = record(data)
       if (
         d.kind !== 'authorization_code' ||
@@ -303,6 +303,14 @@ export class AuthenticationTransaction {
         fail('AUTH_TRANSACTION_INVALID_RESPONSE')
       return this.exchangeCode(text(d.code))
     })
+    // Only /complete has this recovery contract. Never replay /token or a proof.
+    return options.reconcileCompletion
+      ? completion.catch((error: unknown) => {
+          if (error instanceof AuthenticationTransactionError &&
+              error.code === 'AUTH_TRANSACTION_UNCERTAIN') return this.exchange()
+          throw error
+        })
+      : completion
   }
 
   async authorizeProvider(
@@ -370,6 +378,10 @@ export class AuthenticationTransaction {
     if (this.providerCallbackConsumed) fail('AUTH_CALLBACK_CONSUMED')
     this.providerCallbackConsumed = true
     this.removePending()
+    if (params.has('error')) {
+      this.invalidate()
+      fail('AUTH_PROVIDER_DENIED')
+    }
     const view = await this.get()
     if (params.get('kind') === 'AUTH_CONTINUATION') {
       if (view.state !== 'MFA_REQUIRED') fail('AUTH_TRANSACTION_STATE_INVALID')
@@ -380,22 +392,22 @@ export class AuthenticationTransaction {
   }
 
   private providerParameters(url: string): URLSearchParams {
-    const continuation = new URL(url).searchParams.has('kind')
-    const params = authorizationCallback(
-      url,
-      this.pending.redirectUri,
-      continuation
-        ? ['kind', 'auth_transaction_id', 'state']
-        : ['code', 'state'],
-    )
-    if (
-      params.get('state') !== this.pending.state ||
-      (continuation &&
-        (params.get('kind') !== 'AUTH_CONTINUATION' ||
-          params.get('auth_transaction_id') !== this.pending.transactionId))
-    )
-      fail('AUTH_CALLBACK_MISMATCH')
-    return params
+    return providerParameters(url, this.pending)
+  }
+
+  /** Inspect navigation without claiming or consuming its tab-local capability. */
+  static isProviderCallback(
+    binding: Pick<AuthenticationTransactionConfig, 'issuer' | 'clientId' | 'redirectUri'>,
+    url: string,
+  ): boolean {
+    try {
+      const pending = PendingAuthorizationStore.read({ ...binding, entryMode: 'CUSTOM' })
+      providerParameters(url, pending)
+      return true
+    } catch (error) {
+      if (error instanceof AuthenticationTransactionError || error instanceof TypeError) return false
+      throw error
+    }
   }
 
   private async exchangeCode(code: string): Promise<AuthenticationTokens> {
@@ -602,6 +614,27 @@ export class AuthenticationTransaction {
     PendingAuthorizationStore.remove(this.pending.flowOwner)
     this.navigationSaved = false
   }
+}
+
+function providerParameters(
+  url: string,
+  pending: { redirectUri: string; state: string; transactionId?: string },
+): URLSearchParams {
+  const query = new URL(url).searchParams
+  const continuation = query.has('kind')
+  const denied = query.has('error')
+  const params = authorizationCallback(
+    url,
+    pending.redirectUri,
+    continuation ? ['kind', 'auth_transaction_id', 'state'] : denied ? ['error', 'state'] : ['code', 'state'],
+  )
+  if (
+    params.get('state') !== pending.state ||
+    (denied && params.get('error') !== 'access_denied') ||
+    (continuation && (params.get('kind') !== 'AUTH_CONTINUATION' ||
+      params.get('auth_transaction_id') !== pending.transactionId))
+  ) fail('AUTH_CALLBACK_MISMATCH')
+  return params
 }
 
 function validateConfig(config: AuthenticationTransactionConfig): void {

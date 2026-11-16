@@ -39,6 +39,7 @@ import type {
 import { IamApiError, IamConfigurationError } from './types'
 import {
   AuthenticationTransaction,
+  AuthenticationTransactionError,
   IdTokenVerifier,
   IdTokenValidationError,
   PendingAuthorizationStore,
@@ -125,6 +126,7 @@ export class OAuthClient {
   }
   private authentication: AuthenticationTransaction | null = null
   private authenticationRevision = 0
+  private providerCallbackFlight: { url: string; generation: number; promise: Promise<ProviderCallbackResult> } | null = null
 
   constructor(config: IamConfig, options: { startPaused?: boolean } = {}) {
     validateIamConfig(config)
@@ -179,6 +181,7 @@ export class OAuthClient {
   /** Public primary authentication; Custom, Embedded and Dialog share this protocol. */
   async beginAuthentication(): Promise<AuthenticationTransaction> {
     const revision = ++this.authenticationRevision
+    this.providerCallbackFlight = null
     this.authentication?.invalidate()
     this.authentication = null
     const config = await this.authenticationConfig()
@@ -209,6 +212,7 @@ export class OAuthClient {
     }
     if (this.authentication) return this.authentication
     const revision = ++this.authenticationRevision
+    this.providerCallbackFlight = null
     const config = await this.authenticationConfig()
     const assertOwner = () => {
       config.assertOwner()
@@ -233,7 +237,7 @@ export class OAuthClient {
     )
       throw new IamConfigurationError('Authentication owner changed')
     const generation = this.tokenManager.generation
-    const tokens = await transaction.exchange()
+    const tokens = await transaction.exchange({ reconcileCompletion: true })
     this.tokenManager.assertCurrent(generation)
     this.authentication = null
     this.tokenManager.store(
@@ -250,6 +254,7 @@ export class OAuthClient {
     const generation = this.tokenManager.generation
     const discovery = await this.discover()
     this.tokenManager.assertCurrent(generation)
+    if (discovery.issuer !== this.config.issuerUri) throw new IdTokenValidationError()
     return {
       issuer: discovery.issuer,
       tokenEndpoint: discovery.token_endpoint,
@@ -272,6 +277,7 @@ export class OAuthClient {
   ): Promise<string> {
     const generation = this.tokenManager.generation
     const revision = ++this.authenticationRevision
+    this.providerCallbackFlight = null
     const assertCurrent = () => {
       this.tokenManager.assertCurrent(generation)
       if (revision !== this.authenticationRevision)
@@ -370,21 +376,46 @@ export class OAuthClient {
     return result.authorizationUrl
   }
 
-  async resumeProviderCallback(
+  canResumeProviderCallback(url: string): boolean {
+    return AuthenticationTransaction.isProviderCallback({
+      issuer: this.config.issuerUri,
+      clientId: this.clientId,
+      redirectUri: this.resolveRedirectUri(),
+    }, url)
+  }
+
+  resumeProviderCallback(
     url: string,
     onCommitted?: () => void,
     assertAttempt?: () => void,
-  ) {
+  ): Promise<ProviderCallbackResult> {
+    if (this.providerCallbackFlight && this.providerCallbackFlight.generation !== this.tokenManager.generation)
+      return Promise.reject(new IamConfigurationError('Authentication owner changed'))
+    if (this.providerCallbackFlight?.url === url) return this.providerCallbackFlight.promise
+    if (this.providerCallbackFlight)
+      return Promise.reject(new AuthenticationTransactionError('AUTH_CALLBACK_CONSUMED'))
+    const promise = this.consumeProviderCallback(url, () => {
+      if (this.providerCallbackFlight?.promise === promise)
+        this.providerCallbackFlight.generation = this.tokenManager.generation
+      onCommitted?.()
+    }, assertAttempt)
+    this.providerCallbackFlight = { url, generation: this.tokenManager.generation, promise }
+    return promise
+  }
+
+  private async consumeProviderCallback(
+    url: string,
+    onCommitted?: () => void,
+    assertAttempt?: () => void,
+  ): Promise<ProviderCallbackResult> {
+    assertAttempt?.()
     if (this.tokenManager.getAccessToken()) {
-      AuthenticationTransaction.discardNavigation({
-        issuer: this.config.issuerUri,
-        clientId: this.clientId,
-      })
       throw new IamConfigurationError(
         'A signed-in account cannot resume pending authentication',
       )
     }
-    const revision = ++this.authenticationRevision
+    const generation = this.tokenManager.generation
+    const revision = this.authenticationRevision
     const config = await this.authenticationConfig()
     const assertOwner = () => {
       assertAttempt?.()
@@ -392,6 +423,7 @@ export class OAuthClient {
       if (revision !== this.authenticationRevision)
         throw new IamConfigurationError('Authentication owner changed')
     }
+    assertOwner()
     const transaction = AuthenticationTransaction.restoreProvider(
       { ...config, assertOwner },
       url,
@@ -399,9 +431,12 @@ export class OAuthClient {
     this.authentication?.invalidate(true)
     this.authentication = transaction
     const result = await transaction.completeProviderCallback(url)
+    assertOwner()
+    PendingAuthorizationStore.assertNoReplacement()
     if ('state' in result)
       return { kind: 'continuation' as const, transaction, view: result }
     this.authentication = null
+    this.tokenManager.assertCurrent(generation)
     this.tokenManager.store(
       result,
       'OAUTH_AUTHORIZATION_CODE',
@@ -784,6 +819,7 @@ export class OAuthClient {
   async logout(options: LogoutOptions = {}): Promise<void> {
     this.invitationClient?.clear()
     ++this.authenticationRevision
+    this.providerCallbackFlight = null
     this.authentication?.invalidate()
     this.authentication = null
     AuthenticationTransaction.discardNavigation({
@@ -849,6 +885,7 @@ export class OAuthClient {
     this.invitationUnsubscribe = undefined
     this.invitationClient = undefined
     ++this.authenticationRevision
+    this.providerCallbackFlight = null
     this.authentication?.invalidate(true)
     this.authentication = null
     this.tokenManager.dispose()
@@ -892,3 +929,7 @@ export class OAuthClient {
       : 'http://localhost/'
   }
 }
+
+type ProviderCallbackResult =
+  | { kind: 'continuation'; transaction: AuthenticationTransaction; view: import('@axis-iam/vertex').AuthenticationView }
+  | { kind: 'tokens'; tokens: TokenSet }

@@ -269,6 +269,52 @@ describe('primary authentication transaction protocol', () => {
       expect(calls.filter((call) => call.path === '/token')).toHaveLength(1)
     },
   )
+  it.each([1, 2])('bounds automatic completion reconciliation after %i lost responses', async losses => {
+    const tx = await AuthenticationTransaction.start(config)
+    await tx.authenticate({ method: 'PASSWORD', identifier, password: 'fixture' })
+    let attempts = 0
+    intercept = path => {
+      if (path.endsWith('/complete') && ++attempts <= losses) {
+        state = 'COMPLETED'
+        throw new TypeError('response lost')
+      }
+      return undefined
+    }
+    if (losses === 1) await expect(tx.exchange({ reconcileCompletion: true })).resolves.toHaveProperty('access_token')
+    else await expect(tx.exchange({ reconcileCompletion: true })).rejects.toMatchObject({ code: 'AUTH_TRANSACTION_UNCERTAIN' })
+    const completions = calls.filter(c => c.path.endsWith('/complete'))
+    expect(completions).toHaveLength(2)
+    expect(completions[0].headers.get('Idempotency-Key')).toBe(completions[1].headers.get('Idempotency-Key'))
+    expect(completions[0].body).toEqual(completions[1].body)
+    expect(calls.filter(c => c.path === '/token')).toHaveLength(losses === 1 ? 1 : 0)
+    expect(calls.filter(c => c.path.endsWith('/authenticate'))).toHaveLength(1)
+  })
+  it('recognizes only exact pending CUSTOM returns without consuming them, including denial', async () => {
+    const tx = await AuthenticationTransaction.start(config)
+    intercept = path => path.endsWith('/authorize')
+      ? response({ authorizationUrl: 'https://provider.test/', expiresAt }) : undefined
+    await tx.authorizeProvider('provider')
+    const url = `${config.redirectUri}?code=one&state=${create.state}`
+    for (const binding of [{ ...config, clientId: 'other' }, { ...config, issuer: 'https://other.test' }, { ...config, redirectUri: 'https://app.test/other' }])
+      expect(AuthenticationTransaction.isProviderCallback(binding, url)).toBe(false)
+    expect(AuthenticationTransaction.isProviderCallback(config, url.replace(create.state, 'wrong'))).toBe(false)
+    expect(AuthenticationTransaction.isProviderCallback(config, url + '&access_token=injected')).toBe(false)
+    expect(AuthenticationTransaction.isProviderCallback(config, url)).toBe(true)
+    expect(AuthenticationTransaction.isProviderCallback(config, url)).toBe(true)
+    const denial = `${config.redirectUri}?error=access_denied&state=${create.state}`
+    expect(AuthenticationTransaction.isProviderCallback(config, denial)).toBe(true)
+    await expect(tx.completeProviderCallback(denial)).rejects.toMatchObject({ code: 'AUTH_PROVIDER_DENIED' })
+    expect(storage.size).toBe(0)
+    expect(calls.filter(c => c.path === '/token')).toHaveLength(0)
+  })
+  it('never reconciles a token transport uncertainty even with completion recovery enabled', async () => {
+    const tx = await AuthenticationTransaction.start(config)
+    await tx.authenticate({ method: 'PASSWORD', identifier, password: 'fixture' })
+    intercept = path => { if (path === '/token') throw new TypeError('lost'); return undefined }
+    await expect(tx.exchange({ reconcileCompletion: true })).rejects.toMatchObject({ code: 'TOKEN_EXCHANGE_UNCERTAIN' })
+    expect(calls.filter(c => c.path === '/token')).toHaveLength(1)
+    expect(calls.filter(c => c.path.endsWith('/complete'))).toHaveLength(1)
+  })
   it('rejects completion state mismatch without token I/O', async () => {
     const tx = await AuthenticationTransaction.start(config)
     await tx.authenticate({

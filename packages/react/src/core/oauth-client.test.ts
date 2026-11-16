@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import { webcrypto } from 'node:crypto'
 import { OAuthClient } from './oauth-client'
 import { makeTestUser } from '../test-utils'
 import type { TokenManager } from './token-manager'
@@ -157,6 +158,59 @@ function makeTokenSet(overrides: Partial<TokenSet> = {}): TokenSet {
     ...overrides,
   }
 }
+
+describe('CUSTOM Provider callback single owner', () => {
+  let client: OAuthClient
+  let binding: Record<string, string>
+  let exchanges: number
+  const expiry = () => new Date(Date.now() + 600000).toISOString()
+  let expiresAt: string
+  beforeEach(() => {
+    vi.stubGlobal('crypto', webcrypto)
+    sessionStorage.clear()
+    exchanges = 0
+    expiresAt = expiry()
+    client = new OAuthClient({ ...defaultConfig, redirectUri: `${location.origin}/callback` })
+    vi.spyOn(client, 'discover').mockResolvedValue(mockOidcConfig)
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname
+      let data: unknown
+      if (path.endsWith('/auth/transactions')) {
+        binding = JSON.parse(String(init?.body))
+        data = { transactionId: 'provider-tx', controlSecret: Buffer.alloc(32, 7).toString('base64url'), expiresAt, nextAction: 'authenticate' }
+      } else if (path.endsWith('/authorize')) data = { authorizationUrl: 'https://provider.test/', expiresAt }
+      else if (path.endsWith('/provider-tx')) data = { transactionId: 'provider-tx', expiresAt, state: 'COMPLETED', nextAction: 'none' }
+      else if (path === '/token') { exchanges++; data = makeTokenSet() }
+      else if (path.endsWith('/me')) data = view()
+      else if (path.endsWith('/permissions')) data = { applicationId: 'app-1', organizationId: null, roles: [], permissions: [] }
+      else throw new Error(`Unexpected fixture route ${path}`)
+      return new Response(JSON.stringify(data), { status: 200 })
+    })
+  })
+  afterEach(() => { client.dispose(); vi.restoreAllMocks(); vi.unstubAllGlobals(); sessionStorage.clear() })
+  it('shares a callback flight, commits once, and refuses another return', async () => {
+    const tx = await client.beginAuthentication()
+    await tx.authorizeProvider('provider')
+    const url = `${location.origin}/callback?code=one&state=${binding.state}`
+    const committed = vi.fn()
+    const one = client.resumeProviderCallback(url, committed)
+    const two = client.resumeProviderCallback(url, committed)
+    expect(one).toBe(two)
+    await Promise.all([one, two])
+    expect(exchanges).toBe(1)
+    expect(committed).toHaveBeenCalledOnce()
+    await expect(client.resumeProviderCallback(url + '&other=injected')).rejects.toMatchObject({ code: 'AUTH_CALLBACK_CONSUMED' })
+    expect(client.state.getUser()?.id).toBe(view().id)
+    client.tokenManager.clear()
+    await expect(client.resumeProviderCallback(url)).rejects.toThrow('Authentication owner changed')
+    expect(exchanges).toBe(1)
+  })
+  it('refuses a discovery issuer replacement before creating an authentication transaction', async () => {
+    vi.mocked(client.discover).mockResolvedValue({ ...mockOidcConfig, issuer: 'https://other.test' })
+    await expect(client.beginAuthentication()).rejects.toThrow()
+    expect(exchanges).toBe(0)
+  })
+})
 
 describe('OAuthClient', () => {
   let client: OAuthClient

@@ -27,7 +27,7 @@ export interface SignInProps {
   onForgotPassword?: () => void
   /** Customize embedded provider buttons while reusing SDK discovery/login logic. */
   renderProviderButton?: (props: SignInProviderButtonRenderProps) => ReactNode
-  /** Keep this page mounted through provider OAuth; callback route must be passive. */
+  /** Popup waits automatically; the registered callback page leaves consumption to its opener. */
   providerNavigation?: 'redirect' | 'popup'
   /** Compact presentation for a container that already supplies the auth dialog title and frame. */
   presentation?: 'standalone' | 'dialog'
