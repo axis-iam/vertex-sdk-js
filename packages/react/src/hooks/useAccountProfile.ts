@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect } from 'react'
 import type { AccountProfile, AccountUpdateProfileInput } from '../core/types'
 import { IamApiError } from '../core/types'
-import { useIamContext } from '../provider/IamProvider'
+import { useAccountRequestState } from './useAccountRequestState'
 
 export interface UseAccountProfileOptions {
   enabled?: boolean
@@ -17,12 +17,10 @@ export interface UseAccountProfileResult {
 }
 
 export function useAccountProfile(options: UseAccountProfileOptions = {}): UseAccountProfileResult {
-  const { client, isAuthenticated, isLoaded } = useIamContext()
   const { enabled = true } = options
-  const [profile, setProfile] = useState<AccountProfile | null>(null)
-  const [isLoading, setIsLoading] = useState(enabled)
-  const [isUpdating, setIsUpdating] = useState(false)
-  const [error, setError] = useState<Error | null>(null)
+  const { client, isAuthenticated, isLoaded, begin, patch, value } = useAccountRequestState({
+    profile: null as AccountProfile | null, isLoading: enabled, isUpdating: false, error: null as Error | null,
+  })
 
   const requireAuthenticated = useCallback(() => {
     if (isAuthenticated) return null
@@ -33,98 +31,71 @@ export function useAccountProfile(options: UseAccountProfileOptions = {}): UseAc
   }, [isAuthenticated])
 
   const refetch = useCallback(async () => {
+    const request = begin('profile')
+    if (!request.isCurrent()) return null
     const authError = requireAuthenticated()
     if (authError) {
-      setProfile(null)
-      setError(authError)
-      setIsLoading(false)
+      patch(request, { profile: null, error: authError, isLoading: false })
       return null
     }
 
-    setIsLoading(true)
-    setError(null)
+    patch(request, { isLoading: true, isUpdating: false, error: null })
     try {
       const next = await client.getAccountProfile()
-      setProfile(next)
+      if (!request.isCurrent()) return null
+      patch(request, { profile: next })
       return next
     } catch (err) {
+      if (!request.isCurrent()) return null
       const next = err instanceof Error ? err : new Error('Account profile is unavailable')
-      setProfile(null)
-      setError(next)
+      patch(request, { profile: null, error: next })
       return null
     } finally {
-      setIsLoading(false)
+      patch(request, { isLoading: false })
     }
-  }, [client, requireAuthenticated])
+  }, [client, requireAuthenticated, begin, patch])
 
   const updateProfile = useCallback(async (input: AccountUpdateProfileInput) => {
+    const request = begin('profile')
+    request.assertCurrent()
     const authError = requireAuthenticated()
     if (authError) {
-      setError(authError)
+      patch(request, { error: authError })
       throw authError
     }
 
-    setIsUpdating(true)
-    setError(null)
+    patch(request, { isUpdating: true, isLoading: false, error: null })
     try {
       const next = await client.updateAccountProfile(input)
-      setProfile(next)
+      request.assertCurrent()
+      patch(request, { profile: next })
       return next
     } catch (err) {
+      request.assertCurrent()
       const next = err instanceof Error ? err : new Error('Account profile could not be updated')
-      setError(next)
+      patch(request, { error: next })
       throw next
     } finally {
-      setIsUpdating(false)
+      patch(request, { isUpdating: false })
     }
-  }, [client, requireAuthenticated])
+  }, [client, requireAuthenticated, begin, patch])
 
   useEffect(() => {
+    const request = begin('profile')
     if (!enabled) {
-      setIsLoading(false)
+      patch(request, { isLoading: false })
       return
     }
     if (!isLoaded) {
-      setIsLoading(true)
+      patch(request, { isLoading: true })
       return
     }
 
-    let cancelled = false
-    async function load() {
-      const authError = requireAuthenticated()
-      if (authError) {
-        if (!cancelled) {
-          setProfile(null)
-          setError(authError)
-          setIsLoading(false)
-        }
-        return
-      }
-
-      setIsLoading(true)
-      setError(null)
-      try {
-        const next = await client.getAccountProfile()
-        if (!cancelled) setProfile(next)
-      } catch (err) {
-        if (!cancelled) {
-          setProfile(null)
-          setError(err instanceof Error ? err : new Error('Account profile is unavailable'))
-        }
-      } finally {
-        if (!cancelled) setIsLoading(false)
-      }
-    }
-
-    void load()
-    return () => { cancelled = true }
-  }, [client, enabled, isLoaded, requireAuthenticated])
+    void refetch()
+  }, [enabled, isLoaded, refetch, begin, patch])
 
   return {
-    profile,
-    isLoading,
-    isUpdating,
-    error,
+    ...value,
     refetch,
     updateProfile,
   }

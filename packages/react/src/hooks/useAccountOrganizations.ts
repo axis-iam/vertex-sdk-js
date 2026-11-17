@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect } from 'react'
 import type { AccountOrganization } from '../core/types'
 import { IamApiError } from '../core/types'
-import { useIamContext } from '../provider/IamProvider'
+import { useAccountRequestState } from './useAccountRequestState'
 
 export interface UseAccountOrganizationsOptions {
   enabled?: boolean
@@ -16,62 +16,56 @@ export interface UseAccountOrganizationsResult {
 }
 
 export function useAccountOrganizations(options: UseAccountOrganizationsOptions = {}): UseAccountOrganizationsResult {
-  const { client, isAuthenticated, isLoaded } = useIamContext()
   const { enabled = true } = options
-  const [organizations, setOrganizations] = useState<AccountOrganization[]>([])
-  const [currentOrganization, setCurrentOrganization] = useState<AccountOrganization | null>(null)
-  const [isLoading, setIsLoading] = useState(enabled)
-  const [error, setError] = useState<Error | null>(null)
+  const { client, isAuthenticated, isLoaded, begin, patch, value } = useAccountRequestState({
+    organizations: [] as AccountOrganization[], currentOrganization: null as AccountOrganization | null,
+    isLoading: enabled, error: null as Error | null,
+  })
 
   const refetch = useCallback(async () => {
+    const request = begin('read')
+    if (!request.isCurrent()) return []
     if (!isAuthenticated) {
       const next = new IamApiError('Authentication is required', {
         status: 401,
         code: 'UNAUTHENTICATED',
       })
-      setOrganizations([])
-      setCurrentOrganization(null)
-      setError(next)
-      setIsLoading(false)
+      patch(request, { organizations: [], currentOrganization: null, error: next, isLoading: false })
       return []
     }
 
-    setIsLoading(true)
-    setError(null)
+    patch(request, { isLoading: true, error: null })
     try {
       const next = await client.listAccountOrganizations()
-      setOrganizations(next)
-      setCurrentOrganization(next.find((item) => item.current) ?? null)
+      if (!request.isCurrent()) return []
+      patch(request, { organizations: next, currentOrganization: next.find((item) => item.current) ?? null })
       return next
     } catch (err) {
+      if (!request.isCurrent()) return []
       const next = err instanceof Error ? err : new Error('Organizations are unavailable')
-      setOrganizations([])
-      setCurrentOrganization(null)
-      setError(next)
+      patch(request, { organizations: [], currentOrganization: null, error: next })
       return []
     } finally {
-      setIsLoading(false)
+      patch(request, { isLoading: false })
     }
-  }, [client, isAuthenticated])
+  }, [client, isAuthenticated, begin, patch])
 
   useEffect(() => {
+    const request = begin('read')
     if (!enabled) {
-      setIsLoading(false)
+      patch(request, { isLoading: false })
       return
     }
     if (!isLoaded) {
-      setIsLoading(true)
+      patch(request, { isLoading: true })
       return
     }
 
     void refetch()
-  }, [enabled, isLoaded, refetch])
+  }, [enabled, isLoaded, refetch, begin, patch])
 
   return {
-    organizations,
-    currentOrganization,
-    isLoading,
-    error,
+    ...value,
     refetch,
   }
 }

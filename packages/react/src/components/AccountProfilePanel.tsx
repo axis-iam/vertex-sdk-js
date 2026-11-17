@@ -4,6 +4,7 @@ import type { AccountUpdateProfileInput } from '../core/types'
 import { useAccountProfile } from '../hooks/useAccountProfile'
 import { useAccountSecurity } from '../hooks/useAccountSecurity'
 import { usePrimaryEmail } from '../hooks/usePrimaryEmail'
+import { useAccountRequestState } from '../hooks/useAccountRequestState'
 import { AccountCenterSurface, AccountEmpty, AccountError, AccountLoading } from './AccountCenterSurface'
 import { resolveAccountCenterLocalization, useAccountCenterAppearance } from './accountCenterConfig'
 import type { AccountCenterColorScheme, AccountCenterLocalization } from './accountCenterConfig'
@@ -38,7 +39,8 @@ export function AccountProfilePanel({
   const { profile, isLoading, isUpdating, error, refetch: refetchProfile, updateProfile } = useAccountProfile()
   const { security, isLoading: isSecurityLoading, error: securityError, refetch: refetchSecurity } = useAccountSecurity()
   const [form, setForm] = useState<AccountUpdateProfileInput>({})
-  const [saved, setSaved] = useState(false)
+  const { begin, patch, value: { saved } } = useAccountRequestState({ saved: false })
+  const clearSaved = () => patch(begin('save'), { saved: false })
   const [avatarFailed, setAvatarFailed] = useState(false)
   const [factsRevision, refreshFacts] = useState(0)
   const primaryEmail = usePrimaryEmail(factsRevision)
@@ -54,9 +56,11 @@ export function AccountProfilePanel({
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    setSaved(false)
+    const request = begin('save')
+    patch(request, { saved: false })
     await updateProfile(form)
-    setSaved(true)
+    request.assertCurrent()
+    patch(request, { saved: true })
     await onUpdated?.()
   }
 
@@ -123,7 +127,7 @@ export function AccountProfilePanel({
                 value={form.displayName ?? ''}
                 disabled={!editable || isUpdating}
                 onChange={(event) => {
-                  setSaved(false)
+                  clearSaved()
                   setForm((current) => ({ ...current, displayName: event.target.value || null }))
                 }}
               />
@@ -137,7 +141,7 @@ export function AccountProfilePanel({
                 value={form.avatarUrl ?? ''}
                 disabled={!editable || isUpdating}
                 onChange={(event) => {
-                  setSaved(false)
+                  clearSaved()
                   setForm((current) => ({ ...current, avatarUrl: event.target.value || null }))
                 }}
               />

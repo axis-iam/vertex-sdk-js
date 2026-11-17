@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import type { CSSProperties } from 'react'
 import type { OrganizationSwitchResponse } from '../core/types'
 import { useOrganizationSwitcher } from '../hooks/useOrganizationSwitcher'
@@ -6,6 +6,7 @@ import type { Appearance } from './styles'
 import { buttonStyle, errorStyle } from './styles'
 import { useIamAppearance, useIamUi } from '../provider/IamUiProvider'
 import { localizeError } from '../localization'
+import { useAccountRequestState } from '../hooks/useAccountRequestState'
 
 export interface OrganizationSwitcherProps {
   appearance?: Appearance
@@ -34,8 +35,10 @@ export function OrganizationSwitcher({
     error,
     switchOrganization,
   } = useOrganizationSwitcher()
-  const [open, setOpen] = useState(false)
-  const [actionError, setActionError] = useState<Error | null>(null)
+  const { begin, patch, value: { open, actionError } } = useAccountRequestState({
+    open: false, actionError: null as Error | null,
+  })
+  const setOpen = (next: boolean) => patch(begin('menu'), { open: next })
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -48,13 +51,15 @@ export function OrganizationSwitcher({
   }, [open])
 
   async function selectOrganization(organizationId: string) {
-    setActionError(null)
+    const request = begin('select')
+    patch(request, { actionError: null })
     try {
       const response = await switchOrganization(organizationId)
-      setOpen(false)
+      request.assertCurrent()
+      patch(request, { open: false })
       await onSwitch?.(response)
     } catch (err) {
-      setActionError(err instanceof Error ? err : new Error(l.errors.organizationSwitchFailed))
+      patch(request, { actionError: err instanceof Error ? err : new Error(l.errors.organizationSwitchFailed) })
     }
   }
 
@@ -68,7 +73,7 @@ export function OrganizationSwitcher({
     <div ref={ref} style={{ position: 'relative', display: 'inline-block', minWidth: 220 }}>
       <button
         type="button"
-        onClick={() => setOpen((next) => !next)}
+        onClick={() => setOpen(!open)}
         disabled={isSwitching}
         aria-label={isSwitching ? l.organization.switching : label}
         style={{ ...buttonStyle(a, 'ghost'), width: '100%', padding: '6px 12px', fontSize: 13 }}

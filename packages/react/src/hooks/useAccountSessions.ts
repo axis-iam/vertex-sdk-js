@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect } from 'react'
 import type { AccountSession } from '../core/types'
 import { IamApiError } from '../core/types'
-import { useIamContext } from '../provider/IamProvider'
+import { useAccountRequestState } from './useAccountRequestState'
 
 export interface UseAccountSessionsOptions {
   enabled?: boolean
@@ -21,14 +21,11 @@ export interface UseAccountSessionsResult {
 }
 
 export function useAccountSessions(options: UseAccountSessionsOptions = {}): UseAccountSessionsResult {
-  const { client, isAuthenticated, isLoaded } = useIamContext()
   const { enabled = true } = options
-  const [sessions, setSessions] = useState<AccountSession[]>([])
-  const [isLoading, setIsLoading] = useState(enabled)
-  const [isRevoking, setIsRevoking] = useState(false)
-  const [isRevokingOthers, setIsRevokingOthers] = useState(false)
-  const [isLoggingOut, setIsLoggingOut] = useState(false)
-  const [error, setError] = useState<Error | null>(null)
+  const { client, isAuthenticated, isLoaded, begin, patch, value } = useAccountRequestState({
+    sessions: [] as AccountSession[], isLoading: enabled, isRevoking: false,
+    isRevokingOthers: false, isLoggingOut: false, error: null as Error | null,
+  })
 
   const requireAuthenticated = useCallback(() => {
     if (isAuthenticated) return null
@@ -39,112 +36,123 @@ export function useAccountSessions(options: UseAccountSessionsOptions = {}): Use
   }, [isAuthenticated])
 
   const refetch = useCallback(async () => {
+    const request = begin('read')
+    if (!request.isCurrent()) return []
     const authError = requireAuthenticated()
     if (authError) {
-      setSessions([])
-      setError(authError)
-      setIsLoading(false)
+      patch(request, { sessions: [], error: authError, isLoading: false })
       return []
     }
 
-    setIsLoading(true)
-    setError(null)
+    patch(request, { isLoading: true, error: null })
     try {
       const next = await client.listAccountSessions()
-      setSessions(next)
+      if (!request.isCurrent()) return []
+      patch(request, { sessions: next })
       return next
     } catch (err) {
+      if (!request.isCurrent()) return []
       const next = err instanceof Error ? err : new Error('Account sessions are unavailable')
-      setSessions([])
-      setError(next)
+      patch(request, { sessions: [], error: next })
       return []
     } finally {
-      setIsLoading(false)
+      patch(request, { isLoading: false })
     }
-  }, [client, requireAuthenticated])
+  }, [client, requireAuthenticated, begin, patch])
 
   const revokeSession = useCallback(async (sessionId: string) => {
+    const request = begin('revoke')
+    request.assertCurrent()
     const authError = requireAuthenticated()
     if (authError) {
-      setError(authError)
+      patch(request, { error: authError })
       throw authError
     }
 
-    setIsRevoking(true)
-    setError(null)
+    patch(request, { isRevoking: true, error: null })
     try {
       await client.revokeAccountSession(sessionId)
-      setSessions((current) => current.filter((session) => session.sessionId !== sessionId))
+      request.assertCurrent()
+      patch(request, current => ({ sessions: current.sessions.filter(session => session.sessionId !== sessionId) }))
     } catch (err) {
+      request.assertCurrent()
       const next = err instanceof Error ? err : new Error('Account session could not be revoked')
-      setError(next)
+      patch(request, { error: next })
       throw next
     } finally {
-      setIsRevoking(false)
+      patch(request, { isRevoking: false })
     }
-  }, [client, requireAuthenticated])
+  }, [client, requireAuthenticated, begin, patch])
 
   const revokeOtherSessions = useCallback(async () => {
+    const request = begin('revokeOthers')
+    request.assertCurrent()
     const authError = requireAuthenticated()
     if (authError) {
-      setError(authError)
+      patch(request, { error: authError })
       throw authError
     }
 
-    setIsRevokingOthers(true)
-    setError(null)
+    patch(request, { isRevokingOthers: true, error: null })
     try {
       await client.revokeOtherAccountSessions()
-      setSessions((current) => current.filter((session) => session.current))
+      request.assertCurrent()
+      patch(request, current => ({ sessions: current.sessions.filter(session => session.current) }))
     } catch (err) {
+      request.assertCurrent()
       const next = err instanceof Error ? err : new Error('Other account sessions could not be revoked')
-      setError(next)
+      patch(request, { error: next })
       throw next
     } finally {
-      setIsRevokingOthers(false)
+      patch(request, { isRevokingOthers: false })
     }
-  }, [client, requireAuthenticated])
+  }, [client, requireAuthenticated, begin, patch])
 
   const logoutAccount = useCallback(async () => {
+    const request = begin('logout')
+    request.assertCurrent()
     const authError = requireAuthenticated()
     if (authError) {
-      setError(authError)
+      patch(request, { error: authError })
       throw authError
     }
 
-    setIsLoggingOut(true)
-    setError(null)
+    patch(request, { isLoggingOut: true, error: null })
+    // Both clients clear synchronously before awaiting the server response.
+    // Capture that intentional cleared generation, including on the error path.
+    const completion = client.logoutAccount()
+    const generation = client.state.generation
     try {
-      await client.logoutAccount()
+      await completion
+      client.state.assertCurrent(generation)
+      request.assertAttached()
     } catch (err) {
+      client.state.assertCurrent(generation)
+      request.assertAttached()
       const next = err instanceof Error ? err : new Error('Account logout could not be completed')
-      setError(next)
+      patch(request, { error: next })
       throw next
     } finally {
-      setIsLoggingOut(false)
+      patch(request, { isLoggingOut: false })
     }
-  }, [client, requireAuthenticated])
+  }, [client, requireAuthenticated, begin, patch])
 
   useEffect(() => {
+    const request = begin('read')
     if (!enabled) {
-      setIsLoading(false)
+      patch(request, { isLoading: false })
       return
     }
     if (!isLoaded) {
-      setIsLoading(true)
+      patch(request, { isLoading: true })
       return
     }
 
     void refetch()
-  }, [enabled, isLoaded, refetch])
+  }, [enabled, isLoaded, refetch, begin, patch])
 
   return {
-    sessions,
-    isLoading,
-    isRevoking,
-    isRevokingOthers,
-    isLoggingOut,
-    error,
+    ...value,
     refetch,
     revokeSession,
     revokeOtherSessions,

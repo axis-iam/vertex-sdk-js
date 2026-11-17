@@ -305,3 +305,55 @@ describe('OAuthClient account organization onboarding surface', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
+
+describe('OAuth account request ownership', () => {
+  it.each(['profile', 'organizations', 'sessions', 'update', 'revoke', 'revoke-others', 'switch'] as const)('rejects a late %s result after same-client replacement', async operation => {
+    const client = new OAuthClient(defaultConfig, { startPaused: true })
+    storeOAuthTokens(client.tokenManager, makeTokenSet())
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(mockOidcConfig))))
+    await client.discover()
+    let finish!: (response: Response) => void
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const promise = operation === 'profile' ? client.getAccountProfile()
+      : operation === 'organizations' ? client.listAccountOrganizations()
+      : operation === 'sessions' ? client.listAccountSessions()
+      : operation === 'update' ? client.updateAccountProfile({ displayName: 'old' })
+      : operation === 'revoke' ? client.revokeAccountSession('old')
+      : operation === 'revoke-others' ? client.revokeOtherAccountSessions()
+      : client.switchAccountOrganization('old')
+    const rejected = expect(promise).rejects.toMatchObject({ code: 'SESSION_INVALIDATED' })
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+    // Even identical token bytes cannot make an old generation current again.
+    storeOAuthTokens(client.tokenManager, makeTokenSet())
+    finish(new Response(JSON.stringify({ result: 'old' })))
+    await rejected
+    client.dispose(); vi.unstubAllGlobals()
+  })
+  it.each(['success', 'error'] as const)('rejects stale discovery %s before issuing an account write', async outcome => {
+    const client = new OAuthClient(defaultConfig, { startPaused: true })
+    storeOAuthTokens(client.tokenManager, makeTokenSet())
+    let finish!: (response: Response) => void, fail!: (error: Error) => void
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve, reject) => { finish = resolve; fail = reject }))
+    vi.stubGlobal('fetch', fetchMock)
+    const promise = client.updateAccountProfile({ displayName: 'old' })
+    const rejected = expect(promise).rejects.toMatchObject({ code: 'SESSION_INVALIDATED' })
+    client.state.clear()
+    if (outcome === 'success') finish(new Response(JSON.stringify(mockOidcConfig))); else fail(new Error('old discovery failure'))
+    await rejected
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    client.dispose(); vi.unstubAllGlobals()
+  })
+  it('does not expose an obsolete transport error after logout', async () => {
+    const client = new OAuthClient(defaultConfig, { startPaused: true })
+    storeOAuthTokens(client.tokenManager, makeTokenSet())
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(mockOidcConfig))))
+    await client.discover()
+    let fail!: (error: Error) => void
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject }))
+    const promise = client.getAccountProfile(), rejected = expect(promise).rejects.toMatchObject({ code: 'SESSION_INVALIDATED' })
+    await vi.waitFor(() => expect(fail).toBeTypeOf('function'))
+    client.state.clear(); fail(new Error('old transport failure'))
+    await rejected
+    client.dispose(); vi.unstubAllGlobals()
+  })
+})

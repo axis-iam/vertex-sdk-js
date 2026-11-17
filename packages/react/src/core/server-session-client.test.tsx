@@ -1,6 +1,6 @@
 import { managedIdentifiers } from './identity-management-fixtures.test-support'
 import { createElement } from 'react'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { CookieSessionTransport, UnsupportedOperationError } from '@axis-iam/vertex'
 import { IamProvider, useIamContext } from '../provider/IamProvider'
@@ -14,6 +14,9 @@ import { ServerSessionClient } from './server-session-client'
 import { makeTestUser } from '../test-utils'
 import { flowCapabilities, flowPolicy } from './auth-flow-fixtures.test-support'
 import { invitationProof, invitationView, invitationRef } from './invitation-fixtures.test-support'
+import { useAccountProfile } from '../hooks/useAccountProfile'
+import { useAccountSessions } from '../hooks/useAccountSessions'
+import { useAccountOrganizations } from '../hooks/useAccountOrganizations'
 
 const ref = 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc'
 const expiry = () => new Date(Date.now()+600000).toISOString()
@@ -183,4 +186,37 @@ it('rejects missing password metadata before any Cookie login command', async ()
   expect(await screen.findByRole('button', { name: /^Retry$/ })).toBeTruthy()
   expect(screen.queryByPlaceholderText('Enter your password')).toBeNull()
   expect(f.calls.some(call => call.path.endsWith('/login'))).toBe(false)
+})
+
+it.each([
+  { path: '/self/profile', hook: () => { const value = useAccountProfile({ enabled: false }); return { ...value, data: value.profile } }, value: { userId: 'user-1', applicationId: 'app-test', globalIdentityId: null, email: null, emailVerified: true, username: null, displayName: 'B', avatarUrl: null, status: 'ACTIVE', createdAt: '2026-10-01', updatedAt: '2026-10-01', currentOrganization: null } },
+  { path: '/self/sessions', hook: () => { const value = useAccountSessions({ enabled: false }); return { ...value, data: value.sessions } }, value: [{ sessionId: 'B', ipAddress: null, userAgent: 'B', deviceId: null, createdAt: '2026-10-01', lastSeenAt: '2026-10-01', current: true }] },
+  { path: '/auth/me/organizations', hook: () => { const value = useAccountOrganizations({ enabled: false }); return { ...value, data: value.organizations } }, value: [{ organizationId: 'B', name: 'B', slug: null, role: 'MEMBER', joinedAt: null, current: true }] },
+])('server_session $path isolates old errors and finally while B is pending', async entry => {
+  const f = fixture(authenticated())
+  const original = fetch
+  const completions: ((value: Response) => void)[] = []
+  vi.stubGlobal('fetch', vi.fn((input: string, init: RequestInit) => {
+    if (input.endsWith(entry.path)) return new Promise<Response>(resolve => { completions.push(resolve) })
+    return original(input, init)
+  }))
+  const { result } = renderHook(() => ({ account: entry.hook(), context: useIamContext() }), {
+    wrapper: ({ children }) => createElement(IamProvider, config(), children),
+  })
+  await waitFor(() => expect(result.current.context.isAuthenticated).toBe(true))
+  let old!: Promise<unknown>, latest!: Promise<unknown>
+  act(() => { old = result.current.account.refetch() })
+  await waitFor(() => expect(completions).toHaveLength(1))
+  f.setView(authenticated('CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk'))
+  const client = result.current.context.client
+  if (client.mode !== 'server_session') throw new Error('Expected Cookie session client')
+  await act(() => client.restoreSession())
+  act(() => { latest = result.current.account.refetch() })
+  await waitFor(() => expect(completions).toHaveLength(2))
+  await act(async () => { completions[0](new Response(JSON.stringify({ code: 'OLD_ERROR' }), { status: 500 })); await old })
+  expect(result.current.account.isLoading).toBe(true)
+  expect(result.current.account.error).toBeNull()
+  await act(async () => { completions[1](new Response(JSON.stringify(entry.value))); await latest })
+  expect(result.current.account.data).toEqual(entry.value)
+  expect(result.current.account.isLoading).toBe(false)
 })

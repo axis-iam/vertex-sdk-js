@@ -4,7 +4,7 @@ import { createElement, useState } from 'react'
 import { renderToString } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AccountPermissionSummary, AccountProfile, AccountSession, OIDCConfiguration } from '../core/types'
-import { IamProvider } from '../provider/IamProvider'
+import { IamProvider, useIamContext } from '../provider/IamProvider'
 import { makeTestJwt, makeTestUser, storeTestTokens, testProviderProps } from '../test-utils'
 import { AccountPermissionsPanel } from './AccountPermissionsPanel'
 import { AccountCenter } from './AccountCenter'
@@ -401,6 +401,24 @@ describe('Account Center components', () => {
     expect(onUpdated).toHaveBeenCalled()
     const request = fetchMock.mock.calls.find((call) => String(call[0]).endsWith('/api/v1/auth/me/profile') && call[1]?.method === 'PATCH')
     expect(JSON.parse(request?.[1]?.body as string)).toMatchObject({ displayName: 'Alex Rivera' })
+  })
+
+  it('AccountProfilePanel does not report an old saved profile after logout', async () => {
+    setupFetch()
+    let context!: ReturnType<typeof useIamContext>
+    function Probe() { context = useIamContext(); return null }
+    const onUpdated = vi.fn()
+    renderWithProvider(createElement('div', null, createElement(Probe), createElement(AccountProfilePanel, { onUpdated })))
+    await screen.findByText('Alex Morgan')
+    let finish!: (value: AccountProfile) => void
+    const pending = new Promise<AccountProfile>(resolve => { finish = resolve })
+    vi.spyOn(context.client, 'updateAccountProfile').mockReturnValue(pending)
+    fireEvent.click(screen.getByText('Save profile'))
+    act(() => context.client.state.clear())
+    await act(async () => { finish({ ...profile, displayName: 'Old saved value' }); await pending })
+    expect(onUpdated).not.toHaveBeenCalled()
+    expect(screen.queryByText('Profile saved')).toBeNull()
+    expect(screen.queryByDisplayValue('Old saved value')).toBeNull()
   })
 
   it('PasswordChangeForm submits the password change payload and hides raw tokens', async () => {

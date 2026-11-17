@@ -1,4 +1,5 @@
 import { requestJson } from './http-client'
+import type { BrowserRequestOptions } from './http-client'
 import { IamApiError } from './types'
 import type {
   AccountOrganization,
@@ -17,102 +18,70 @@ import type {
 export interface OAuthAccountOnboardingClientOptions {
   discover: () => Promise<OIDCConfiguration>
   getAccessToken: () => string | null
+  captureOwner: () => () => void
 }
 
 export class OAuthAccountOnboardingClient {
   private readonly discover: () => Promise<OIDCConfiguration>
   private readonly getAccessToken: () => string | null
+  private readonly captureOwner: () => () => void
 
   constructor(options: OAuthAccountOnboardingClientOptions) {
     this.discover = options.discover
     this.getAccessToken = options.getAccessToken
+    this.captureOwner = options.captureOwner
   }
 
   async getAccountProfile(): Promise<AccountProfile> {
-    const token = this.requireCurrentAccessToken()
-    const config = await this.discover()
-    return await requestJson<AccountProfile>(`${config.issuer}/api/v1/auth/me/profile`, {
-      bearerToken: token,
-    })
+    return await this.request<AccountProfile>('/api/v1/auth/me/profile')
   }
 
   async updateAccountProfile(input: AccountUpdateProfileInput): Promise<AccountProfile> {
-    const token = this.requireCurrentAccessToken()
-    const config = await this.discover()
-    return await requestJson<AccountProfile>(`${config.issuer}/api/v1/auth/me/profile`, {
+    return await this.request<AccountProfile>('/api/v1/auth/me/profile', {
       method: 'PATCH',
       json: input,
-      bearerToken: token,
     })
   }
 
   async getAccountSecuritySummary(): Promise<AccountSecuritySummary> {
-    const token = this.requireCurrentAccessToken()
-    const config = await this.discover()
-    return await requestJson<AccountSecuritySummary>(`${config.issuer}/api/v1/auth/me/security`, {
-      bearerToken: token,
-    })
+    return await this.request<AccountSecuritySummary>('/api/v1/auth/me/security')
   }
 
   async changePassword(input: ChangePasswordInput): Promise<void> {
-    const token = this.requireCurrentAccessToken()
-    const config = await this.discover()
-    await requestJson<void>(`${config.issuer}/api/v1/auth/password/change`, {
+    await this.request<void>('/api/v1/auth/password/change', {
       method: 'POST',
       json: input,
-      bearerToken: token,
     })
   }
 
   async listAccountSessions(): Promise<AccountSession[]> {
-    const token = this.requireCurrentAccessToken()
-    const config = await this.discover()
-    return await requestJson<AccountSession[]>(`${config.issuer}/api/v1/auth/sessions`, {
-      bearerToken: token,
-    })
+    return await this.request<AccountSession[]>('/api/v1/auth/sessions')
   }
 
   async revokeAccountSession(sessionId: string): Promise<void> {
-    const token = this.requireCurrentAccessToken()
-    const config = await this.discover()
-    await requestJson<void>(`${config.issuer}/api/v1/auth/sessions/${encodeURIComponent(sessionId)}`, {
+    await this.request<void>(`/api/v1/auth/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
-      bearerToken: token,
     })
   }
 
   async revokeOtherAccountSessions(): Promise<void> {
-    const token = this.requireCurrentAccessToken()
-    const config = await this.discover()
-    await requestJson<void>(`${config.issuer}/api/v1/auth/sessions`, {
+    await this.request<void>('/api/v1/auth/sessions', {
       method: 'DELETE',
-      bearerToken: token,
     })
   }
 
   async listAccountOrganizations(): Promise<AccountOrganization[]> {
-    const token = this.requireCurrentAccessToken()
-    const config = await this.discover()
-    return await requestJson<AccountOrganization[]>(`${config.issuer}/api/v1/auth/me/organizations`, {
-      bearerToken: token,
-    })
+    return await this.request<AccountOrganization[]>('/api/v1/auth/me/organizations')
   }
 
   async getCurrentAccountOrganization(): Promise<AccountOrganization | null> {
-    const token = this.requireCurrentAccessToken()
-    const config = await this.discover()
-    return await requestJson<AccountOrganization | null>(`${config.issuer}/api/v1/auth/me/organizations/current`, {
-      bearerToken: token,
-    })
+    return await this.request<AccountOrganization | null>('/api/v1/auth/me/organizations/current')
   }
 
   async switchAccountOrganization(organizationId: string): Promise<OrganizationSwitchResponse> {
-    const token = this.requireCurrentAccessToken()
-    const config = await this.discover()
-    return await requestJson<OrganizationSwitchResponse>(`${config.issuer}/api/v1/auth/me/organizations/current`, {
+    return await this.request<OrganizationSwitchResponse>('/api/v1/auth/me/organizations/current', {
       method: 'POST',
       json: { organizationId },
-      bearerToken: token,
     })
   }
 
@@ -122,22 +91,30 @@ export class OAuthAccountOnboardingClient {
   }
 
   async getAccountPermissionSummary(organizationId?: string | null): Promise<AccountPermissionSummary> {
-    const token = this.requireCurrentAccessToken()
-    const config = await this.discover()
     const params = organizationId ? `?organizationId=${encodeURIComponent(organizationId)}` : ''
-    return await requestJson<AccountPermissionSummary>(`${config.issuer}/api/v1/auth/me/permissions${params}`, {
-      bearerToken: token,
-    })
+    return await this.request<AccountPermissionSummary>(`/api/v1/auth/me/permissions${params}`)
   }
 
   async checkAccountPermission(input: AccountPermissionCheckInput): Promise<AccountPermissionCheckResponse> {
-    const token = this.requireCurrentAccessToken()
-    const config = await this.discover()
-    return await requestJson<AccountPermissionCheckResponse>(`${config.issuer}/api/v1/auth/me/permissions:check`, {
+    return await this.request<AccountPermissionCheckResponse>('/api/v1/auth/me/permissions:check', {
       method: 'POST',
       json: input,
-      bearerToken: token,
     })
+  }
+
+  private async request<T>(path: string, options: BrowserRequestOptions = {}): Promise<T> {
+    const token = this.requireCurrentAccessToken()
+    const assertCurrent = this.captureOwner()
+    try {
+      const config = await this.discover()
+      assertCurrent()
+      const result = await requestJson<T>(`${config.issuer}${path}`, { ...options, bearerToken: token })
+      assertCurrent()
+      return result
+    } catch (error) {
+      assertCurrent()
+      throw error
+    }
   }
 
   private requireCurrentAccessToken(): string {

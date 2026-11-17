@@ -156,6 +156,10 @@ export class OAuthClient {
       resolveRedirectUri: (redirectUri) => this.resolveRedirectUri(redirectUri),
     })
     this.accountOnboarding = new OAuthAccountOnboardingClient({
+      captureOwner: () => {
+        const generation = this.tokenManager.generation
+        return () => this.tokenManager.assertCurrent(generation)
+      },
       discover: () => this.discover(),
       getAccessToken: () =>
         this.tokenManager.hasUsableToken()

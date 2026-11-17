@@ -1,7 +1,7 @@
-import { useCallback, useState } from 'react'
+import { useCallback } from 'react'
 import type { OrganizationSwitchResponse } from '../core/types'
 import { IamApiError } from '../core/types'
-import { useIamContext } from '../provider/IamProvider'
+import { useAccountRequestState } from './useAccountRequestState'
 import { useAccountOrganizations } from './useAccountOrganizations'
 import type { UseAccountOrganizationsOptions } from './useAccountOrganizations'
 
@@ -16,12 +16,14 @@ export interface UseOrganizationSwitcherResult extends ReturnType<typeof useAcco
 export function useOrganizationSwitcher(
   options: UseOrganizationSwitcherOptions = {},
 ): UseOrganizationSwitcherResult {
-  const { client, isAuthenticated } = useIamContext()
+  const { client, isAuthenticated, begin, patch, value } = useAccountRequestState({
+    isSwitching: false, switchResponse: null as OrganizationSwitchResponse | null,
+  })
   const organizationsState = useAccountOrganizations(options)
-  const [isSwitching, setIsSwitching] = useState(false)
-  const [switchResponse, setSwitchResponse] = useState<OrganizationSwitchResponse | null>(null)
 
   const switchOrganization = useCallback(async (organizationId: string) => {
+    const request = begin('switch')
+    request.assertCurrent()
     if (!isAuthenticated) {
       const next = new IamApiError('Authentication is required', {
         status: 401,
@@ -30,20 +32,23 @@ export function useOrganizationSwitcher(
       throw next
     }
 
-    setIsSwitching(true)
+    patch(request, { isSwitching: true })
     try {
       const next = await client.switchAccountOrganization(organizationId)
-      setSwitchResponse(next)
+      request.assertCurrent()
+      patch(request, { switchResponse: next })
       return next
+    } catch (error) {
+      request.assertCurrent()
+      throw error
     } finally {
-      setIsSwitching(false)
+      patch(request, { isSwitching: false })
     }
-  }, [client, isAuthenticated])
+  }, [client, isAuthenticated, begin, patch])
 
   return {
     ...organizationsState,
-    isSwitching,
-    switchResponse,
+    ...value,
     switchOrganization,
   }
 }

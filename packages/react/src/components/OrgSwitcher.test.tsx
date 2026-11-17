@@ -1,9 +1,10 @@
 import { currentUserFixture } from './currentUser.test-support'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
-import { IamProvider } from '../provider/IamProvider'
+import { IamProvider, useIamContext } from '../provider/IamProvider'
 import { OrgSwitcher, OrganizationSwitcher } from './OrgSwitcher'
+import type { OrganizationSwitchResponse } from '../core/types'
 import { storeTestTokens, testProviderProps } from '../test-utils'
 
 const ISSUER = 'https://auth.test.com'
@@ -99,5 +100,27 @@ describe('OrganizationSwitcher', () => {
     await waitFor(() => expect(onSwitch).toHaveBeenCalledWith('org-2', expect.objectContaining({
       organizationId: 'org-2',
     })))
+  })
+
+  it.each(['success', 'error'] as const)('does not notify or show an old switch %s after logout', async outcome => {
+    let context!: ReturnType<typeof useIamContext>
+    function Probe() { context = useIamContext(); return null }
+    const onSwitch = vi.fn()
+    renderWithProvider(createElement('div', null, createElement(Probe), createElement(OrganizationSwitcher, { onSwitch })))
+    await screen.findByText('Acme Corp')
+    let resolve!: (value: OrganizationSwitchResponse) => void, reject!: (error: Error) => void
+    const pending = new Promise<OrganizationSwitchResponse>((yes, no) => { resolve = yes; reject = no })
+    vi.spyOn(context.client, 'switchAccountOrganization').mockReturnValue(pending)
+    fireEvent.click(screen.getByText('Acme Corp'))
+    fireEvent.click(screen.getByText('Beta Inc'))
+    act(() => context.client.state.clear())
+    await act(async () => {
+      if (outcome === 'success') resolve({ organizationId: 'org-2', continuation: 'TOKEN_REFRESH_REQUIRED', tokenRefreshRequired: true, message: 'refresh' })
+      else reject(new Error('old switch failed'))
+      await Promise.allSettled([pending])
+    })
+    expect(onSwitch).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByText('Beta Inc')).toBeNull()
   })
 })
