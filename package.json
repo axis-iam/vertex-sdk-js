@@ -6,7 +6,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
-    "typecheck": "pnpm --filter @axis-iam/vertex build && pnpm --filter @axis-iam/vertex-react build && pnpm --filter @axis-iam/vertex-nestjs build && pnpm -r typecheck",
+    "typecheck": "pnpm --filter @axis-iam/vertex build && pnpm --filter @axis-iam/vertex-react build && pnpm --filter @axis-iam/vertex-express build && pnpm --filter @axis-iam/vertex-nestjs build && pnpm -r typecheck",
     "bundle:check": "node scripts/check-react-bundle.mjs",
     "bundle:check:self-test": "node scripts/check-react-bundle-self-test.mjs",
     "smoke:account-center": "node packages/react/visual-smoke/run-smoke.mjs",
