@@ -62,16 +62,23 @@ it('preserves CSRF/server errors and invalidates a late write on logout', async 
 
 it('posts only the delivered Cookie magic DTO and rejects mixed/replayed proof shapes', async () => {
   const calls: unknown[] = []
-  const session = new ServerSession({ request: async input => { calls.push(input); return { ...prelogin(), state: input.action === 'magic' ? 'MFA_REQUIRED' : 'AUTHENTICATING', nextAction: input.action === 'magic' ? 'mfa' : 'authenticate' } } })
+  const callbackUri = 'https://app.test/console/session/callback'
+  const session = new ServerSession({ request: async input => { calls.push(input); return { ...prelogin(), state: input.action === 'magic' ? 'MFA_REQUIRED' : 'AUTHENTICATING', nextAction: input.action === 'magic' ? 'mfa' : 'authenticate' } } }, undefined, callbackUri)
   await session.restore()
   const flow = new SessionLogin(session)
   const fragment = new URLSearchParams({ kind: 'AUTH_PROOF', method: 'EMAIL_MAGIC_LINK', auth_transaction_id: '00000000-0000-4000-8000-000000000001', state: 'fixture-state', proof: 'fixture-proof' })
-  const url = 'https://app.test/console/session/callback#' + fragment
+  const url = callbackUri + '#' + fragment
   await expect(flow.authenticateMagicLink(url + '&proof=extra', { kind: 'EMAIL', value: 'member@example.invalid' })).rejects.toMatchObject({ code: 'AUTH_MAGIC_CALLBACK_INVALID' })
   expect(calls).toHaveLength(1)
+  for (const unexpected of ['https://other.test/console/session/callback', 'https://app.test/other/callback']) {
+    await expect(flow.authenticateMagicLink(unexpected + '#' + fragment, { kind: 'EMAIL', value: 'member@example.invalid' })).rejects.toMatchObject({ code: 'AUTH_MAGIC_CALLBACK_INVALID' })
+    expect(calls).toHaveLength(1)
+  }
   await expect(flow.authenticateMagicLink(url, { kind: 'EMAIL', value: 'member@example.invalid' })).resolves.toMatchObject({ state: 'MFA_REQUIRED' })
   expect(calls[1]).toEqual({ action: 'magic', body: { transactionId: '00000000-0000-4000-8000-000000000001', state: 'fixture-state', proof: 'fixture-proof' } })
   expect(JSON.stringify(calls)).not.toMatch(/identifier|password|controlSecret|codeVerifier/)
+  await expect(flow.authenticateMagicLink(url, { kind: 'EMAIL', value: 'member@example.invalid' })).rejects.toMatchObject({ code: 'AUTH_MAGIC_CALLBACK_INVALID' })
+  expect(calls).toHaveLength(2)
   session.dispose()
 })
 it('preserves the exact BFF 429 retry deadline without inventing a cooldown', async () => {
