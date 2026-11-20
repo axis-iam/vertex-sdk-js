@@ -37,6 +37,7 @@ function fixture(openid = false) {
       jwks_uri: 'https://auth.example.test/jwks',
       end_session_endpoint: 'https://auth.example.test/logout',
     })
+    if (String(input).endsWith('/api/v1/auth/logout')) return new Response(null, { status: 204 })
     const form = new URLSearchParams(String(init?.body))
     return form.get('grant_type') === 'refresh_token'
       ? oidc({ access_token: 'access-2', refresh_token: 'refresh-2', id_token: 'id-2', token_type: 'Bearer', expires_in: 300 })
@@ -156,7 +157,7 @@ describe('createWebAuth', () => {
     expect(JSON.stringify(vi.mocked(request.res.json).mock.calls)).not.toContain('access-2')
   })
 
-  it('logout clears local authority and cookie before redirecting upstream', async () => {
+  it('logout clears local authority and cookie and returns locally by default', async () => {
     const { auth, sessionStore } = fixture()
     sessionStore.values.set(SESSION_ID, {
       revision: 'revision', tokens: { accessToken: 'access', refreshToken: 'refresh', idToken: 'id-token', tokenType: 'Bearer', expiresAt: 1_800_000_300_000 },
@@ -166,6 +167,6 @@ describe('createWebAuth', () => {
     await auth.logout(request.req, request.res, request.next)
     expect(sessionStore.values.has(SESSION_ID)).toBe(false)
     expect(request.res.clearCookie).toHaveBeenCalledWith('__Host-axis_vertex_session', expect.objectContaining({ path: '/', secure: true }))
-    expect(request.res.redirect).toHaveBeenCalledWith(expect.stringContaining('https://auth.example.test/logout'))
+    expect(request.res.redirect).toHaveBeenCalledWith('https://app.example.test/signed-out')
   })
 })

@@ -1,4 +1,6 @@
 export { IamModule } from './iam.module.js'
+export { mountBff } from './bff.js'
+export { getBffSession, getBffUser, expressSessionBinding } from '@axis-iam/vertex-express'
 export type { IamModuleConfig } from './iam.module.js'
 export { IamAuthGuard } from './iam-auth.guard.js'
 export { RequirePermGuard } from './require-perm.guard.js'

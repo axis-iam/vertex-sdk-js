@@ -1,4 +1,10 @@
 // Server-only exports for confidential Node.js, CLI, and backend runtimes.
+export { BffSessionClient } from './web-auth/bff-session.js'
+export type { BffConfig, BffResult, BffLogoutResult } from './web-auth/bff-session.js'
+export { MemorySessionProvider } from './web-auth/memory-session-provider.js'
+export type { MemorySessionProviderConfig } from './web-auth/memory-session-provider.js'
+export { BffError } from './web-auth/session-provider.js'
+export type { BffErrorCode, BffRecord, BffLogin, BffSessionProvider, ProviderResult } from './web-auth/session-provider.js'
 export { InvitationBff, ConfidentialInvitationClient } from './web-auth/invitation-bff.js'
 export { InvitationError } from './client/invitation-journeys.js'
 export type { InvitationBffConfig, InvitationBffSession } from './web-auth/invitation-bff.js'

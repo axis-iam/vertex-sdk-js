@@ -1,4 +1,6 @@
 export { iamAuth } from './iam-auth.middleware.js'
+export { createBff, getBffSession, getBffUser, expressSessionBinding } from './bff.middleware.js'
+export type { BffExpressConfig, BffHandlers, BffSessionBinding, NativeBffSession } from './bff.middleware.js'
 export { requirePerm } from './require-perm.middleware.js'
 export type { IamRequest } from './types.js'
 export { createWebAuth } from './web-auth.middleware.js'

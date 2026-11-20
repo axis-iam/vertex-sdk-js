@@ -58,6 +58,7 @@ function fixture(initial:unknown=pending(), capabilities:unknown=flowCapabilitie
 it.each(['Embedded','Dialog'])('renders %s login and original MFA with only Cookie session',async entry=>{
   const f=fixture(),success=vi.fn()
   render(createElement(IamProvider,config(),entry==='Dialog'?createElement(AuthDialog,{open:true,signInProps:{onSuccess:success}}):createElement(SignIn,{mode:'embedded',onSuccess:success})))
+  await act(async()=>{}) // Settle initial metadata/restore effects before the first user input.
   const identifier=await screen.findByPlaceholderText('you@example.com')
   fireEvent.change(identifier,{target:{value:'u@example.invalid'}})
   const password=await screen.findByPlaceholderText('Enter your password')

@@ -379,8 +379,10 @@ export interface IamConfig {
   sessionMode?: 'oauth_tokens' | 'server_session'
   /** Required only in server_session mode; never inferred from issuer or token availability. */
   sessionLoginUri?: string
-  /** Exact same-origin BFF provider callback path, without query/hash; BFF owns PKCE and upstream IDs. */
+  /** Exact clean same-origin landing after BFF consumes Provider callback, without query/hash. */
   sessionProviderReturnUri?: string
+  /** Exact same-origin browser fragment landing when manually using completeMagicLink. */
+  sessionMagicReturnUri?: string
   sessionTransport?: import('@axis-iam/vertex').SessionTransport
   /** SPA/NATIVE public ApplicationClient.clientId. Browser SDK config must not include a secret. */
   clientId: string

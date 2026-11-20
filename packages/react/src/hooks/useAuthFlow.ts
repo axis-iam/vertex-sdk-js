@@ -283,6 +283,7 @@ export function useAuthFlow(
       }
       const attempt = epoch.current
       let generation = client.state.generation
+      const prelogin = client.mode === 'server_session' && !client.isAuthenticated()
       let tokenCommitted = false
       const check = () => {
         if (!mounted.current || epoch.current !== attempt)
@@ -304,6 +305,18 @@ export function useAuthFlow(
           return result
         })
         .catch((error: unknown) => {
+          // The failing proof cleared its own prelogin generation. Keep that
+          // invalidation, but own the resulting error before retiring the flow.
+          // A logout/replacement or a late old response must still fail check().
+          const rejectedProof = prelogin && !tokenCommitted &&
+            ['password', 'verify-code', 'complete-magic-link', 'mfa'].includes(name) &&
+            error instanceof SessionTransportError && error.status === 401 &&
+            client.state.generation === generation + 1 &&
+            client.state.invalidationReason === 'unauthorized' && !client.isAuthenticated()
+          if (rejectedProof) {
+            generation = client.state.generation
+            observedGeneration.current = generation
+          }
           // A 401 view read clears the token and advances generation after commit.
           if (tokenCommitted && error instanceof IamApiError && error.status === 401 &&
               client.mode === 'oauth_tokens' &&
@@ -316,7 +329,7 @@ export function useAuthFlow(
             next instanceof AuthenticationTransactionError || next instanceof SessionTransportError
               ? next.retryAfterSeconds
               : undefined
-          const restart = name === 'provider' || name === 'provider-callback' ||
+          const restart = rejectedProof || name === 'provider' || name === 'provider-callback' ||
             (next instanceof SessionTransportError && ['password', 'verify-code', 'mfa'].includes(name) &&
               (next.status === 0 || next.status >= 500)) ||
             (next instanceof AuthenticationTransactionError &&

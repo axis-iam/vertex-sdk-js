@@ -52,7 +52,7 @@ export type {
 export { PendingAuthorizationStore, authorizationRandom, authorizationCallback } from './client/pending-authorization.js'
 export type { PendingAuthorization } from './client/pending-authorization.js'
 
-export { CookieSessionTransport, SessionTransportError, UnsupportedOperationError, providerAuthorization } from './client/session-transport.js'
+export { CookieSessionTransport, ConnectedAppSessionTransport, SessionTransportError, UnsupportedOperationError, providerAuthorization } from './client/session-transport.js'
 export type { SessionTransport, SessionRequest, ProviderRegistrationProof } from './client/session-transport.js'
 export { ServerSession, SessionLogin, parseServerSession, sessionRecord, sessionText } from './client/server-session.js'
 export type { ServerSessionView, AuthenticationFlow, LoginView } from './client/server-session.js'

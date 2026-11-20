@@ -17,6 +17,12 @@ export type WebAuthErrorCode =
   | 'SESSION_NOT_FOUND'
   | 'SESSION_EXPIRED'
   | 'REFRESH_FAILED'
+  | 'REFRESH_UNCERTAIN'
+  | 'SESSION_ACTION_PENDING'
+  | 'IAM_UNAVAILABLE'
+  | 'OAUTH_INVALID_GRANT'
+  | 'OAUTH_INVALID_CLIENT'
+  | 'OAUTH_REQUEST_REJECTED'
   | 'LOGOUT_FAILED'
 
 const ERROR_MESSAGES: Record<WebAuthErrorCode, string> = {
@@ -35,6 +41,12 @@ const ERROR_MESSAGES: Record<WebAuthErrorCode, string> = {
   SESSION_NOT_FOUND: 'Web session was not found',
   SESSION_EXPIRED: 'Web session has expired',
   REFRESH_FAILED: 'Web session refresh failed',
+  REFRESH_UNCERTAIN: 'Web session refresh result is uncertain',
+  SESSION_ACTION_PENDING: 'Web session action is pending',
+  IAM_UNAVAILABLE: 'Identity service is unavailable',
+  OAUTH_INVALID_GRANT: 'OAuth authorization was rejected',
+  OAUTH_INVALID_CLIENT: 'OAuth client authentication was rejected',
+  OAUTH_REQUEST_REJECTED: 'OAuth token request was rejected',
   LOGOUT_FAILED: 'Web session logout failed',
 }
 
@@ -63,7 +75,7 @@ export interface WebAuthTransaction {
 
 export interface WebAuthTokenSet {
   accessToken: string
-  refreshToken: string
+  refreshToken?: string
   idToken?: string
   tokenType: 'Bearer'
   expiresAt: number
@@ -71,6 +83,8 @@ export interface WebAuthTokenSet {
 }
 
 export interface WebAuthSession {
+  /** Persisted before token send; a lost operation must never replay its RT. */
+  refreshIntent?: { expiresAt: number }
   revision: string
   tokens: WebAuthTokenSet
   createdAt: number
@@ -141,10 +155,14 @@ export interface WebAuthRefreshResult {
 
 export interface WebAuthLogoutInput {
   sessionId?: string
+  /** Explicit SSO navigation; current-session revocation is always attempted first. */
+  sso?: boolean
 }
 
 export interface WebAuthLogoutResult {
   redirectUrl: string
+  local: 'INVALIDATED' | 'NOT_FOUND' | 'UNCONFIRMED'
+  remote: 'SESSION_REVOKED' | 'REFRESH_FAMILY_REVOKED' | 'UNCONFIRMED' | 'NOT_ATTEMPTED'
 }
 
 interface DiscoveryMetadata {
@@ -191,6 +209,17 @@ export class WebAuthClient {
   }
 
   async beginLogin(): Promise<WebAuthBeginLoginResult> {
+    const { transaction, ...result } = await this.prepareLogin()
+    try {
+      await this.config.transactionStore.save(result.transactionId, transaction)
+    } catch {
+      throw new WebAuthError('TRANSACTION_STORE_FAILED')
+    }
+    return result
+  }
+
+  /** Server-only protocol primitive. The caller must bind and atomically consume this transaction. */
+  async prepareLogin(): Promise<WebAuthBeginLoginResult & { transaction: WebAuthTransaction }> {
     const metadata = await this.discover()
     const now = this.config.now()
     const transactionId = opaqueIdentifier()
@@ -203,12 +232,6 @@ export class WebAuthClient {
       expiresAt: now + this.config.transactionTtlMs,
       ...(this.config.scopes.includes('openid') ? { nonce: opaqueIdentifier() } : {}),
     }
-    try {
-      await this.config.transactionStore.save(transactionId, transaction)
-    } catch {
-      throw new WebAuthError('TRANSACTION_STORE_FAILED')
-    }
-
     const url = new URL(metadata.authorizationEndpoint)
     url.searchParams.set('response_type', 'code')
     url.searchParams.set('client_id', this.config.clientId)
@@ -218,8 +241,7 @@ export class WebAuthClient {
     if (transaction.nonce) url.searchParams.set('nonce', transaction.nonce)
     url.searchParams.set('code_challenge', createHash('sha256').update(codeVerifier).digest('base64url'))
     url.searchParams.set('code_challenge_method', 'S256')
-    if (this.config.audience) url.searchParams.set('audience', this.config.audience)
-    return { transactionId, authorizationUrl: url.toString(), expiresAt: transaction.expiresAt }
+    return { transactionId, authorizationUrl: url.toString(), expiresAt: transaction.expiresAt, transaction }
   }
 
   async handleCallback(input: WebAuthCallbackInput): Promise<WebAuthCallbackResult> {
@@ -238,6 +260,23 @@ export class WebAuthClient {
     if (input.error !== undefined) throw new WebAuthError('CALLBACK_OAUTH_ERROR')
     const code = nonBlankInput(input.code, 'CALLBACK_INVALID')
 
+    const tokens = await this.exchangeAuthorizationCode(code, transaction)
+    const now = this.config.now()
+    const sessionId = opaqueIdentifier()
+    const session: WebAuthSession = {
+      revision: opaqueIdentifier(), tokens, createdAt: now, updatedAt: now,
+      expiresAt: now + this.config.sessionTtlMs,
+    }
+    try {
+      await this.config.sessionStore.create(sessionId, session)
+    } catch {
+      throw new WebAuthError('SESSION_STORE_FAILED')
+    }
+    return { sessionId, session, redirectUrl: this.config.successRedirect }
+  }
+
+  /** No retries. Caller owns the persisted send intent and failure fencing. */
+  async exchangeAuthorizationCode(code: string, transaction: WebAuthTransaction): Promise<WebAuthTokenSet> {
     const metadata = await this.discover()
     const tokens = await this.requestTokens(metadata.tokenEndpoint, new URLSearchParams({
       grant_type: 'authorization_code',
@@ -260,21 +299,7 @@ export class WebAuthClient {
         throw error
       }
     }
-    const now = this.config.now()
-    const sessionId = opaqueIdentifier()
-    const session: WebAuthSession = {
-      revision: opaqueIdentifier(),
-      tokens,
-      createdAt: now,
-      updatedAt: now,
-      expiresAt: now + this.config.sessionTtlMs,
-    }
-    try {
-      await this.config.sessionStore.create(sessionId, session)
-    } catch {
-      throw new WebAuthError('SESSION_STORE_FAILED')
-    }
-    return { sessionId, session, redirectUrl: this.config.successRedirect }
+    return tokens
   }
 
   async readSession(sessionId: string): Promise<WebAuthSession> {
@@ -286,6 +311,13 @@ export class WebAuthClient {
       throw new WebAuthError('SESSION_STORE_FAILED')
     }
     if (!session) throw new WebAuthError('SESSION_NOT_FOUND')
+    if (session.refreshIntent) {
+      if (session.refreshIntent.expiresAt <= this.config.now()) {
+        await this.config.sessionStore.delete(id)
+        throw new WebAuthError('REFRESH_UNCERTAIN')
+      }
+      throw new WebAuthError('SESSION_ACTION_PENDING')
+    }
     if (session.expiresAt <= this.config.now()) {
       try {
         await this.config.sessionStore.delete(id)
@@ -301,6 +333,15 @@ export class WebAuthClient {
     const sessionId = nonBlankInput(input.sessionId, 'SESSION_NOT_FOUND')
     const current = await this.readSession(sessionId)
     const metadata = await this.discover()
+    if (!current.tokens.refreshToken) throw new WebAuthError('SESSION_EXPIRED')
+    const claimed: WebAuthSession = { ...current, revision: opaqueIdentifier(), refreshIntent: { expiresAt: this.config.now() + 15_000 } }
+    try {
+      if (!await this.config.sessionStore.replace(sessionId, current.revision, claimed))
+        throw new WebAuthError('SESSION_ACTION_PENDING')
+    } catch (error) {
+      if (error instanceof WebAuthError) throw error
+      throw new WebAuthError('SESSION_STORE_FAILED')
+    }
     let tokens: WebAuthTokenSet
     try {
       tokens = await this.requestTokens(metadata.tokenEndpoint, new URLSearchParams({
@@ -308,12 +349,13 @@ export class WebAuthClient {
         refresh_token: current.tokens.refreshToken,
       }), 'REFRESH_FAILED')
     } catch (error) {
-      if (error instanceof WebAuthError && error.code === 'TOKEN_RESPONSE_INVALID') {
-        throw new WebAuthError('REFRESH_FAILED')
-      }
+      await this.config.sessionStore.delete(sessionId).catch(() => { /* persisted intent fences the old RT */ })
       throw error
     }
-    if (tokens.refreshToken === current.tokens.refreshToken) throw new WebAuthError('REFRESH_FAILED')
+    if (!tokens.refreshToken || tokens.refreshToken === current.tokens.refreshToken) {
+      await this.config.sessionStore.delete(sessionId)
+      throw new WebAuthError('REFRESH_FAILED')
+    }
 
     const now = this.config.now()
     const replacement: WebAuthSession = {
@@ -321,39 +363,76 @@ export class WebAuthClient {
       tokens,
       createdAt: current.createdAt,
       updatedAt: now,
-      expiresAt: now + this.config.sessionTtlMs,
+      expiresAt: current.expiresAt,
     }
     let replaced: boolean
     try {
-      replaced = await this.config.sessionStore.replace(sessionId, current.revision, replacement)
+      replaced = await this.config.sessionStore.replace(sessionId, claimed.revision, replacement)
     } catch {
-      throw new WebAuthError('SESSION_STORE_FAILED')
+      throw new WebAuthError('REFRESH_UNCERTAIN')
     }
-    if (!replaced) throw new WebAuthError('REFRESH_FAILED')
+    if (!replaced) throw new WebAuthError('REFRESH_UNCERTAIN')
     return { session: replacement }
   }
 
   async logout(input: WebAuthLogoutInput): Promise<WebAuthLogoutResult> {
+    let captured: WebAuthSession | null = null
+    let local: WebAuthLogoutResult['local'] = 'NOT_FOUND'
     if (input.sessionId) {
       try {
+        captured = await this.config.sessionStore.read(input.sessionId)
         await this.config.sessionStore.delete(input.sessionId)
+        local = captured ? 'INVALIDATED' : 'NOT_FOUND'
       } catch {
-        throw new WebAuthError('LOGOUT_FAILED')
+        local = 'UNCONFIRMED'
       }
     }
-
+    const remote = captured ? await this.revokeTokens(captured.tokens) : 'NOT_ATTEMPTED'
+    if (!input.sso) return { redirectUrl: this.config.postLogoutRedirect, remote, local }
     let metadata: DiscoveryMetadata
     try {
       metadata = await this.discover()
     } catch {
-      return { redirectUrl: this.config.postLogoutRedirect }
+      throw new WebAuthError('DISCOVERY_FAILED')
     }
     if (!metadata.endSessionEndpoint) {
-      return { redirectUrl: this.config.postLogoutRedirect }
+      return { redirectUrl: this.config.postLogoutRedirect, remote, local }
     }
     const url = new URL(metadata.endSessionEndpoint)
     url.searchParams.set('post_logout_redirect_uri', this.config.postLogoutRedirect)
-    return { redirectUrl: url.toString() }
+    return { redirectUrl: url.toString(), remote, local }
+  }
+
+  /** Protocol operation only; caller must already own exclusive refresh authority. */
+  async rotateTokens(tokens: WebAuthTokenSet): Promise<WebAuthTokenSet> {
+    if (!tokens.refreshToken) throw new WebAuthError('SESSION_EXPIRED')
+    const metadata = await this.discover()
+    const next = await this.requestTokens(metadata.tokenEndpoint, new URLSearchParams({
+      grant_type: 'refresh_token', refresh_token: tokens.refreshToken,
+    }), 'REFRESH_FAILED')
+    if (!next.refreshToken || next.refreshToken === tokens.refreshToken) throw new WebAuthError('REFRESH_FAILED')
+    return next
+  }
+
+  async revokeTokens(tokens: WebAuthTokenSet): Promise<WebAuthLogoutResult['remote']> {
+    try {
+      let response: Response
+      if (tokens.expiresAt > this.config.now()) {
+        response = await this.config.fetch(new URL('/api/v1/auth/logout', this.config.issuer), {
+          method: 'POST', headers: { authorization: `Bearer ${tokens.accessToken}`, 'content-type': 'application/json' },
+          body: JSON.stringify(tokens.refreshToken ? { refresh_token: tokens.refreshToken } : {}),
+          signal: AbortSignal.timeout(5000),
+        })
+        return response.status === 204 ? 'SESSION_REVOKED' : 'UNCONFIRMED'
+      }
+      if (!tokens.refreshToken) return 'NOT_ATTEMPTED'
+      response = await this.config.fetch(new URL('/oauth2/revoke', this.config.issuer), {
+        method: 'POST', headers: { authorization: `Basic ${Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString('base64')}`, 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token: tokens.refreshToken, token_type_hint: 'refresh_token' }).toString(),
+        signal: AbortSignal.timeout(5000),
+      })
+      return response.status === 200 ? 'REFRESH_FAMILY_REVOKED' : 'UNCONFIRMED'
+    } catch { return 'UNCONFIRMED' }
   }
 
   private async discover(): Promise<DiscoveryMetadata> {
@@ -372,6 +451,7 @@ export class WebAuthClient {
     try {
       response = await this.config.fetch(`${this.config.issuer}/.well-known/openid-configuration`, {
         headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(5000),
       })
     } catch {
       throw new WebAuthError('DISCOVERY_FAILED')
@@ -412,11 +492,24 @@ export class WebAuthClient {
           'content-type': 'application/x-www-form-urlencoded',
         },
         body: body.toString(),
+        signal: AbortSignal.timeout(5000),
       })
     } catch {
+      throw new WebAuthError(requestErrorCode === 'REFRESH_FAILED' ? 'REFRESH_UNCERTAIN' : requestErrorCode)
+    }
+    if (response.status >= 500) throw new WebAuthError('IAM_UNAVAILABLE')
+    if (!response.ok) {
+      let value: unknown
+      try { value = await response.json() } catch { throw new WebAuthError(requestErrorCode) }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new WebAuthError(requestErrorCode)
+      const error = (value as Record<string, unknown>).error
+      if (response.status === 400 && error === 'invalid_grant') throw new WebAuthError('OAUTH_INVALID_GRANT')
+      if ([400, 401].includes(response.status) && error === 'invalid_client') throw new WebAuthError('OAUTH_INVALID_CLIENT')
+      if ([400, 401].includes(response.status) &&
+        ['invalid_request', 'unauthorized_client', 'unsupported_grant_type', 'invalid_scope'].includes(String(error)))
+        throw new WebAuthError('OAUTH_REQUEST_REJECTED')
       throw new WebAuthError(requestErrorCode)
     }
-    if (!response.ok) throw new WebAuthError(requestErrorCode)
     if (!isJsonResponse(response)) throw new WebAuthError('TOKEN_RESPONSE_INVALID')
     let value: unknown
     try {
@@ -448,7 +541,7 @@ function validateConfig(config: WebAuthClientConfig): ValidatedConfig {
   }
   const audience = config.audience === undefined ? undefined : requiredText(config.audience)
   const transactionTtlMs = positiveSeconds(config.transactionTtlSeconds ?? 600, 60, 1800)
-  const sessionTtlMs = positiveSeconds(config.sessionTtlSeconds ?? 86_400, 300, 2_592_000)
+  const sessionTtlMs = positiveSeconds(config.sessionTtlSeconds ?? 3600, 1, 2_592_000)
   if (!config.transactionStore || !config.sessionStore) throw new WebAuthError('CONFIGURATION_INVALID')
   const fetchImplementation = config.fetch ?? globalThis.fetch
   if (typeof fetchImplementation !== 'function') throw new WebAuthError('CONFIGURATION_INVALID')
@@ -522,7 +615,7 @@ function sameIssuerEndpoint(value: unknown, issuer: string): string {
 function parseTokenSet(value: unknown, now: number): WebAuthTokenSet {
   const record = objectRecord(value, 'TOKEN_RESPONSE_INVALID')
   const accessToken = tokenText(record.access_token)
-  const refreshToken = tokenText(record.refresh_token)
+  const refreshToken = record.refresh_token === undefined ? undefined : tokenText(record.refresh_token)
   if (record.token_type !== 'Bearer') throw new WebAuthError('TOKEN_RESPONSE_INVALID')
   if (typeof record.expires_in !== 'number' || !Number.isInteger(record.expires_in) || record.expires_in <= 0 || record.expires_in > 86_400) {
     throw new WebAuthError('TOKEN_RESPONSE_INVALID')
@@ -531,7 +624,7 @@ function parseTokenSet(value: unknown, now: number): WebAuthTokenSet {
   const scope = record.scope === undefined ? undefined : requiredTokenResponseText(record.scope)
   return {
     accessToken,
-    refreshToken,
+    ...(refreshToken ? { refreshToken } : {}),
     ...(idToken ? { idToken } : {}),
     tokenType: 'Bearer',
     expiresAt: now + record.expires_in * 1000,

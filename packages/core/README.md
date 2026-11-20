@@ -91,7 +91,74 @@ const client = new WebAuthClient({
 `WebAuthTransactionStore.consume` must atomically read and delete one transaction.
 `WebAuthSessionStore.replace` must atomically compare the expected revision and replace the session. Store values
 contain the verifier or tokens and therefore belong only in customer-controlled server storage. The SDK provides no
-implicit in-memory, Redis, database, or process-global store.
+implicit store. For the complete connected-application contract use `BffSessionClient` with an explicit
+`MemorySessionProvider` (or a provider implementing its atomic contract) and the framework adapters below.
+
+### Connected application sessions
+
+`BffSessionClient`, `MemorySessionProvider`, `BffSessionProvider`, and `BffError` are exported only from
+`@axis-iam/vertex/server`. Express `createBff` and Nest `mountBff` install the finite `/auth` contract.
+Storage is mandatory; create one provider for the process and share it across every handler.
+
+```ts
+import { MemorySessionProvider } from '@axis-iam/vertex/server'
+const provider = new MemorySessionProvider({ workers: 1, replicas: 1 })
+// Pass provider to createBff / mountBff. On application shutdown:
+await provider.close()
+```
+
+RAM is volatile and supports one process only. Defaults: 10,000 sessions, 1,000 prelogins, 65,536 bytes per record,
+600-second prelogin TTL, 3,600-second session absolute/idle caps, 60-second cleanup. Capacity returns a typed 503;
+live records are not evicted. Close erases records and stops cleanup. There is no required DB, encryption key or
+driver. Multiple workers/replicas require a real shared provider; a scope label or sticky sessions do not establish
+distributed safety.
+
+`BffSessionProvider` owns atomic `create`, snapshot `read`, `compareAndSet`, `rotate` (consume prelogin and publish
+new identity together), terminal `invalidate`, and `close`. CAS binds version/owner/fence; it must never insert an
+absent record, change createdAt, extend absolute expiry, or change the user/session binding. `rotate` retains only
+a short-lived non-authenticating predecessor link so racing logout can invalidate its successor. An external provider
+must implement and validate these semantics, including expiry, capacity, isolated copies, errors and shutdown.
+Ordinary framework session get/set is insufficient. No production shared backend is bundled or certified.
+
+Refresh persists OWNED then SEND_INTENT before HTTP. A sent timeout, expired intent, lost fence or failed commit
+requires new authorization; the old RT cannot be replayed. IAM 5xx/read failures remain service errors. Protected
+requests load the provider, enforce immutable deadlines, refresh if needed and then fetch authenticated identity,
+permissions and online validity. Context getters read the resulting request value. Default upstream timeout is 5s,
+request auth budget 10s, refresh skew 30s, lease 15s, zero token retries. Optional RT absence is supported without
+adding scopes. Token/profile/control data never comes from browser authority or decoded AT text.
+
+Logout invalidates locally before bounded revocation. Its result distinguishes local invalidation, current-session
+revocation, refresh-family-only revocation, unavailable remote and no usable credential. Expired AT is never refreshed
+solely for logout. SSO navigation is not automatic.
+
+`ConnectedAppSessionTransport` is exported from the browser root. It uses `/auth` by default and permits only the C0
+login/session/capability/registration/recovery actions. `CookieSessionTransport` retains `/console` and existing
+Console actions. Neither exposes a browser Token endpoint or arbitrary URL/header proxy.
+
+The ConnectedApp transport explicitly maps C0 registration `registrationId` (the local opaque reference) to the
+React session model's `ref`; it rejects Console-shaped registration responses. Console's own `ref` wire contract
+is unchanged. Registration completion returns a registration result, not authenticated application credentials.
+
+Token HTTP `invalid_grant` and `invalid_client` refusals surface sanitized `OAUTH_INVALID_GRANT` and
+`OAUTH_INVALID_CLIENT` (401); other recognized OAuth request refusals use `OAUTH_REQUEST_REJECTED`.
+Known Token or identity dependency failures remain `IAM_UNAVAILABLE` (503). A lost response or failed Token
+commit remains `AUTH_EXCHANGE_UNCERTAIN` / `REFRESH_UNCERTAIN` (401). Every consumed failed attempt is fenced
+and terminated regardless of reported status; none of these results authorizes Token/code replay.
+
+### Existing helper migration
+
+`WebAuthTokenSet.refreshToken` is now optional. `WebAuthClient.refresh({sessionId})` acquires persisted CAS authority
+before send and keeps the original `expiresAt`; store `replace` must not recreate deleted records. `refreshIntent`
+is server-only. The default local session TTL changes from 86,400 to 3,600 seconds. A local helper alone does not
+provide the complete BFF online-validity/CSRF routes; use `createBff` for that contract.
+
+`WebAuthClient.logout({sessionId?,sso?})` returns `{redirectUrl,local,remote}`. The default destination is the configured
+local postLogoutRedirect after attempting current IAM revocation. `sso:true` explicitly requests discovered
+end-session navigation. Express `createWebAuth` uses `ssoLogout:true` for that opt-in; its default changes in the same
+way and partial logout returns 503. `REFRESH_UNCERTAIN` is 401, current action ownership 409 and IAM/store failure 503.
+`prepareLogin`, `exchangeAuthorizationCode`, `rotateTokens` and `revokeTokens` are server protocol primitives;
+callers of the first three own binding, consumption and persisted exclusive authority. `BffSessionClient` does this
+for the supported routes.
 
 ## Explicit Cookie Session Transport
 
@@ -244,11 +311,9 @@ restart only if the backend authorizes the read. Pending context loss requires r
 `releaseOwner` / `dispose` erase state. The bounded in-memory adapter is single-process, not a multi-instance
 persistent session store. Route to one owning process or provide host-level affinity; do not silently fail over.
 
-The current `WebAuthClient` default OpenID request lacks a nonce and is rejected by the authentication
-transaction producer. Configure explicit non-OpenID OAuth scopes (`profile email offline_access`) for this helper.
-This supports OAuth authorization-code login, not Hosted OIDC completion. Do not use an unverified ID Token as
-identity; validate the actual access token or use authenticated `/me`. Ordinary WebAuth OpenID support remains
-a separate integration prerequisite.
+`WebAuthClient` creates an OpenID nonce and verifies the signed ID Token's issuer, client audience/azp, lifetime,
+subject and nonce using discovery/JWKS before committing authentication. Access Tokens remain opaque credentials;
+safe identity and permissions come from authenticated IAM APIs.
 
 `ServerSession.invalidationReason` distinguishes `unauthorized` (a current-generation HTTP 401)
 from explicit `cleared`, session `replaced`, and `disposed` lifecycle changes. Every path still

@@ -232,7 +232,7 @@ describe('WebAuthClient', () => {
     await expect(client.refresh({ sessionId: callback.sessionId })).rejects.toMatchObject({ code: 'REFRESH_FAILED' })
   })
 
-  it('deletes local authority before returning an optional end-session URL', async () => {
+  it('deletes local authority and requires explicit SSO navigation', async () => {
     const { client, sessions } = fixture()
     sessions.values.set('session-id', {
       revision: 'revision',
@@ -241,7 +241,9 @@ describe('WebAuthClient', () => {
       updatedAt: 1_800_000_000_000,
       expiresAt: 1_800_003_600_000,
     })
-    const result = await client.logout({ sessionId: 'session-id' })
+    const local = await client.logout({ sessionId: 'session-id' })
+    expect(local.redirectUrl).toBe(`${APP_ORIGIN}/signed-out`)
+    const result = await client.logout({ sso: true })
     expect(sessions.values.has('session-id')).toBe(false)
     expect(result.redirectUrl).toContain(`${ISSUER}/connect/logout`)
     expect(result.redirectUrl).toContain(encodeURIComponent(`${APP_ORIGIN}/signed-out`))

@@ -255,3 +255,31 @@ export class CookieSessionTransport implements SessionTransport {
     } finally { if (write && (revision === this.revision || input.action === 'logout')) this.writePending = false }
   }
 }
+
+/** Finite C0 application contract. Console keeps its existing transport and default. */
+export class ConnectedAppSessionTransport implements SessionTransport {
+  private readonly cookie: CookieSessionTransport
+  constructor(config: { origin: string; basePath?: string }) {
+    this.cookie = new CookieSessionTransport({ ...config, basePath: config.basePath ?? '/auth' })
+  }
+  request(request: SessionRequest): Promise<unknown> {
+    if (!['bootstrap', 'session', 'login', 'authenticate', 'challenge', 'authorize', 'mfa',
+      'complete', 'cancel', 'magic', 'logout', 'authMethods', 'authPolicy',
+      'registrationStart', 'registrationGet', 'registrationChallenge', 'registrationComplete',
+      'registrationCancel', 'resetRequest', 'resetComplete'].includes(request.action))
+      throw new UnsupportedOperationError()
+    return this.cookie.request(request).then(result => {
+    if (['registrationStart', 'registrationGet', 'registrationChallenge', 'registrationComplete', 'registrationCancel'].includes(request.action)) {
+      if (!result || typeof result !== 'object' || Array.isArray(result))
+        throw new SessionTransportError('SESSION_RESPONSE_INVALID')
+      const value = result as Record<string, unknown>
+      if (Object.keys(value).some(key => !['registrationId', 'status', 'expiresAt', 'nextAction', 'nextChallengeAt'].includes(key)) ||
+        typeof value.registrationId !== 'string') throw new SessionTransportError('SESSION_RESPONSE_INVALID')
+      const { registrationId, ...safe } = value
+      // Explicit C0 → existing React/Console model adaptation, only at this transport.
+      return { ...safe, ref: ref(registrationId) }
+    }
+    return result
+    })
+  }
+}

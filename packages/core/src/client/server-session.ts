@@ -69,7 +69,7 @@ export class ServerSession {
   private view: ServerSessionView | null = null
   private error: Error | null = null
   private loading = false
-  constructor(readonly transport: SessionTransport, private readonly clientId?: string) {}
+  constructor(readonly transport: SessionTransport, private readonly clientId?: string, readonly magicCallbackUri?: string) {}
   get generation() { return this.lifecycle.generation }
   get invalidationReason() { return this.lifecycle.invalidationReason }
   assertCurrent(generation: number) { this.lifecycle.assertCurrent(generation) }
@@ -185,9 +185,13 @@ export class SessionLogin implements AuthenticationFlow {
   async authenticateMagicLink(url: string, identifier: LoginIdentifier): Promise<LoginView> {
     this.check()
     const callback = new URL(url)
+    const expected = this.session.magicCallbackUri
+      ? new URL(this.session.magicCallbackUri, typeof location === 'undefined' ? callback.origin : location.origin)
+      : typeof location === 'undefined' ? null : new URL(location.href)
     const p = new URLSearchParams(callback.hash.slice(1))
     const keys = ['kind', 'method', 'auth_transaction_id', 'state', 'proof']
-    if (this.magicCallbackConsumed || identifier.kind !== 'EMAIL' || callback.search || callback.username || callback.password || !['https:', 'http:'].includes(callback.protocol) ||
+    if (this.magicCallbackConsumed || !expected || callback.origin !== expected.origin || callback.pathname !== expected.pathname ||
+      identifier.kind !== 'EMAIL' || callback.search || callback.username || callback.password || !['https:', 'http:'].includes(callback.protocol) ||
       (typeof location !== 'undefined' && callback.origin !== location.origin) ||
       [...p.keys()].some(k => !keys.includes(k)) || keys.some(k => p.getAll(k).length !== 1) ||
       p.get('kind') !== 'AUTH_PROOF' || p.get('method') !== 'EMAIL_MAGIC_LINK' ||

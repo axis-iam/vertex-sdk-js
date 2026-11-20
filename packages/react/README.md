@@ -49,8 +49,26 @@ its private callback; `sessionProviderReturnUri` may name the exact same-origin 
 Embedded, Dialog and `useAuthFlow` use the same Cookie login/challenge/Provider/MFA/complete/cancel actions.
 On reload or Provider return, MFA is restored through bootstrap, without URL proof or tab storage.
 `useAuth().login()`/redirect SignIn navigates to the explicitly configured same-origin `sessionLoginUri`
-(default `/login`), whose host page mounts the Embedded/Custom form. Existing Hosted OAuth remains the explicit
-oauth_tokens branded server entry; the SDK does not fabricate a BFF Hosted endpoint.
+(default `/login`), whose host page mounts the Embedded/Custom form. Existing Hosted OAuth remains available for
+oauth_tokens. The connected-application Hosted endpoint requires explicit mounting as described below.
+
+For the delivered connected-application C0 routes, import `ConnectedAppSessionTransport` from `@axis-iam/vertex`
+and pass it to `IamProvider` with `sessionMode="server_session"`, `sessionLoginUri="/auth/login"` and
+`sessionProviderReturnUri` equal to the clean app landing configured as BFF `successRedirect` (for example `/signed-in`).
+The registered IAM callback remains `/auth/callback`; the BFF consumes it before redirecting to that clean landing.
+Its default prefix is `/auth`; Console's
+`CookieSessionTransport` keeps `/console`. `startAuthorizationFlow`/redirect SignIn first restores bootstrap so the
+Hosted GET has its required prelogin binding. Mount the Node Express `createBff` or Nest `mountBff` at the same prefix.
+The default `sessionLoginUri="/login"` remains available for an application-owned form page.
+
+For manual `completeMagicLink`, `sessionMagicReturnUri` identifies the exact same-origin browser fragment landing
+(defaults to `redirectUri`). The Node `/auth/callback` fragment bridge normally handles this transient step itself,
+clears the fragment before sending its CSRF action and returns to the ordinary application form/MFA landing.
+
+The connected-application transport supports Hosted and the existing Embedded, Dialog and `useAuthFlow` Headless
+entries, required MFA, Provider return and the limited registration/EMAIL recovery contract. It explicitly rejects
+Console-only account/Workspace/step-up extensions; the existing Console transport retains them. UI method availability
+still requires concrete IAM capability and policy. Server-session token APIs continue to throw.
 
 `getAccessToken`, `refreshToken`, browser code exchange, OIDC logout URL and token-specific APIs throw
 `UNSUPPORTED_OPERATION`. `logout` uses the BFF and immediately invalidates local ownership; a remote refusal

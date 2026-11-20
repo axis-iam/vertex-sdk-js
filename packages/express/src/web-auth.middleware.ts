@@ -12,6 +12,8 @@ export interface WebAuthSessionView {
 }
 
 export interface WebAuthExpressConfig extends WebAuthClientConfig {
+  /** Explicit legacy helper SSO navigation. Default is current-session logout only. */
+  ssoLogout?: boolean
   transactionCookieName?: string
   sessionCookieName?: string
   transactionCookiePath?: string
@@ -50,7 +52,8 @@ export function createWebAuth(config: WebAuthExpressConfig): WebAuthHandlers {
 
   const respondError = (res: Response, error: unknown, fallbackStatus: number): void => {
     const webError = error instanceof WebAuthError ? error : new WebAuthError('CONFIGURATION_INVALID')
-    const status = webError.code === 'SESSION_STORE_FAILED' || webError.code === 'TRANSACTION_STORE_FAILED' ? 503 : fallbackStatus
+    const status = ['SESSION_STORE_FAILED', 'TRANSACTION_STORE_FAILED', 'IAM_UNAVAILABLE', 'DISCOVERY_FAILED'].includes(webError.code) ? 503
+      : webError.code === 'SESSION_ACTION_PENDING' ? 409 : webError.code === 'REFRESH_UNCERTAIN' ? 401 : fallbackStatus
     res.status(status).json({ error: webError.code })
   }
 
@@ -98,8 +101,12 @@ export function createWebAuth(config: WebAuthExpressConfig): WebAuthHandlers {
   const logout: RequestHandler = async (req, res) => {
     const sessionId = readCookie(req, sessionCookieName)
     try {
-      const result = await client.logout({ sessionId: sessionId ?? undefined })
+      const result = await client.logout({ sessionId: sessionId ?? undefined, sso: config.ssoLogout === true })
       res.clearCookie(sessionCookieName, cookieOptions(sessionCookiePath))
+      if (result.local === 'UNCONFIRMED' || result.remote === 'UNCONFIRMED') {
+        res.status(503).json({ error: 'LOGOUT_UNCONFIRMED', details: { local: result.local, remote: result.remote } })
+        return
+      }
       res.redirect(result.redirectUrl)
     } catch (error) {
       res.clearCookie(sessionCookieName, cookieOptions(sessionCookiePath))

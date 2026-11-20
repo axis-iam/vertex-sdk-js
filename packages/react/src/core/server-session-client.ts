@@ -85,7 +85,7 @@ export class ServerSessionClient {
     validateIamConfig(config)
     if (config.sessionMode !== 'server_session' || !config.sessionTransport || config.tokenStorage !== undefined)
       throw new IamConfigurationError('server_session requires an explicit SessionTransport and no tokenStorage')
-    this.session = new ServerSession(config.sessionTransport, config.clientId)
+    this.session = new ServerSession(config.sessionTransport, config.clientId, config.sessionMagicReturnUri ?? config.redirectUri)
     this.invitations = new SessionInvitationJourneyClient(request => this.session.action(request))
     this.identity = new SessionIdentityClient(this)
     this.accountSecurity = new AccountSecurityOperations(this)
@@ -116,6 +116,7 @@ export class ServerSessionClient {
   async handleCallback(_code: string, _state: string): Promise<never> { throw new UnsupportedOperationError() }
   async discover(): Promise<never> { throw new UnsupportedOperationError() }
   async startAuthorizationFlow(_options?: { locale?: string }): Promise<string> {
+    await this.restoreSession()
     const uri = new URL(this.config.sessionLoginUri ?? '/login', typeof window === 'undefined' ? this.config.issuerUri : window.location.origin)
     if (typeof window === 'undefined' || uri.origin !== window.location.origin || uri.search || uri.hash) throw new IamConfigurationError('Server login page must be same-origin')
     return uri.href
@@ -151,6 +152,11 @@ export class ServerSessionClient {
   async resumeProviderCallback(_url: string, committed?: () => void, check?: () => void) {
     check?.(); await this.restoreSession()
     if (this.isAuthenticated()) { committed?.(); check?.(); return { kind: 'session' as const } }
+    if (['CANCELLED', 'EXPIRED', 'REJECTED'].includes(this.session.getSnapshot()?.state ?? '')) {
+      await this.session.transport.request({ action: 'cancel' })
+      this.loginFlow?.invalidate(); this.loginFlow = null
+      throw new SessionTransportError('AUTH_PROVIDER_DENIED', 400)
+    }
     const transaction = await this.beginAuthentication()
     return { kind: 'continuation' as const, transaction, view: transaction.getSnapshot() }
   }
