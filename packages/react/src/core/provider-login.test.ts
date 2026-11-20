@@ -177,18 +177,27 @@ it('storage failure rejects Hosted navigation and new-account callbacks do not r
     jwks_uri: issuer + '/jwks',
   })
   await client.startProviderAuthorizationFlow(flowCapabilities.idpProviders[0])
+  const pendingProof = sessionStorage.getItem('axis_iam_pending_authorization')
+  expect(pendingProof).not.toBeNull()
   client.tokenManager.store(
     { access_token: 'new-owner', token_type: 'Bearer', expires_in: 600 },
     'OAUTH_AUTHORIZATION_CODE',
     null,
   )
+  const callsBeforeCallback = calls.length
+  const signedInGeneration = client.tokenManager.generation
   await expect(
     client.resumeProviderCallback(
       redirectUri + '?code=old&state=' + create.state,
     ),
   ).rejects.toThrow('signed-in account')
   expect(client.getAccessToken()).toBe('new-owner')
-  expect(sessionStorage.length).toBe(0)
+  expect(client.tokenManager.generation).toBe(signedInGeneration)
+  expect(calls).toHaveLength(callsBeforeCallback)
+  // Signed-in rejection occurs before reading/consuming another navigation's
+  // capability. It must neither exchange that proof nor erase its owner's record.
+  expect(sessionStorage.getItem('axis_iam_pending_authorization')).toBe(pendingProof)
+  expect(Object.keys(sessionStorage)).toEqual(['axis_iam_pending_authorization'])
 })
 it.each([
   'wrong-state',
